@@ -55,18 +55,17 @@ export function ensureComposerDraft(
   const existing = draftsByThreadId[key]
   if (existing) return existing
 
-  const created = createEmptyComposerDraft()
-  draftsByThreadId[key] = created
-  return created
+  draftsByThreadId[key] = createEmptyComposerDraft()
+  return draftsByThreadId[key]
 }
 
 export function clearComposerDraft(
   draftsByThreadId: ComposerDraftMap,
   threadId: string,
 ): ComposerDraftState {
-  const cleared = createEmptyComposerDraft()
-  draftsByThreadId[normalizeComposerDraftKey(threadId)] = cleared
-  return cleared
+  const key = normalizeComposerDraftKey(threadId)
+  draftsByThreadId[key] = createEmptyComposerDraft()
+  return draftsByThreadId[key]
 }
 
 export function updateComposerResponseAnnotation(

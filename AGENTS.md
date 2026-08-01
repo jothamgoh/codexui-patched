@@ -30,6 +30,28 @@ The compiled service runs from `dist/` and `dist-cli/`, so always run `npm run b
 deploying a source change. Do not use Playwright or E2E testing unless the user specifically
 asks for it.
 
+## Release and production workflow
+
+This repository is public. Unless the user explicitly asks for a local-only experiment, take a
+completed source change all the way through this workflow:
+
+1. Review `git diff` and `git status` for accidental machine paths, runtime data, or credentials.
+2. Run `gitleaks dir --redact .` when Gitleaks is available locally. A clean CI scan is a second
+   guardrail, not permission to push a known secret.
+3. Run `npm test` and `npm run build`.
+4. Commit the discrete task with a descriptive message.
+5. Push `main` to `https://github.com/jothamgoh/codexui-patched` and verify the GitHub Actions run.
+6. Verify the local production health check described in `~/.config/codexui/AGENTS.local.md`.
+
+Pushing `main` publishes the source repository; it does not restart a Mac service. A successful
+build writes the frontend assets to `dist/`, so frontend-only changes are served on browser
+refresh without restarting Node. Changes to `src/server/`, `src/cli/`, dependencies, environment
+loading, or process configuration require a service restart after the build.
+
+Never commit a populated `.env`, Codex `auth.json`, OAuth token, browser profile, API key,
+notification credential, runtime database, user log, or machine-specific service definition.
+GitHub secret-scanning push protection and the Gitleaks CI job must remain enabled.
+
 ## Remote-access security boundary
 
 CodexUI controls a Codex process with access to the host filesystem. Treat every HTTP, SSE,

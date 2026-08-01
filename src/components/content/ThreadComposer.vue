@@ -295,7 +295,7 @@
         </div>
         <textarea
           ref="inputRef"
-          v-model="draft"
+          :value="draft"
           class="thread-composer-input"
           rows="1"
           :placeholder="placeholderText"
@@ -579,7 +579,7 @@ const composerDraftStore = useComposerDraftStore()
 const activeDraft = computed<ComposerDraftState>(() => composerDraftStore.draftFor(props.activeThreadId))
 const draft = computed({
   get: () => activeDraft.value.text,
-  set: (value: string) => { activeDraft.value.text = value },
+  set: (value: string) => { composerDraftStore.setDraftText(props.activeThreadId, value) },
 })
 const selectedImages = computed({
   get: () => activeDraft.value.selectedImages,
@@ -1176,7 +1176,11 @@ function onCameraCaptureChange(event: Event): void {
   isAttachMenuOpen.value = false
 }
 
-function onInputChange(): void {
+function onInputChange(event: Event): void {
+  const input = event.target as HTMLTextAreaElement | null
+  if (input && input.value !== draft.value) {
+    draft.value = input.value
+  }
   syncComposerInputHeight()
   syncMentionAttachmentsFromDraft()
   const text = draft.value

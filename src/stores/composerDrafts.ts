@@ -21,6 +21,10 @@ export const useComposerDraftStore = defineStore('composerDrafts', {
       clearComposerDraft(this.draftsByThreadId, threadId)
     },
 
+    setDraftText(threadId: string, text: string): void {
+      ensureComposerDraft(this.draftsByThreadId, threadId).text = text
+    },
+
     updateResponseAnnotation(threadId: string, annotationId: string, annotation: string): void {
       updateComposerResponseAnnotation(
         this.draftsByThreadId,

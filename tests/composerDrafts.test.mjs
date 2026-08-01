@@ -105,7 +105,7 @@ test('a newly created Pinia draft enables submit when text changes', async () =>
   assert.equal(annotations.value.length, 0)
   assert.equal(canSubmit.value, false)
 
-  draftText.value = 'Ready to send'
+  store.setDraftText('__new-thread__', 'Ready to send')
   await nextTick()
 
   assert.equal(canSubmit.value, true)

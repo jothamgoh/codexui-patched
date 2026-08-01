@@ -54,6 +54,9 @@ of your computer to this repository.
   optional Telegram alerts when work finishes.
 - **Use voice and attachments.** Dictate a prompt or attach local files and
   images.
+- **Keep a draft in each chat.** Switch between chats without losing unsent
+  text, mentions, attachments, plugins, skills, or response annotations. Drafts
+  intentionally clear when the page is refreshed.
 - **Work comfortably on mobile.** The layout, sidebar, composer, and controls
   adapt to smaller screens.
 - **Choose how Codex thinks.** Pick the model and reasoning effort for each

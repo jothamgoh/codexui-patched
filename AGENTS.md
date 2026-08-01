@@ -4,7 +4,7 @@
 
 CodexUI is a maintained, standalone web UI for OpenAI Codex CLI. It runs on top of the Codex `app-server`, allowing browser access to a local Codex instance. The codebase originated from the MIT-licensed [friuns/codexui](https://github.com/friuns/codexui), with attribution preserved in `LICENSE`.
 
-- **Tech stack**: Vue 3, TypeScript, Tailwind CSS 4, Vite 6, Express 5
+- **Tech stack**: Vue 3, Pinia 4, TypeScript, Tailwind CSS 4, Vite 6, Express 5
 - **Repo**: `https://github.com/jothamgoh/codexui-patched`
 
 ## Development Commands
@@ -81,6 +81,7 @@ Browser (Vue 3 SPA)
 ### Key Files
 - `src/App.vue` - Root component
 - `src/composables/useDesktopState.ts` - Central state composable (~2000 LOC, all reactive state)
+- `src/stores/` - Pinia view state, including per-chat ephemeral composer drafts
 - `src/api/` - Backend communication layer (gateway, RPC client, DTOs)
 - `src/components/` - UI components (content, sidebar, layout, icons)
 - `src/server/` - Node.js server (bridge, auth, Express)

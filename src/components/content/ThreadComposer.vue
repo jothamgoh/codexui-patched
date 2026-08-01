@@ -501,12 +501,17 @@ import type {
   UiThreadTokenUsage,
 } from '../../types/codex'
 import { useDictation } from '../../composables/useDictation'
-import { useResponseAnnotations } from '../../composables/useResponseAnnotations'
+import { useComposerDraftStore } from '../../stores/composerDrafts'
+import type {
+  ComposerSelectedSkill,
+  ComposerDraftState,
+} from '../../utils/composerDrafts'
 import {
   getInstalledPlugins,
   searchComposerFiles,
   uploadFile,
   type ComposerFileSuggestion,
+  type FileAttachmentParam,
   type PluginMentionParam,
   type ThreadMentionParam,
 } from '../../api/codexGateway'
@@ -520,7 +525,7 @@ import ComposerDropdown from './ComposerDropdown.vue'
 import ComposerSearchDropdown from './ComposerSearchDropdown.vue'
 import ComposerSkillPicker from './ComposerSkillPicker.vue'
 
-type SkillItem = { name: string; description: string; path: string }
+type SkillItem = ComposerSelectedSkill
 const GOAL_SLASH_COMMAND_PATH = '__codex-command:goal'
 const GOAL_SLASH_COMMAND_PATTERN = /^\/go+al(?:\s+.*)?$/iu
 const GOAL_SLASH_COMMAND_PREFIX_PATTERN = /^\/go+al\b/iu
@@ -547,7 +552,7 @@ const props = defineProps<{
   hasQueueAbove?: boolean
 }>()
 
-export type FileAttachment = { label: string; path: string; fsPath: string }
+export type FileAttachment = FileAttachmentParam
 
 export type SubmitPayload = {
   text: string
@@ -570,24 +575,51 @@ const emit = defineEmits<{
   'update:selected-reasoning-effort': [effort: ReasoningEffort | '']
 }>()
 
-type SelectedImage = {
-  id: string
-  name: string
-  url: string
-}
-
-const draft = ref('')
-const selectedImages = ref<SelectedImage[]>([])
-const selectedSkills = ref<SkillItem[]>([])
+const composerDraftStore = useComposerDraftStore()
+const activeDraft = computed<ComposerDraftState>(() => composerDraftStore.draftFor(props.activeThreadId))
+const draft = computed({
+  get: () => activeDraft.value.text,
+  set: (value: string) => { activeDraft.value.text = value },
+})
+const selectedImages = computed({
+  get: () => activeDraft.value.selectedImages,
+  set: (value: ComposerDraftState['selectedImages']) => { activeDraft.value.selectedImages = value },
+})
+const selectedSkills = computed({
+  get: () => activeDraft.value.selectedSkills,
+  set: (value: ComposerDraftState['selectedSkills']) => { activeDraft.value.selectedSkills = value },
+})
 const installedPlugins = ref<PluginMentionParam[]>([])
-const selectedPlugins = ref<PluginMentionParam[]>([])
-const selectedThreads = ref<ThreadMentionParam[]>([])
-const fileAttachments = ref<FileAttachment[]>([])
-const mentionedFilePaths = ref<Set<string>>(new Set())
-const { responseTextAnnotations } = useResponseAnnotations()
+const selectedPlugins = computed({
+  get: () => activeDraft.value.selectedPlugins,
+  set: (value: ComposerDraftState['selectedPlugins']) => { activeDraft.value.selectedPlugins = value },
+})
+const selectedThreads = computed({
+  get: () => activeDraft.value.selectedThreads,
+  set: (value: ComposerDraftState['selectedThreads']) => { activeDraft.value.selectedThreads = value },
+})
+const fileAttachments = computed({
+  get: () => activeDraft.value.fileAttachments,
+  set: (value: ComposerDraftState['fileAttachments']) => { activeDraft.value.fileAttachments = value },
+})
+const mentionedFilePaths = computed<Set<string>>({
+  get: () => new Set(activeDraft.value.mentionedFilePaths),
+  set: (value) => { activeDraft.value.mentionedFilePaths = [...value] },
+})
+const responseTextAnnotations = computed({
+  get: () => activeDraft.value.responseTextAnnotations,
+  set: (value: ComposerDraftState['responseTextAnnotations']) => {
+    activeDraft.value.responseTextAnnotations = value
+  },
+})
 
+let dictationDraftThreadId = ''
 const { state: dictationState, isSupported: isDictationSupported, startRecording, stopRecording } = useDictation({
-  onTranscript: (text) => { draft.value = draft.value ? `${draft.value}\n${text}` : text },
+  onTranscript: (text) => {
+    const targetDraft = composerDraftStore.draftFor(dictationDraftThreadId || props.activeThreadId)
+    targetDraft.text = targetDraft.text ? `${targetDraft.text}\n${text}` : text
+    dictationDraftThreadId = ''
+  },
 })
 const attachMenuRootRef = ref<HTMLElement | null>(null)
 const photoLibraryInputRef = ref<HTMLInputElement | null>(null)
@@ -825,14 +857,7 @@ function onSubmit(mode: 'steer' | 'queue' = 'steer'): void {
     threads: [...selectedThreads.value],
     mode,
   })
-  draft.value = ''
-  selectedImages.value = []
-  selectedSkills.value = []
-  selectedPlugins.value = []
-  selectedThreads.value = []
-  fileAttachments.value = []
-  mentionedFilePaths.value = new Set()
-  responseTextAnnotations.value = []
+  composerDraftStore.clearDraft(props.activeThreadId)
   isAttachMenuOpen.value = false
   isSlashMenuOpen.value = false
   closeFileMention()
@@ -916,16 +941,9 @@ function shouldConfirmGoalReplacement(objective: string): boolean {
 }
 
 function clearComposerAfterGoalCommand(): void {
-  draft.value = ''
+  composerDraftStore.clearDraft(props.activeThreadId)
   isSlashMenuOpen.value = false
   closeFileMention()
-  selectedImages.value = []
-  selectedSkills.value = []
-  selectedPlugins.value = []
-  selectedThreads.value = []
-  fileAttachments.value = []
-  mentionedFilePaths.value = new Set()
-  responseTextAnnotations.value = []
   isAttachMenuOpen.value = false
 }
 
@@ -979,6 +997,7 @@ function toggleDictation(): void {
     stopRecording()
     return
   }
+  dictationDraftThreadId = props.activeThreadId
   void startRecording()
 }
 
@@ -1076,12 +1095,16 @@ function removeFileAttachment(fsPath: string): void {
     .replace(/[ \t]{2,}/g, ' ')
 }
 
-function addFileAttachment(filePath: string): void {
+function addFileAttachment(filePath: string, targetThreadId = props.activeThreadId): void {
   const normalized = filePath.replace(/\\/g, '/')
-  if (fileAttachments.value.some((a) => a.fsPath === normalized)) return
+  const targetDraft = composerDraftStore.draftFor(targetThreadId)
+  if (targetDraft.fileAttachments.some((a) => a.fsPath === normalized)) return
   const parts = normalized.split('/').filter(Boolean)
   const label = parts[parts.length - 1] ?? normalized
-  fileAttachments.value = [...fileAttachments.value, { label, path: normalized, fsPath: normalized }]
+  targetDraft.fileAttachments = [
+    ...targetDraft.fileAttachments,
+    { label, path: normalized, fsPath: normalized },
+  ]
 }
 
 function isImageFile(file: File): boolean {
@@ -1091,12 +1114,13 @@ function isImageFile(file: File): boolean {
 
 function addFiles(files: FileList | readonly File[] | null): void {
   if (!files || files.length === 0) return
+  const targetThreadId = props.activeThreadId
   for (const file of Array.from(files)) {
     if (isImageFile(file)) {
       const reader = new FileReader()
       reader.onload = () => {
         if (typeof reader.result !== 'string') return
-        selectedImages.value.push({
+        composerDraftStore.draftFor(targetThreadId).selectedImages.push({
           id: `${Date.now()}-${Math.random().toString(36).slice(2)}`,
           name: file.name,
           url: reader.result,
@@ -1105,7 +1129,7 @@ function addFiles(files: FileList | readonly File[] | null): void {
       reader.readAsDataURL(file)
     } else {
       void uploadFile(file).then((serverPath) => {
-        if (serverPath) addFileAttachment(serverPath)
+        if (serverPath) addFileAttachment(serverPath, targetThreadId)
       }).catch(() => {})
     }
   }
@@ -1481,18 +1505,10 @@ onBeforeUnmount(() => {
 watch(
   () => props.activeThreadId,
   () => {
-    draft.value = ''
     goalDraft.value = ''
     isGoalEditorOpen.value = false
     isGoalObjectiveExpanded.value = false
     pendingGoalReplacementObjective.value = ''
-    selectedImages.value = []
-    selectedSkills.value = []
-    selectedPlugins.value = []
-    selectedThreads.value = []
-    fileAttachments.value = []
-    mentionedFilePaths.value = new Set()
-    responseTextAnnotations.value = []
     isAttachMenuOpen.value = false
     isSlashMenuOpen.value = false
     closeFileMention()

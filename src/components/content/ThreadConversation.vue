@@ -575,7 +575,7 @@ import { Button } from '@/components/ui/button'
 import { Popover, PopoverAnchor, PopoverContent } from '@/components/ui/popover'
 import { Textarea } from '@/components/ui/textarea'
 import { useDictation } from '../../composables/useDictation'
-import { useResponseAnnotations } from '../../composables/useResponseAnnotations'
+import { useComposerDraftStore } from '../../stores/composerDrafts'
 import {
   shouldFollowConversationBottom,
   shouldForceThreadOpenToBottom,
@@ -835,7 +835,13 @@ const hoveredResponseAnnotationId = ref<string | null>(null)
 const forkDialogMessage = ref<UiMessage | null>(null)
 const responseAnnotationMarkers = ref<ResponseAnnotationMarker[]>([])
 const responseAnnotationAnchors = new Map<string, CapturedResponseSelection>()
-const { responseTextAnnotations, updateResponseAnnotation } = useResponseAnnotations()
+const composerDraftStore = useComposerDraftStore()
+const responseTextAnnotations = computed(() =>
+  composerDraftStore.draftFor(props.activeThreadId).responseTextAnnotations,
+)
+function updateResponseAnnotation(annotationId: string, annotation: string): void {
+  composerDraftStore.updateResponseAnnotation(props.activeThreadId, annotationId, annotation)
+}
 const {
   state: responseAnnotationDictationState,
   isSupported: isResponseAnnotationDictationSupported,

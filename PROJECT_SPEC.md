@@ -35,7 +35,7 @@ browsers. A singleton bridge is reused during Vite hot reloads in development.
 
 | Area | Implementation |
 |---|---|
-| Frontend | Vue 3, Vue Router, TypeScript |
+| Frontend | Vue 3, Vue Router, Pinia, TypeScript |
 | Styling | Tailwind CSS 4, Reka UI, Lucide icons |
 | Development/build | Vite, vue-tsc, tsup |
 | Server | Node.js 18+, Express 5, `ws` |
@@ -53,6 +53,7 @@ src/
 ├── composables/  Shared reactive state and browser preferences
 ├── router/       Hash-based application routes
 ├── server/       Express bridge, Codex process, state stores, and notifications
+├── stores/       Ephemeral Pinia view state, including per-chat composer drafts
 ├── types/        UI and protocol-facing TypeScript types
 └── utils/        Shared presentation helpers
 tests/            Node test suites for server and state behavior
@@ -60,9 +61,10 @@ documentation/    Codex app-server protocol reference and generated schemas
 deployment/       Secret-free deployment templates
 ```
 
-The main application state lives in `src/composables/useDesktopState.ts`.
-Transport and normalization live in `src/api/`; host-authority operations live
-in `src/server/`.
+The main Codex application state lives in `src/composables/useDesktopState.ts`.
+Ephemeral per-view state that must survive component navigation lives in Pinia
+under `src/stores/`. Transport and normalization live in `src/api/`;
+host-authority operations live in `src/server/`.
 
 ## User-facing routes
 
@@ -99,6 +101,8 @@ Codex owns conversations and account state under the configured `CODEX_HOME`.
 CodexUI keeps its server-side state in per-user files selected by the runtime
 configuration. Browser-only preferences such as theme, sidebar state, project
 ordering, read markers, scroll position, and model choices use `localStorage`.
+Unsent composer drafts use an in-memory Pinia store keyed by chat, so they
+survive chat switching but intentionally disappear on page refresh.
 
 Runtime credentials and machine-specific settings do not belong in this
 repository. A deployment should load a mode-`600` file outside the checkout,

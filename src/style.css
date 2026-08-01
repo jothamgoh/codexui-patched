@@ -1,0 +1,642 @@
+@import "tailwindcss";
+@import "tw-animate-css";
+
+@custom-variant dark (&:where([data-theme='dark'], [data-theme='dark'] *));
+@plugin "@tailwindcss/typography";
+
+:root {
+  color-scheme: light;
+  --app-bg: #f1f5f9;
+  --sidebar-bg: #f1f5f9;
+  --content-bg: #ffffff;
+  --surface-elevated: #ffffff;
+  --surface-muted: #f8fafc;
+  --surface-soft: rgba(248, 250, 252, 0.88);
+  --surface-hover: #e4e4e7;
+  --surface-active: #d4d4d8;
+  --surface-inverse: #09090b;
+  --accent: #2563eb;
+  --accent-strong: #1d4ed8;
+  --accent-soft: rgba(37, 99, 235, 0.16);
+  --border-soft: #e5e7eb;
+  --border-strong: #d4d4d8;
+  --border-subtle: #e5e7eb;
+  --text-primary: #0f172a;
+  --text-secondary: #334155;
+  --text-tertiary: #71717a;
+  --text-muted: #71717a;
+  --text-faint: #94a3b8;
+  --user-bubble: #e2e8f0;
+  --code-inline-bg: rgba(226, 232, 240, 0.8);
+  --code-inline-border: #cbd5e1;
+  --overlay: rgba(15, 23, 42, 0.42);
+  --background: var(--content-bg);
+  --foreground: var(--text-primary);
+  --popover: var(--surface-elevated);
+  --popover-foreground: var(--text-primary);
+  --primary: var(--surface-inverse);
+  --primary-foreground: var(--content-bg);
+  --secondary: var(--surface-muted);
+  --secondary-foreground: var(--text-primary);
+  --muted: var(--surface-muted);
+  --muted-foreground: var(--text-muted);
+  --shadcn-accent: var(--surface-hover);
+  --accent-foreground: var(--text-primary);
+  --destructive: #dc2626;
+  --border: var(--border-soft);
+  --input: var(--border-strong);
+  --ring: var(--text-tertiary);
+  --radius: 0.625rem;
+}
+
+html[data-theme='dark'] {
+  color-scheme: dark;
+  --app-bg: #181820;
+  --sidebar-bg: #24252f;
+  --content-bg: #181820;
+  --surface-elevated: #252633;
+  --surface-muted: #20212b;
+  --surface-soft: rgba(36, 40, 59, 0.9);
+  --surface-hover: #2c2d39;
+  --surface-active: #333442;
+  --surface-inverse: #c0caf5;
+  --accent: #7aa2f7;
+  --accent-strong: #9d7cd8;
+  --accent-soft: rgba(122, 162, 247, 0.18);
+  --border-soft: #292e42;
+  --border-strong: #3b4261;
+  --border-subtle: #2f3549;
+  --text-primary: #c0caf5;
+  --text-secondary: #a9b1d6;
+  --text-tertiary: #7c86a8;
+  --text-muted: #787c99;
+  --text-faint: #565f89;
+  --user-bubble: #2f3549;
+  --code-inline-bg: rgba(36, 40, 59, 0.92);
+  --code-inline-border: #3b4261;
+  --overlay: rgba(10, 11, 20, 0.76);
+  --background: var(--content-bg);
+  --foreground: var(--text-primary);
+  --popover: var(--surface-elevated);
+  --popover-foreground: var(--text-primary);
+  --primary: var(--surface-inverse);
+  --primary-foreground: var(--content-bg);
+  --secondary: var(--surface-muted);
+  --secondary-foreground: var(--text-primary);
+  --muted: var(--surface-muted);
+  --muted-foreground: var(--text-muted);
+  --shadcn-accent: var(--surface-hover);
+  --accent-foreground: var(--text-primary);
+  --destructive: #f87171;
+  --border: var(--border-soft);
+  --input: var(--border-strong);
+  --ring: var(--text-tertiary);
+}
+
+html,
+body,
+#app {
+  width: 100%;
+  height: 100%;
+  overflow: hidden;
+}
+
+body {
+  position: fixed;
+  inset: 0;
+  width: 100%;
+  overscroll-behavior: none;
+  background: var(--app-bg);
+  color: var(--text-primary);
+  transition: background-color 180ms ease, color 180ms ease;
+}
+
+body,
+button,
+input,
+textarea,
+select {
+  transition:
+  background-color 180ms ease,
+    border-color 180ms ease,
+    color 180ms ease,
+    box-shadow 180ms ease;
+}
+
+::selection {
+  background: var(--accent-soft);
+}
+
+* {
+  scrollbar-color: var(--border-strong) transparent;
+}
+
+html[data-theme='dark'] body {
+  background: var(--app-bg);
+  color: var(--text-primary);
+}
+
+html[data-theme='dark'] .desktop-layout,
+html[data-theme='dark'] .desktop-sidebar,
+html[data-theme='dark'] .mobile-drawer,
+html[data-theme='dark'] .sidebar-root {
+  background: var(--sidebar-bg);
+  color: var(--text-primary);
+}
+
+html[data-theme='dark'] .desktop-sidebar,
+html[data-theme='dark'] .mobile-drawer {
+  border-color: rgba(86, 95, 137, 0.22);
+}
+
+html[data-theme='dark'] .desktop-main,
+html[data-theme='dark'] .content-root,
+html[data-theme='dark'] .content-header {
+  background: var(--content-bg);
+  color: var(--text-primary);
+}
+
+html[data-theme='dark'] .desktop-resize-handle {
+  background: var(--border-strong);
+}
+
+html[data-theme='dark'] .desktop-resize-handle:hover {
+  background: var(--text-muted);
+}
+
+html[data-theme='dark'] .mobile-drawer-backdrop,
+html[data-theme='dark'] .sdm-overlay,
+html[data-theme='dark'] .image-modal-backdrop {
+  background: var(--overlay);
+}
+
+html[data-theme='dark'] .content-title,
+html[data-theme='dark'] .new-thread-hero,
+html[data-theme='dark'] .skills-hub-title,
+html[data-theme='dark'] .mcp-hub-title,
+html[data-theme='dark'] .mcp-card-title,
+html[data-theme='dark'] .skill-card-name,
+html[data-theme='dark'] .sdm-title,
+html[data-theme='dark'] .api-panel-title,
+html[data-theme='dark'] .rate-limits-eyebrow,
+html[data-theme='dark'] .thread-row-title,
+html[data-theme='dark'] .project-title,
+html[data-theme='dark'] .thread-composer-file-mention-name,
+html[data-theme='dark'] .message-text,
+html[data-theme='dark'] .message-markdown-content,
+html[data-theme='dark'] .worked-separator-text {
+  color: var(--text-primary);
+}
+
+html[data-theme='dark'] .sidebar-skills-link,
+html[data-theme='dark'] .sidebar-primary-link,
+html[data-theme='dark'] .sidebar-primary-link-icon,
+html[data-theme='dark'] .sidebar-tools-toggle,
+html[data-theme='dark'] .sidebar-tools-toggle-icon,
+html[data-theme='dark'] .sidebar-search-toggle,
+html[data-theme='dark'] .sidebar-thread-controls-button,
+html[data-theme='dark'] .sidebar-search-bar-icon,
+html[data-theme='dark'] .sidebar-search-clear,
+html[data-theme='dark'] .sidebar-search-input,
+html[data-theme='dark'] .sidebar-thread-controls,
+html[data-theme='dark'] .rate-limits-trigger-label,
+html[data-theme='dark'] .thread-row-time,
+html[data-theme='dark'] .thread-row-worktree-icon,
+html[data-theme='dark'] .thread-show-more-button,
+html[data-theme='dark'] .thread-composer-file-chip,
+html[data-theme='dark'] .message-file-chip,
+html[data-theme='dark'] .message-tool-summary,
+html[data-theme='dark'] .tool-call-detail,
+html[data-theme='dark'] .tool-call-progress,
+html[data-theme='dark'] .live-overlay-label,
+html[data-theme='dark'] .queued-row-text,
+html[data-theme='dark'] .queued-row-icon,
+html[data-theme='dark'] .skills-hub-subtitle,
+html[data-theme='dark'] .skills-hub-count,
+html[data-theme='dark'] .skills-hub-section-toggle,
+html[data-theme='dark'] .skill-card-owner,
+html[data-theme='dark'] .skill-card-desc,
+html[data-theme='dark'] .mcp-hub-note,
+html[data-theme='dark'] .mcp-card-detail,
+html[data-theme='dark'] .mcp-card-meta-row dd,
+html[data-theme='dark'] .sdm-desc,
+html[data-theme='dark'] .sdm-owner,
+html[data-theme='dark'] .sdm-readme,
+html[data-theme='dark'] .rate-limits-meta,
+html[data-theme='dark'] .rate-limits-row-description,
+html[data-theme='dark'] .api-panel-count,
+html[data-theme='dark'] .api-panel-loading {
+  color: var(--text-secondary);
+}
+
+html[data-theme='dark'] .thread-composer-file-chip-name,
+html[data-theme='dark'] .thread-composer-skill-chip-name,
+html[data-theme='dark'] .message-file-chip-name {
+  color: var(--text-primary);
+}
+
+html[data-theme='dark'] .pinned-section-label,
+html[data-theme='dark'] .thread-tree-header,
+html[data-theme='dark'] .organize-menu-title,
+html[data-theme='dark'] .project-menu-label,
+html[data-theme='dark'] .thread-tree-loading,
+html[data-theme='dark'] .thread-tree-no-results,
+html[data-theme='dark'] .project-empty,
+html[data-theme='dark'] .thread-composer-file-mention-dir,
+html[data-theme='dark'] .thread-composer-file-mention-empty,
+html[data-theme='dark'] .live-overlay-reasoning-summary,
+html[data-theme='dark'] .live-overlay-reasoning,
+html[data-theme='dark'] .conversation-loading,
+html[data-theme='dark'] .conversation-empty,
+html[data-theme='dark'] .message-raw-summary,
+html[data-theme='dark'] .search-dropdown-empty,
+html[data-theme='dark'] .skill-picker-empty,
+html[data-theme='dark'] .composer-dropdown-empty,
+html[data-theme='dark'] .skills-hub-loading,
+html[data-theme='dark'] .skills-hub-empty,
+html[data-theme='dark'] .mcp-hub-stat-label,
+html[data-theme='dark'] .mcp-card-meta-row dt,
+html[data-theme='dark'] .rate-limits-group-header,
+html[data-theme='dark'] .skill-card-date,
+html[data-theme='dark'] .thread-composer-file-chip-icon,
+html[data-theme='dark'] .thread-composer-file-chip-remove,
+html[data-theme='dark'] .message-file-chip-icon {
+  color: var(--text-muted);
+}
+
+html[data-theme='dark'] .live-overlay-reasoning-title {
+  color: var(--text-faint);
+}
+
+html[data-theme='dark'] .pinned-section,
+html[data-theme='dark'] .thread-tree-header-row,
+html[data-theme='dark'] .thread-composer-separator,
+html[data-theme='dark'] .message-raw-details,
+html[data-theme='dark'] .rate-limits-group + .rate-limits-group,
+html[data-theme='dark'] .rate-limits-group + .rate-limits-group,
+html[data-theme='dark'] .api-panel-header,
+html[data-theme='dark'] .sdm-footer {
+  border-color: var(--border-soft);
+}
+
+html[data-theme='dark'] .sidebar-search-bar,
+html[data-theme='dark'] .composer-dropdown-menu,
+html[data-theme='dark'] .search-dropdown-menu-wrap-up,
+html[data-theme='dark'] .search-dropdown-menu-wrap-down,
+html[data-theme='dark'] .skill-picker,
+html[data-theme='dark'] .thread-type-menu-trigger,
+html[data-theme='dark'] .thread-type-menu-panel,
+html[data-theme='dark'] .thread-type-menu-actions,
+html[data-theme='dark'] .organize-menu-panel,
+html[data-theme='dark'] .project-menu-panel,
+html[data-theme='dark'] .thread-composer-shell,
+html[data-theme='dark'] .thread-composer-file-mentions,
+html[data-theme='dark'] .thread-composer-attach-menu,
+html[data-theme='dark'] .queued-messages-inner,
+html[data-theme='dark'] .message-image-button,
+html[data-theme='dark'] .message-file-chip,
+html[data-theme='dark'] .request-select,
+html[data-theme='dark'] .request-input,
+html[data-theme='dark'] .scroll-bottom-button,
+html[data-theme='dark'] .rollback-button,
+html[data-theme='dark'] .rate-limits,
+html[data-theme='dark'] .rate-limits-trigger,
+html[data-theme='dark'] .rate-limits-popover,
+html[data-theme='dark'] .skills-hub-search-wrap,
+html[data-theme='dark'] .skills-hub-sort,
+html[data-theme='dark'] .skill-card,
+html[data-theme='dark'] .sdm-panel,
+html[data-theme='dark'] .mcp-hub-stat,
+html[data-theme='dark'] .mcp-hub-empty,
+html[data-theme='dark'] .mcp-card,
+html[data-theme='dark'] .mcp-card-meta,
+html[data-theme='dark'] .mcp-card-badge,
+html[data-theme='dark'] .api-panel-root {
+  background: var(--surface-elevated);
+  border-color: var(--border-strong);
+  color: var(--text-primary);
+}
+
+html[data-theme='dark'] .rate-limits {
+  background: var(--surface-soft);
+  border-color: var(--border-subtle);
+}
+
+html[data-theme='dark'] .thread-row:hover,
+html[data-theme='dark'] .project-header-row:hover,
+html[data-theme='dark'] .sidebar-skills-link:hover,
+html[data-theme='dark'] .sidebar-primary-link:hover,
+html[data-theme='dark'] .sidebar-tools-toggle:hover,
+html[data-theme='dark'] .thread-show-more-button:hover,
+html[data-theme='dark'] .sidebar-search-toggle:hover,
+html[data-theme='dark'] .sidebar-thread-controls-button:hover,
+html[data-theme='dark'] .organize-menu-trigger:hover,
+html[data-theme='dark'] .thread-start-button:hover,
+html[data-theme='dark'] .thread-pin-button:hover,
+html[data-theme='dark'] .queued-row-delete:hover,
+html[data-theme='dark'] .search-dropdown-option:hover,
+html[data-theme='dark'] .skill-picker-item:hover,
+html[data-theme='dark'] .composer-dropdown-option:hover,
+html[data-theme='dark'] .composer-dropdown-add:hover,
+html[data-theme='dark'] .thread-type-menu-action-button:hover,
+html[data-theme='dark'] .thread-type-menu-option:hover,
+html[data-theme='dark'] .thread-composer-file-mention-row:hover,
+html[data-theme='dark'] .thread-composer-attach-item:hover,
+html[data-theme='dark'] .thread-composer-mic:hover,
+html[data-theme='dark'] .scroll-bottom-button:hover,
+html[data-theme='dark'] .rollback-button:hover,
+html[data-theme='dark'] .sdm-close:hover,
+html[data-theme='dark'] .rate-limits-close:hover,
+html[data-theme='dark'] .rate-limits-refresh:hover,
+html[data-theme='dark'] .skills-hub-sort:hover,
+html[data-theme='dark'] .thread-composer-file-chip-remove:hover {
+  background: var(--surface-hover);
+  color: var(--text-primary);
+}
+
+html[data-theme='dark'] .sidebar-skills-link.is-active,
+html[data-theme='dark'] .sidebar-primary-link.is-active,
+html[data-theme='dark'] .thread-row[data-active='true'],
+html[data-theme='dark'] .sidebar-search-toggle[aria-pressed='true'],
+html[data-theme='dark'] .organize-menu-item[data-active='true'],
+html[data-theme='dark'] .search-dropdown-option.is-highlighted,
+html[data-theme='dark'] .skill-picker-item.is-highlighted,
+html[data-theme='dark'] .composer-dropdown-option.is-selected,
+html[data-theme='dark'] .thread-composer-file-mention-row.is-active {
+  background: var(--surface-active);
+  color: var(--text-primary);
+}
+
+html[data-theme='dark'] .thread-composer-input:disabled,
+html[data-theme='dark'] .mcp-card-path-muted,
+html[data-theme='dark'] .mcp-card-badge.is-disabled,
+html[data-theme='dark'] .thread-composer-file-chip,
+html[data-theme='dark'] .message-file-chip,
+html[data-theme='dark'] .rate-limits-trigger,
+html[data-theme='dark'] .queued-messages-inner,
+html[data-theme='dark'] .composer-dropdown-search-input,
+html[data-theme='dark'] .composer-dropdown-add-input,
+html[data-theme='dark'] .composer-dropdown-add-btn,
+html[data-theme='dark'] .search-dropdown-search,
+html[data-theme='dark'] .skill-picker-search,
+html[data-theme='dark'] .request-select,
+html[data-theme='dark'] .request-input,
+html[data-theme='dark'] .skills-hub-search-wrap,
+html[data-theme='dark'] .skills-hub-sort,
+html[data-theme='dark'] .api-method-code {
+  background: var(--surface-muted);
+  border-color: var(--border-strong);
+  color: var(--text-secondary);
+}
+
+html[data-theme='dark'] .sidebar-search-bar:focus-within,
+html[data-theme='dark'] .skills-hub-search-wrap:focus-within,
+html[data-theme='dark'] .composer-dropdown-search-input:focus,
+html[data-theme='dark'] .composer-dropdown-add-input:focus,
+html[data-theme='dark'] .search-dropdown-search:focus,
+html[data-theme='dark'] .skill-picker-search:focus,
+html[data-theme='dark'] .request-select:focus,
+html[data-theme='dark'] .request-input:focus {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 1px var(--accent-soft);
+}
+
+html[data-theme='dark'] .sidebar-search-input,
+html[data-theme='dark'] .skills-hub-search,
+html[data-theme='dark'] .thread-composer-input,
+html[data-theme='dark'] .composer-dropdown-search-input,
+html[data-theme='dark'] .composer-dropdown-add-input,
+html[data-theme='dark'] .search-dropdown-search,
+html[data-theme='dark'] .skill-picker-search,
+html[data-theme='dark'] .project-menu-input,
+html[data-theme='dark'] .request-select,
+html[data-theme='dark'] .request-input {
+  color: var(--text-primary);
+}
+
+html[data-theme='dark'] .sidebar-search-input::placeholder,
+html[data-theme='dark'] .skills-hub-search::placeholder,
+html[data-theme='dark'] .thread-composer-input::placeholder,
+html[data-theme='dark'] .composer-dropdown-search-input::placeholder,
+html[data-theme='dark'] .composer-dropdown-add-input::placeholder,
+html[data-theme='dark'] .search-dropdown-search::placeholder,
+html[data-theme='dark'] .skill-picker-search::placeholder,
+html[data-theme='dark'] .request-input::placeholder {
+  color: var(--text-muted);
+}
+
+html[data-theme='dark'] .thread-composer-submit {
+  background: var(--accent);
+  color: #11111b;
+}
+
+html[data-theme='dark'] .thread-composer-submit:hover {
+  background: #9d7cd8;
+}
+
+html[data-theme='dark'] .thread-composer-stop {
+  background: #dc2626;
+}
+
+html[data-theme='dark'] .thread-composer-stop:hover {
+  background: #ef4444;
+}
+
+html[data-theme='dark'] .thread-composer-mic,
+html[data-theme='dark'] .thread-composer-attach-trigger {
+  color: var(--text-secondary);
+}
+
+html[data-theme='dark'] .thread-composer-attach-trigger {
+  background: transparent;
+  border-color: transparent;
+  color: #8e98bd;
+}
+
+html[data-theme='dark'] .thread-composer-attach-trigger:hover {
+  background: var(--surface-hover);
+  color: var(--text-primary);
+}
+
+html[data-theme='dark'] .thread-composer-attach-trigger:focus-visible {
+  outline-color: var(--accent);
+}
+
+html[data-theme='dark'] .thread-composer-mic {
+  background: rgba(122, 162, 247, 0.12);
+  border-color: rgba(122, 162, 247, 0.35);
+  color: var(--accent);
+}
+
+html[data-theme='dark'] .thread-composer-mic:hover {
+  background: rgba(157, 124, 216, 0.16);
+  border-color: rgba(157, 124, 216, 0.45);
+  color: #bb9af7;
+}
+
+html[data-theme='dark'] .thread-composer-mic.thread-composer-mic--recording {
+  background: #dc2626;
+  border-color: #dc2626;
+  color: #ffffff;
+}
+
+html[data-theme='dark'] .thread-composer-mic.thread-composer-mic--recording:hover {
+  background: #ef4444;
+  border-color: #ef4444;
+  color: #ffffff;
+}
+
+html[data-theme='dark'] .thread-composer-mic.thread-composer-mic--transcribing,
+html[data-theme='dark'] .thread-composer-mic.thread-composer-mic--transcribing:hover {
+  background: rgba(224, 175, 104, 0.16);
+  border-color: rgba(224, 175, 104, 0.45);
+  color: #e0af68;
+}
+
+html[data-theme='dark'] .message-card[data-role='user'] {
+  background: var(--user-bubble);
+}
+
+html[data-theme='dark'] .message-markdown-content :is(p, li, blockquote, strong, em, h1, h2, h3, h4, h5, h6),
+html[data-theme='dark'] .message-markdown-content :is(ul, ol) {
+  color: var(--text-primary);
+}
+
+html[data-theme='dark'] .message-markdown-content a,
+html[data-theme='dark'] .sdm-link {
+  color: var(--accent);
+  text-decoration-color: rgba(122, 162, 247, 0.65);
+}
+
+html[data-theme='dark'] .message-markdown-content a:hover,
+html[data-theme='dark'] .sdm-link:hover {
+  color: #bb9af7;
+  text-decoration-color: currentColor;
+}
+
+html[data-theme='dark'] .message-markdown-content a code {
+  color: inherit;
+  border-color: rgba(122, 162, 247, 0.3);
+}
+
+html[data-theme='dark'] .message-markdown-content pre,
+html[data-theme='dark'] .cmd-output-wrap {
+  background: #16161e;
+}
+
+html[data-theme='dark'] .cmd-output-wrap.cmd-output-visible,
+html[data-theme='dark'] .cmd-output-wrap.cmd-output-collapsing {
+  border-color: var(--border-strong);
+}
+
+html[data-theme='dark'] .message-markdown-content code {
+  background: var(--code-inline-bg);
+  border-color: var(--code-inline-border);
+  color: var(--text-primary);
+}
+
+html[data-theme='dark'] .message-markdown-content img,
+html[data-theme='dark'] .image-modal-image,
+html[data-theme='dark'] .image-modal-close {
+  background: var(--surface-elevated);
+  border-color: var(--border-strong);
+}
+
+html[data-theme='dark'] .message-raw-payload,
+html[data-theme='dark'] .mcp-card-path {
+  background: #16161e;
+  color: var(--text-secondary);
+}
+
+html[data-theme='dark'] .worked-separator-line {
+  background: var(--border-strong);
+}
+
+html[data-theme='dark'] .tool-call-row {
+  background: var(--surface-muted);
+  border-color: var(--border-subtle);
+  color: var(--text-secondary);
+}
+
+html[data-theme='dark'] .tool-call-label {
+  color: var(--text-primary);
+}
+
+html[data-theme='dark'] .tool-call-status {
+  color: var(--text-tertiary);
+}
+
+html[data-theme='dark'] .tool-call-row--failed {
+  background: rgba(127, 29, 29, 0.22);
+  border-color: rgba(248, 113, 113, 0.35);
+  color: #fca5a5;
+}
+
+html[data-theme='dark'] .rate-limits-progress::-webkit-progress-bar {
+  background: var(--surface-muted);
+}
+
+html[data-theme='dark'] .rate-limits-progress::-webkit-progress-value,
+html[data-theme='dark'] .rate-limits-progress::-moz-progress-bar {
+  background: var(--accent);
+}
+
+html[data-theme='dark'] .mcp-switch-ui {
+  background: var(--surface-active);
+}
+
+html[data-theme='dark'] .mcp-switch-ui::after {
+  background: var(--text-primary);
+}
+
+html[data-theme='dark'] .sdm-badge-disabled,
+html[data-theme='dark'] .skill-card-badge-disabled {
+  background: var(--surface-muted);
+  border-color: var(--border-strong);
+  color: var(--text-muted);
+}
+
+html[data-theme='dark'] .sdm-btn-secondary {
+  background: var(--surface-muted);
+  color: var(--text-primary);
+}
+
+html[data-theme='dark'] .sdm-btn-secondary:hover {
+  background: var(--surface-hover);
+}
+
+@media (max-width: 639px) {
+  .desktop-layout.is-mobile:not(.is-keyboard-open) .thread-composer {
+    background: var(--content-bg);
+  }
+
+  .desktop-layout.is-mobile:not(.is-keyboard-open) .thread-composer-shell {
+    margin-left: 0.5rem;
+    margin-right: 0.5rem;
+  }
+
+  .desktop-layout.is-mobile:not(.is-keyboard-open) .thread-composer-input {
+    padding-left: 0.75rem;
+    padding-right: 0.75rem;
+  }
+}
+
+@theme inline {
+  --font-heading: var(--font-sans);
+  --color-background: var(--background);
+  --color-foreground: var(--foreground);
+  --color-popover: var(--popover);
+  --color-popover-foreground: var(--popover-foreground);
+  --color-primary: var(--primary);
+  --color-primary-foreground: var(--primary-foreground);
+  --color-secondary: var(--secondary);
+  --color-secondary-foreground: var(--secondary-foreground);
+  --color-muted: var(--muted);
+  --color-muted-foreground: var(--muted-foreground);
+  --color-accent: var(--shadcn-accent);
+  --color-accent-foreground: var(--accent-foreground);
+  --color-destructive: var(--destructive);
+  --color-border: var(--border);
+  --color-input: var(--input);
+  --color-ring: var(--ring);
+}

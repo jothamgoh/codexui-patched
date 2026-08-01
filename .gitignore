@@ -1,0 +1,10 @@
+node_modules/
+dist/
+dist-cli/
+output/
+test-results/
+/tmp-*.spec.js
+*.tsbuildinfo
+.env
+.env.*
+!.env.example

@@ -576,6 +576,10 @@ import { Popover, PopoverAnchor, PopoverContent } from '@/components/ui/popover'
 import { Textarea } from '@/components/ui/textarea'
 import { useDictation } from '../../composables/useDictation'
 import { useResponseAnnotations } from '../../composables/useResponseAnnotations'
+import {
+  shouldFollowConversationBottom,
+  shouldForceThreadOpenToBottom,
+} from '../../utils/threadScroll'
 import IconTablerX from '../icons/IconTablerX.vue'
 import IconTablerChevronDown from '../icons/IconTablerChevronDown.vue'
 import IconTablerArrowBackUp from '../icons/IconTablerArrowBackUp.vue'
@@ -916,7 +920,6 @@ let responseAnnotationMarkerFrame = 0
 let bottomLockFramesLeft = 0
 let lastScrollTop = 0
 let userHasScrolledAwayFromBottom = false
-let shouldForceBottomOnNextLoad = false
 let pendingPrependAnchor: {
   threadId: string
   scrollHeight: number
@@ -1413,25 +1416,6 @@ function emitScrollState(container: HTMLElement): void {
   })
 }
 
-function applySavedScrollState(): void {
-  const container = conversationListRef.value
-  if (!container) return
-
-  const savedState = props.scrollState
-  if (!savedState || savedState.isAtBottom) {
-    enforceBottomState()
-    return
-  }
-
-  const maxScrollTop = Math.max(container.scrollHeight - container.clientHeight, 0)
-  const targetScrollTop =
-    typeof savedState.scrollRatio === 'number'
-      ? savedState.scrollRatio * maxScrollTop
-      : savedState.scrollTop
-  container.scrollTop = Math.min(Math.max(targetScrollTop, 0), maxScrollTop)
-  emitScrollState(container)
-}
-
 function enforceBottomState(): void {
   const container = conversationListRef.value
   if (!container) return
@@ -1442,9 +1426,7 @@ function enforceBottomState(): void {
 }
 
 function shouldLockToBottom(): boolean {
-  if (userHasScrolledAwayFromBottom) return false
-  const savedState = props.scrollState
-  return !savedState || savedState.isAtBottom === true
+  return shouldFollowConversationBottom(userHasScrolledAwayFromBottom)
 }
 
 function runBottomLockFrame(): void {
@@ -1490,21 +1472,17 @@ function bindPendingImageHandlers(): void {
   }
 }
 
-async function scheduleScrollRestore(forceBottom = false): Promise<void> {
+async function scheduleThreadOpenScroll(): Promise<void> {
   await nextTick()
   if (scrollRestoreFrame) {
     cancelAnimationFrame(scrollRestoreFrame)
   }
   scrollRestoreFrame = requestAnimationFrame(() => {
     scrollRestoreFrame = 0
-    if (forceBottom) {
-      enforceBottomState()
-    } else {
-      applySavedScrollState()
-    }
+    enforceBottomState()
     const container = conversationListRef.value
     lastScrollTop = container?.scrollTop ?? 0
-    userHasScrolledAwayFromBottom = forceBottom ? false : props.scrollState?.isAtBottom === false
+    userHasScrolledAwayFromBottom = false
     bindPendingImageHandlers()
     scheduleBottomLock()
   })
@@ -1677,16 +1655,15 @@ watch(
       showScrollToBottom.value = false
       return
     }
-    const forceBottom = shouldForceBottomOnNextLoad
-    shouldForceBottomOnNextLoad = false
-    await scheduleScrollRestore(forceBottom)
+    if (shouldForceThreadOpenToBottom(props.activeThreadId, loading)) {
+      await scheduleThreadOpenScroll()
+    }
   },
 )
 
 watch(
   () => props.activeThreadId,
   async () => {
-    shouldForceBottomOnNextLoad = Boolean(props.activeThreadId)
     modalImageUrl.value = ''
     capturedResponseSelection.value = null
     responseAnnotationEditor.value = null
@@ -1700,9 +1677,9 @@ watch(
     lastScrollTop = 0
     userHasScrolledAwayFromBottom = false
     pendingPrependAnchor = null
-    if (props.isLoading) return
-    shouldForceBottomOnNextLoad = false
-    await scheduleScrollRestore(Boolean(props.activeThreadId))
+    if (shouldForceThreadOpenToBottom(props.activeThreadId, props.isLoading)) {
+      await scheduleThreadOpenScroll()
+    }
   },
   { flush: 'post', immediate: true },
 )

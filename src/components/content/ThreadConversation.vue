@@ -431,7 +431,7 @@
           size="sm"
           class="response-selection-toolbar-button"
           data-response-selection-add
-          @pointerdown.prevent.stop
+          @pointerdown.prevent.stop="openResponseAnnotationEditor"
           @click="openResponseAnnotationEditor"
         >
           <MessageSquarePlus />
@@ -472,7 +472,7 @@
           size="sm"
           class="response-selection-dock-add"
           data-response-selection-add
-          @pointerdown.prevent.stop
+          @pointerdown.prevent.stop="openResponseAnnotationEditor"
           @click="openResponseAnnotationEditor"
         >
           Add to chat
@@ -502,6 +502,8 @@
         align="center"
         :side="useDockedResponseSelectionActions ? 'top' : 'bottom'"
         :side-offset="8"
+        :collision-padding="8"
+        :update-position-strategy="responseAnnotationPositionUpdateStrategy(useDockedResponseSelectionActions)"
       >
         <form class="response-annotation-form" @submit.prevent="addResponseAnnotationToComposer">
           <p class="response-annotation-heading">
@@ -516,35 +518,49 @@
             @keydown="onResponseAnnotationInputKeydown"
           />
           <div class="response-annotation-actions">
-            <Button
-              v-if="isResponseAnnotationDictationSupported"
-              type="button"
-              variant="ghost"
-              size="icon-sm"
-              class="response-annotation-mic"
-              :class="{
-                'is-recording': responseAnnotationDictationState === 'recording',
-                'is-transcribing': responseAnnotationDictationState === 'transcribing',
-              }"
-              :aria-label="responseAnnotationDictationButtonLabel"
-              :aria-pressed="responseAnnotationDictationState === 'recording'"
-              :title="responseAnnotationDictationButtonLabel"
-              :disabled="responseAnnotationDictationState === 'transcribing'"
-              @click="toggleResponseAnnotationDictation"
-            >
-              <span
-                v-if="responseAnnotationDictationState === 'transcribing'"
-                class="response-annotation-mic-spinner"
-                aria-hidden="true"
-              />
-              <IconTablerMicrophone v-else class="response-annotation-mic-icon" />
-            </Button>
-            <Button type="button" variant="ghost" size="sm" @click="closeResponseAnnotationEditor">
-              Cancel
-            </Button>
-            <Button type="submit" size="sm">
-              {{ editingResponseAnnotationId ? 'Save' : 'Add' }}
-            </Button>
+            <div class="response-annotation-actions-leading">
+              <Button
+                v-if="isResponseAnnotationDictationSupported"
+                type="button"
+                variant="ghost"
+                size="icon-sm"
+                class="response-annotation-mic"
+                :class="{
+                  'is-recording': responseAnnotationDictationState === 'recording',
+                  'is-transcribing': responseAnnotationDictationState === 'transcribing',
+                }"
+                :aria-label="responseAnnotationDictationButtonLabel"
+                :aria-pressed="responseAnnotationDictationState === 'recording'"
+                :title="responseAnnotationDictationButtonLabel"
+                :disabled="responseAnnotationDictationState === 'transcribing'"
+                @click="toggleResponseAnnotationDictation"
+              >
+                <span
+                  v-if="responseAnnotationDictationState === 'transcribing'"
+                  class="response-annotation-mic-spinner"
+                  aria-hidden="true"
+                />
+                <IconTablerMicrophone v-else class="response-annotation-mic-icon" />
+              </Button>
+              <Button
+                v-if="editingResponseAnnotationId"
+                type="button"
+                variant="ghost"
+                size="sm"
+                class="response-annotation-delete"
+                @click="deleteEditingResponseAnnotation"
+              >
+                Delete
+              </Button>
+            </div>
+            <div class="response-annotation-actions-trailing">
+              <Button type="button" variant="ghost" size="sm" @click="closeResponseAnnotationEditor">
+                Cancel
+              </Button>
+              <Button type="submit" size="sm">
+                {{ editingResponseAnnotationId ? 'Save' : 'Add' }}
+              </Button>
+            </div>
           </div>
         </form>
       </PopoverContent>
@@ -642,6 +658,7 @@ import {
 } from '../../utils/threadScroll'
 import {
   normalizeResponseSelectionPointerType,
+  responseAnnotationPositionUpdateStrategy,
   responseSelectionSettleDelay,
   shouldCaptureResponseSelectionAfterPointerUp,
   shouldUseDockedResponseSelectionActions,
@@ -1241,6 +1258,14 @@ function addResponseAnnotationToComposer(): void {
     ...(annotation ? { annotation } : {}),
     sourceMessageId: selection.messageId,
   })
+  closeResponseAnnotationEditor()
+  scheduleResponseAnnotationMarkerUpdate()
+}
+
+function deleteEditingResponseAnnotation(): void {
+  const annotationId = editingResponseAnnotationId.value
+  if (!annotationId) return
+  composerDraftStore.removeResponseAnnotation(props.activeThreadId, annotationId)
   closeResponseAnnotationEditor()
   scheduleResponseAnnotationMarkerUpdate()
 }
@@ -2488,13 +2513,36 @@ onBeforeUnmount(() => {
 
 :global(.response-annotation-actions) {
   display: flex;
-  justify-content: flex-end;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.375rem;
+}
+
+:global(.response-annotation-actions-leading),
+:global(.response-annotation-actions-trailing) {
+  display: flex;
   align-items: center;
   gap: 0.375rem;
 }
 
+:global(.response-annotation-actions-leading) {
+  min-width: 0;
+}
+
+:global(.response-annotation-actions-trailing) {
+  margin-left: auto;
+}
+
+:global(.response-annotation-delete) {
+  color: #dc2626 !important;
+}
+
+:global(.response-annotation-delete:hover) {
+  background: color-mix(in srgb, #ef4444 10%, transparent) !important;
+  color: #b91c1c !important;
+}
+
 :global(.response-annotation-mic) {
-  margin-right: auto;
   color: var(--text-secondary) !important;
 }
 

@@ -15,6 +15,7 @@ const moduleUrl = `data:text/javascript;base64,${Buffer.from(compiled).toString(
 const {
   TOUCH_SELECTION_SETTLE_MS,
   normalizeResponseSelectionPointerType,
+  responseAnnotationPositionUpdateStrategy,
   responseSelectionSettleDelay,
   shouldCaptureResponseSelectionAfterPointerUp,
   shouldUseDockedResponseSelectionActions,
@@ -45,4 +46,9 @@ test('normalizes browser pointer types conservatively', () => {
   assert.equal(normalizeResponseSelectionPointerType('pen'), 'pen')
   assert.equal(normalizeResponseSelectionPointerType(''), '')
   assert.equal(normalizeResponseSelectionPointerType('unknown'), '')
+})
+
+test('continuously tracks the mobile annotation editor anchor during viewport changes', () => {
+  assert.equal(responseAnnotationPositionUpdateStrategy(true), 'always')
+  assert.equal(responseAnnotationPositionUpdateStrategy(false), 'optimized')
 })

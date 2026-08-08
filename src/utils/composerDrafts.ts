@@ -85,3 +85,12 @@ export function updateComposerResponseAnnotation(
       : item,
   )
 }
+
+export function removeComposerResponseAnnotation(
+  draftsByThreadId: ComposerDraftMap,
+  threadId: string,
+  annotationId: string,
+): void {
+  const draft = ensureComposerDraft(draftsByThreadId, threadId)
+  draft.responseTextAnnotations = draft.responseTextAnnotations.filter((item) => item.id !== annotationId)
+}

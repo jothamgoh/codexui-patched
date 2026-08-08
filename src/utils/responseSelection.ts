@@ -27,3 +27,9 @@ export function responseSelectionSettleDelay(
 ): number {
   return useDockedActions ? TOUCH_SELECTION_SETTLE_MS : 0
 }
+
+export function responseAnnotationPositionUpdateStrategy(
+  useDockedActions: boolean,
+): 'always' | 'optimized' {
+  return useDockedActions ? 'always' : 'optimized'
+}

@@ -1016,7 +1016,7 @@ function addResponseAnnotation(annotation: ResponseTextAnnotation): void {
 }
 
 function removeResponseAnnotation(annotationId: string): void {
-  responseTextAnnotations.value = responseTextAnnotations.value.filter((annotation) => annotation.id !== annotationId)
+  composerDraftStore.removeResponseAnnotation(props.activeThreadId, annotationId)
 }
 
 function selectionCountLabel(count: number): string {

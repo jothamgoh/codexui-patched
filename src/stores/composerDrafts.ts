@@ -2,6 +2,7 @@ import { defineStore } from 'pinia'
 import {
   clearComposerDraft,
   ensureComposerDraft,
+  removeComposerResponseAnnotation,
   updateComposerResponseAnnotation,
   type ComposerDraftMap,
   type ComposerDraftState,
@@ -32,6 +33,10 @@ export const useComposerDraftStore = defineStore('composerDrafts', {
         annotationId,
         annotation,
       )
+    },
+
+    removeResponseAnnotation(threadId: string, annotationId: string): void {
+      removeComposerResponseAnnotation(this.draftsByThreadId, threadId, annotationId)
     },
   },
 })

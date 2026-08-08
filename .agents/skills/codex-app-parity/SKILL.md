@@ -618,8 +618,15 @@ After each feature implementation session that uses this skill:
 - Within one turn, earlier calls using the same MCP App resource are treated as superseded so the transcript emphasizes the latest useful result rather than stacking retry widgets.
 - The installed Booking.com and Trip.com resources use the legacy `text/html+skybridge` compatibility surface and read `window.openai.toolInput`, `window.openai.toolOutput`, and `window.openai.toolResponseMetadata`. Booking.com currently loads an external module, while Trip.com currently ships an inline app bundle, so a compatible host must support both forms.
 - Expected domain outcomes such as no hotel match, no availability, or a train date outside the presale window should not visually compete with a later successful rich result. Genuine integration or transport failures still need a compact failure state.
+
 - CodexUI applies a second transcript-density filter in `App.vue` before `ThreadConversation.vue`. When adding a rich rendering for a completed tool call, that outer filter must explicitly retain messages carrying the rich result; otherwise the normalizer can be correct while the renderer never receives the message.
 - The desktop MCP App host derives theme from the current document `color-scheme`, sends theme plus live container dimensions to the sandbox, and updates dimensions through a `ResizeObserver`. Trip.com's current compatibility widget also reads `document.documentElement[data-theme]`, so a legacy `window.openai` host should mirror its current theme onto the sandbox document in addition to emitting `openai:set_globals`.
+
+## Findings: Mobile Response Annotation Editor Tracking (2026-08-08)
+
+- The integrated ChatGPT/Codex selected-text annotation editor accepts an `onDelete` callback in edit mode, in addition to removal from the composer attachment surface. Web parity should make deletion available directly while editing an existing annotation.
+- A mobile web annotation editor anchored through a virtual selection reference must continuously track layout changes while the iOS keyboard resizes the visual viewport. With Reka/Floating UI, `updatePositionStrategy: 'always'` enables animation-frame anchor tracking; the default optimized strategy can leave the editor at its pre-keyboard coordinates until a window resize.
+- Snapshot the selected range on the Add action's `pointerdown`, while retaining `click` for keyboard activation. Mobile Safari can collapse the native selection before `click`, otherwise removing the action surface before the editor state is created.
 
 ## Findings: Cross-Device Turn Notifications (2026-07-28)
 

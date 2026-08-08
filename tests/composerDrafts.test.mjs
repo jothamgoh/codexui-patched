@@ -42,6 +42,7 @@ const storeSourceUrl = new URL('../src/stores/composerDrafts.ts', import.meta.ur
 const {
   clearComposerDraft,
   ensureComposerDraft,
+  removeComposerResponseAnnotation,
   updateComposerResponseAnnotation,
 } = await loadTypeScriptModule(sourceUrl)
 
@@ -124,6 +125,40 @@ test('annotation comments remain part of their thread draft', () => {
     ensureComposerDraft(drafts, 'thread-1').responseTextAnnotations[0].annotation,
     'Updated note',
   )
+})
+
+test('removing an annotation affects only the matching thread draft', () => {
+  const drafts = {}
+  ensureComposerDraft(drafts, 'thread-1').responseTextAnnotations.push(
+    { id: 'annotation-1', text: 'Remove me' },
+    { id: 'annotation-2', text: 'Keep me' },
+  )
+  ensureComposerDraft(drafts, 'thread-2').responseTextAnnotations.push(
+    { id: 'annotation-1', text: 'Same ID in another thread' },
+  )
+
+  removeComposerResponseAnnotation(drafts, 'thread-1', 'annotation-1')
+  removeComposerResponseAnnotation(drafts, 'thread-1', 'missing-annotation')
+
+  assert.deepEqual(
+    ensureComposerDraft(drafts, 'thread-1').responseTextAnnotations.map((item) => item.id),
+    ['annotation-2'],
+  )
+  assert.deepEqual(
+    ensureComposerDraft(drafts, 'thread-2').responseTextAnnotations.map((item) => item.id),
+    ['annotation-1'],
+  )
+})
+
+test('Pinia removes response annotations reactively', async () => {
+  const { useComposerDraftStore } = await loadComposerDraftStore()
+  const store = useComposerDraftStore(createPinia())
+  store.draftFor('thread-1').responseTextAnnotations.push({ id: 'annotation-1', text: 'Selected response' })
+
+  store.removeResponseAnnotation('thread-1', 'annotation-1')
+  await nextTick()
+
+  assert.equal(store.draftFor('thread-1').responseTextAnnotations.length, 0)
 })
 
 test('Pinia composer drafts stay memory-only', async () => {

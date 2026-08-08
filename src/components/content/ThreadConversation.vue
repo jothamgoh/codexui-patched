@@ -1,5 +1,5 @@
 <template>
-  <section class="conversation-root">
+  <section ref="conversationRootRef" class="conversation-root">
     <p v-if="isLoading" class="conversation-loading">Loading messages...</p>
 
     <p
@@ -229,8 +229,9 @@
                     v-else-if="message.text.length > 0 && message.role === 'assistant'"
                     class="message-markdown-content prose prose-slate prose-sm max-w-none"
                     data-response-selection-surface
+                    :data-response-message-id="message.id"
                     v-html="renderMarkdown(message.text)"
-                    @pointerdown="onResponseSelectionPointerDown"
+                    @pointerdown="onResponseSelectionPointerDown($event)"
                     @pointerup="onResponseSelectionPointerUp($event, message)"
                     @keyup="onResponseSelectionKeyUp($event, message)"
                   />
@@ -411,11 +412,14 @@
     </DialogRoot>
 
     <Popover
-      :open="capturedResponseSelection !== null && responseAnnotationEditor === null"
+      :open="capturedResponseSelection !== null && responseAnnotationEditor === null && !useDockedResponseSelectionActions"
+      @update:open="onResponseSelectionPopoverOpenChange"
     >
       <PopoverAnchor :reference="responseSelectionAnchor" />
       <PopoverContent
         class="response-selection-toolbar"
+        data-response-selection-actions
+        data-response-selection-mode="desktop"
         align="center"
         side="top"
         :side-offset="7"
@@ -426,21 +430,77 @@
           variant="ghost"
           size="sm"
           class="response-selection-toolbar-button"
-          @mousedown.prevent
+          data-response-selection-add
+          @pointerdown.prevent.stop
           @click="openResponseAnnotationEditor"
         >
           <MessageSquarePlus />
           <span>Add to chat</span>
         </Button>
+        <Button
+          type="button"
+          variant="ghost"
+          size="icon-sm"
+          class="response-selection-toolbar-dismiss"
+          data-response-selection-dismiss
+          aria-label="Cancel text selection"
+          title="Cancel"
+          @pointerdown.prevent.stop
+          @click="dismissResponseSelection"
+        >
+          <IconTablerX aria-hidden="true" />
+        </Button>
       </PopoverContent>
     </Popover>
 
-    <Popover :open="responseAnnotationEditor !== null">
+    <Transition name="response-selection-dock">
+      <div
+        v-if="capturedResponseSelection !== null && responseAnnotationEditor === null && useDockedResponseSelectionActions"
+        class="response-selection-dock"
+        data-response-selection-actions
+        data-response-selection-mode="mobile"
+        role="toolbar"
+        aria-label="Selected response text actions"
+        @pointerdown.stop
+      >
+        <span class="response-selection-dock-label">
+          <MessageSquarePlus aria-hidden="true" />
+          <span>Text selected</span>
+        </span>
+        <Button
+          type="button"
+          size="sm"
+          class="response-selection-dock-add"
+          data-response-selection-add
+          @pointerdown.prevent.stop
+          @click="openResponseAnnotationEditor"
+        >
+          Add to chat
+        </Button>
+        <Button
+          type="button"
+          variant="ghost"
+          size="icon-sm"
+          class="response-selection-dock-dismiss"
+          data-response-selection-dismiss
+          aria-label="Cancel text selection"
+          title="Cancel"
+          @pointerdown.prevent.stop
+          @click="dismissResponseSelection"
+        >
+          <IconTablerX aria-hidden="true" />
+        </Button>
+      </div>
+    </Transition>
+
+    <Popover :open="responseAnnotationEditor !== null" @update:open="onResponseAnnotationPopoverOpenChange">
       <PopoverAnchor :reference="responseAnnotationAnchor" />
       <PopoverContent
         class="response-annotation-popover"
+        :class="{ 'response-annotation-popover--compact': useDockedResponseSelectionActions }"
+        data-response-annotation-editor
         align="center"
-        side="bottom"
+        :side="useDockedResponseSelectionActions ? 'top' : 'bottom'"
         :side-offset="8"
       >
         <form class="response-annotation-form" @submit.prevent="addResponseAnnotationToComposer">
@@ -580,6 +640,13 @@ import {
   shouldFollowConversationBottom,
   shouldForceThreadOpenToBottom,
 } from '../../utils/threadScroll'
+import {
+  normalizeResponseSelectionPointerType,
+  responseSelectionSettleDelay,
+  shouldCaptureResponseSelectionAfterPointerUp,
+  shouldUseDockedResponseSelectionActions,
+} from '../../utils/responseSelection'
+import type { ResponseSelectionPointerType } from '../../utils/responseSelection'
 import IconTablerX from '../icons/IconTablerX.vue'
 import IconTablerChevronDown from '../icons/IconTablerChevronDown.vue'
 import IconTablerArrowBackUp from '../icons/IconTablerArrowBackUp.vue'
@@ -821,6 +888,7 @@ function onResolveAutomationProposal(id: string, accept: boolean): void {
   emit('resolve-automation-proposal', id, accept)
 }
 
+const conversationRootRef = ref<HTMLElement | null>(null)
 const conversationListRef = ref<HTMLElement | null>(null)
 const bottomAnchorRef = ref<HTMLElement | null>(null)
 const modalImageUrl = ref('')
@@ -833,6 +901,8 @@ const responseAnnotationDraft = ref('')
 const editingResponseAnnotationId = ref<string | null>(null)
 const hoveredResponseAnnotationId = ref<string | null>(null)
 const forkDialogMessage = ref<UiMessage | null>(null)
+const hasCoarsePointer = ref(false)
+const responseSelectionPointerType = ref<ResponseSelectionPointerType>('')
 const responseAnnotationMarkers = ref<ResponseAnnotationMarker[]>([])
 const responseAnnotationAnchors = new Map<string, CapturedResponseSelection>()
 const composerDraftStore = useComposerDraftStore()
@@ -869,6 +939,12 @@ const responseAnnotationMarkerPreview = computed(() => {
   const marker = responseAnnotationMarkers.value.find((item) => item.id === hoveredResponseAnnotationId.value)
   return marker?.annotation.annotation?.trim() ? marker : null
 })
+const useDockedResponseSelectionActions = computed(() =>
+  shouldUseDockedResponseSelectionActions(
+    hasCoarsePointer.value,
+    responseSelectionPointerType.value,
+  ),
+)
 const visibleMessages = computed(() => {
   const supersededAppMessageIds = new Set<string>()
   const latestAppMessageByTurnAndResource = new Map<string, string>()
@@ -914,7 +990,12 @@ function automationProposalsAfterMessage(message: UiMessage): AutomationProposal
   return automationProposalsByAnchorMessageId.value.get(message.id) ?? []
 }
 const responseSelectionAnchor = computed(() => createSelectionAnchor(capturedResponseSelection.value))
-const responseAnnotationAnchor = computed(() => createSelectionAnchor(responseAnnotationEditor.value))
+const responseAnnotationAnchor = computed(() => {
+  if (useDockedResponseSelectionActions.value) {
+    return createDockedResponseSelectionAnchor() ?? createSelectionAnchor(responseAnnotationEditor.value)
+  }
+  return createSelectionAnchor(responseAnnotationEditor.value)
+})
 const BOTTOM_THRESHOLD_PX = 16
 const BOTTOM_RESET_THRESHOLD_PX = 20
 const SCROLL_DIRECTION_THRESHOLD_PX = 2
@@ -923,9 +1004,14 @@ const EARLIER_MESSAGES_THRESHOLD_PX = 180
 let scrollRestoreFrame = 0
 let bottomLockFrame = 0
 let responseAnnotationMarkerFrame = 0
+let responseSelectionFrame = 0
+let responseSelectionSettleTimer = 0
 let bottomLockFramesLeft = 0
 let lastScrollTop = 0
 let userHasScrolledAwayFromBottom = false
+let responseSelectionPointerIsDown = false
+let responseSelectionChangedWhilePointerDown = false
+let coarsePointerMediaQuery: MediaQueryList | null = null
 let pendingPrependAnchor: {
   threadId: string
   scrollHeight: number
@@ -944,6 +1030,22 @@ function createSelectionAnchor(selection: CapturedResponseSelection | null): { g
         // The saved rectangle remains a stable fallback if the message rerenders.
       }
       return selection.rect
+    },
+  }
+}
+
+function createDockedResponseSelectionAnchor(): { getBoundingClientRect: () => DOMRect } | undefined {
+  const root = conversationRootRef.value
+  if (!root) return undefined
+  return {
+    getBoundingClientRect: () => {
+      const rect = root.getBoundingClientRect()
+      return DOMRect.fromRect({
+        x: rect.left + rect.width / 2,
+        y: rect.bottom - 8,
+        width: 0,
+        height: 0,
+      })
     },
   }
 }
@@ -973,42 +1075,127 @@ function readResponseSelection(surface: HTMLElement, message: UiMessage): Captur
   }
 }
 
-function updateResponseSelection(surface: HTMLElement, message: UiMessage): void {
-  const nextSelection = readResponseSelection(surface, message)
-  capturedResponseSelection.value = nextSelection
-  if (!nextSelection) {
-    responseAnnotationEditor.value = null
-    responseAnnotationDraft.value = ''
+function cancelScheduledResponseSelectionUpdate(): void {
+  if (responseSelectionSettleTimer) {
+    window.clearTimeout(responseSelectionSettleTimer)
+    responseSelectionSettleTimer = 0
+  }
+  if (responseSelectionFrame) {
+    cancelAnimationFrame(responseSelectionFrame)
+    responseSelectionFrame = 0
   }
 }
 
-function onResponseSelectionPointerDown(): void {
-  if (responseAnnotationEditor.value) return
+function scheduleResponseSelectionUpdate(callback: () => void, delayMs = 0): void {
+  cancelScheduledResponseSelectionUpdate()
+  const scheduleFrame = () => {
+    responseSelectionSettleTimer = 0
+    responseSelectionFrame = requestAnimationFrame(() => {
+      responseSelectionFrame = 0
+      if (!responseAnnotationEditor.value) callback()
+    })
+  }
+  if (delayMs > 0) {
+    responseSelectionSettleTimer = window.setTimeout(scheduleFrame, delayMs)
+    return
+  }
+  scheduleFrame()
+}
+
+function clearCapturedResponseSelection(): void {
+  cancelScheduledResponseSelectionUpdate()
   capturedResponseSelection.value = null
+}
+
+function responseSelectionSurfaceForRange(range: Range): HTMLElement | null {
+  const startElement = range.startContainer instanceof Element
+    ? range.startContainer
+    : range.startContainer.parentElement
+  const surface = startElement?.closest<HTMLElement>('[data-response-selection-surface]') ?? null
+  if (!surface || !surface.contains(range.endContainer)) return null
+  return surface
+}
+
+function updateResponseSelectionFromDocument(): void {
+  const selection = document.getSelection()
+  if (!selection || selection.isCollapsed || selection.rangeCount === 0) {
+    capturedResponseSelection.value = null
+    return
+  }
+  const range = selection.getRangeAt(0)
+  const surface = responseSelectionSurfaceForRange(range)
+  const messageId = surface?.dataset.responseMessageId
+  const message = messageId
+    ? visibleMessages.value.find((item) => item.id === messageId)
+    : undefined
+  capturedResponseSelection.value = surface && message
+    ? readResponseSelection(surface, message)
+    : null
+}
+
+function updateResponseSelection(surface: HTMLElement, message: UiMessage): void {
+  if (responseAnnotationEditor.value) return
+  capturedResponseSelection.value = readResponseSelection(surface, message)
+}
+
+function onResponseSelectionPointerDown(event: PointerEvent): void {
+  responseSelectionPointerType.value = normalizeResponseSelectionPointerType(event.pointerType)
+  responseSelectionPointerIsDown = true
+  responseSelectionChangedWhilePointerDown = false
+  clearCapturedResponseSelection()
 }
 
 function onResponseSelectionPointerUp(event: PointerEvent, message: UiMessage): void {
   const surface = event.currentTarget
   if (!(surface instanceof HTMLElement)) return
-  requestAnimationFrame(() => updateResponseSelection(surface, message))
+  responseSelectionPointerType.value = normalizeResponseSelectionPointerType(event.pointerType)
+  const selectionChanged = responseSelectionChangedWhilePointerDown
+  responseSelectionPointerIsDown = false
+  responseSelectionChangedWhilePointerDown = false
+  if (!shouldCaptureResponseSelectionAfterPointerUp(selectionChanged)) return
+  scheduleResponseSelectionUpdate(
+    () => updateResponseSelection(surface, message),
+    responseSelectionSettleDelay(useDockedResponseSelectionActions.value),
+  )
 }
 
 function onResponseSelectionKeyUp(event: KeyboardEvent, message: UiMessage): void {
   const surface = event.currentTarget
   if (!(surface instanceof HTMLElement)) return
-  requestAnimationFrame(() => updateResponseSelection(surface, message))
+  responseSelectionPointerType.value = ''
+  scheduleResponseSelectionUpdate(() => updateResponseSelection(surface, message))
 }
 
 function preventPopoverAutoFocus(event: Event): void {
   event.preventDefault()
 }
 
+function dismissResponseSelection(): void {
+  responseSelectionPointerIsDown = false
+  responseSelectionChangedWhilePointerDown = false
+  clearCapturedResponseSelection()
+  window.getSelection()?.removeAllRanges()
+}
+
+function onResponseSelectionPopoverOpenChange(open: boolean): void {
+  if (!open && capturedResponseSelection.value && !responseAnnotationEditor.value) {
+    dismissResponseSelection()
+  }
+}
+
 function openResponseAnnotationEditor(): void {
   const selection = capturedResponseSelection.value
   if (!selection) return
-  responseAnnotationEditor.value = selection
+  cancelScheduledResponseSelectionUpdate()
+  responseAnnotationEditor.value = {
+    ...selection,
+    range: selection.range.cloneRange(),
+    rect: DOMRect.fromRect(selection.rect),
+  }
   editingResponseAnnotationId.value = null
   responseAnnotationDraft.value = ''
+  capturedResponseSelection.value = null
+  window.getSelection()?.removeAllRanges()
 }
 
 function closeResponseAnnotationEditor(): void {
@@ -1016,8 +1203,11 @@ function closeResponseAnnotationEditor(): void {
   responseAnnotationEditor.value = null
   editingResponseAnnotationId.value = null
   responseAnnotationDraft.value = ''
-  capturedResponseSelection.value = null
-  window.getSelection()?.removeAllRanges()
+  dismissResponseSelection()
+}
+
+function onResponseAnnotationPopoverOpenChange(open: boolean): void {
+  if (!open && responseAnnotationEditor.value) closeResponseAnnotationEditor()
 }
 
 function createResponseAnnotationId(): string {
@@ -1059,6 +1249,7 @@ function openResponseAnnotationMarker(annotationId: string): void {
   const anchor = responseAnnotationAnchors.get(annotationId)
   const annotation = responseTextAnnotations.value.find((item) => item.id === annotationId)
   if (!anchor || !annotation) return
+  cancelScheduledResponseSelectionUpdate()
   editingResponseAnnotationId.value = annotationId
   hoveredResponseAnnotationId.value = null
   capturedResponseSelection.value = null
@@ -1154,13 +1345,62 @@ function toggleResponseAnnotationDictation(): void {
 function onDocumentPointerDown(event: PointerEvent): void {
   const target = event.target
   if (!(target instanceof Element)) return
-  if (target.closest('.response-selection-toolbar, .response-annotation-popover, .response-annotation-marker')) return
-  if (target.closest('[data-response-selection-surface]')) return
+  if (target.closest('[data-response-selection-actions], [data-response-annotation-editor], .response-annotation-marker')) return
   if (responseAnnotationEditor.value) {
     closeResponseAnnotationEditor()
     return
   }
-  capturedResponseSelection.value = null
+  if (capturedResponseSelection.value) dismissResponseSelection()
+}
+
+function onDocumentPointerUp(): void {
+  if (!responseSelectionPointerIsDown) return
+  const selectionChanged = responseSelectionChangedWhilePointerDown
+  responseSelectionPointerIsDown = false
+  responseSelectionChangedWhilePointerDown = false
+  if (!shouldCaptureResponseSelectionAfterPointerUp(selectionChanged)) return
+  scheduleResponseSelectionUpdate(
+    updateResponseSelectionFromDocument,
+    responseSelectionSettleDelay(useDockedResponseSelectionActions.value),
+  )
+}
+
+function onDocumentPointerCancel(): void {
+  responseSelectionPointerIsDown = false
+  responseSelectionChangedWhilePointerDown = false
+  scheduleResponseSelectionUpdate(
+    updateResponseSelectionFromDocument,
+    responseSelectionSettleDelay(useDockedResponseSelectionActions.value),
+  )
+}
+
+function onDocumentSelectionChange(): void {
+  if (responseAnnotationEditor.value) return
+  const selection = document.getSelection()
+  if (!selection || selection.isCollapsed || selection.rangeCount === 0) {
+    clearCapturedResponseSelection()
+    return
+  }
+  if (responseSelectionPointerIsDown) {
+    responseSelectionChangedWhilePointerDown = true
+    return
+  }
+  scheduleResponseSelectionUpdate(
+    updateResponseSelectionFromDocument,
+    responseSelectionSettleDelay(useDockedResponseSelectionActions.value),
+  )
+}
+
+function onDocumentKeyDown(event: KeyboardEvent): void {
+  if (event.key !== 'Escape' || (!capturedResponseSelection.value && !responseAnnotationEditor.value)) return
+  event.preventDefault()
+  event.stopPropagation()
+  if (responseAnnotationEditor.value) closeResponseAnnotationEditor()
+  else dismissResponseSelection()
+}
+
+function syncCoarsePointerPreference(event?: MediaQueryListEvent): void {
+  hasCoarsePointer.value = event?.matches ?? coarsePointerMediaQuery?.matches ?? false
 }
 
 type ParsedToolQuestion = {
@@ -1671,10 +1911,11 @@ watch(
   () => props.activeThreadId,
   async () => {
     modalImageUrl.value = ''
-    capturedResponseSelection.value = null
+    cancelResponseAnnotationRecording()
     responseAnnotationEditor.value = null
     editingResponseAnnotationId.value = null
     responseAnnotationDraft.value = ''
+    dismissResponseSelection()
     hoveredResponseAnnotationId.value = null
     responseAnnotationAnchors.clear()
     responseAnnotationMarkers.value = []
@@ -1723,13 +1964,28 @@ function closeImageModal(): void {
 }
 
 onMounted(() => {
-  document.addEventListener('pointerdown', onDocumentPointerDown)
+  coarsePointerMediaQuery = window.matchMedia('(pointer: coarse)')
+  syncCoarsePointerPreference()
+  coarsePointerMediaQuery.addEventListener('change', syncCoarsePointerPreference)
+  document.addEventListener('pointerdown', onDocumentPointerDown, true)
+  document.addEventListener('pointerup', onDocumentPointerUp)
+  document.addEventListener('pointercancel', onDocumentPointerCancel)
+  document.addEventListener('selectionchange', onDocumentSelectionChange)
+  document.addEventListener('keydown', onDocumentKeyDown, true)
   window.addEventListener('resize', scheduleResponseAnnotationMarkerUpdate)
 })
 
 onBeforeUnmount(() => {
-  document.removeEventListener('pointerdown', onDocumentPointerDown)
+  coarsePointerMediaQuery?.removeEventListener('change', syncCoarsePointerPreference)
+  coarsePointerMediaQuery = null
+  document.removeEventListener('pointerdown', onDocumentPointerDown, true)
+  document.removeEventListener('pointerup', onDocumentPointerUp)
+  document.removeEventListener('pointercancel', onDocumentPointerCancel)
+  document.removeEventListener('selectionchange', onDocumentSelectionChange)
+  document.removeEventListener('keydown', onDocumentKeyDown, true)
   window.removeEventListener('resize', scheduleResponseAnnotationMarkerUpdate)
+  cancelResponseAnnotationRecording()
+  cancelScheduledResponseSelectionUpdate()
   if (scrollRestoreFrame) {
     cancelAnimationFrame(scrollRestoreFrame)
   }
@@ -2070,6 +2326,9 @@ onBeforeUnmount(() => {
 }
 
 :global(.response-selection-toolbar) {
+  display: flex !important;
+  flex-direction: row !important;
+  align-items: center !important;
   width: auto !important;
   min-width: 0 !important;
   gap: 0 !important;
@@ -2088,6 +2347,83 @@ onBeforeUnmount(() => {
   color: var(--text-primary) !important;
 }
 
+:global(.response-selection-toolbar-dismiss) {
+  width: 1.875rem !important;
+  height: 1.875rem !important;
+  margin-left: 0.125rem;
+  color: var(--text-secondary) !important;
+}
+
+:global(.response-selection-toolbar-dismiss:hover) {
+  color: var(--text-primary) !important;
+}
+
+.response-selection-dock {
+  position: absolute;
+  z-index: 35;
+  left: 50%;
+  bottom: 0.625rem;
+  display: flex;
+  align-items: center;
+  width: calc(100% - 1rem);
+  max-width: 26rem;
+  min-height: 3.25rem;
+  gap: 0.375rem;
+  padding: 0.25rem;
+  border: 1px solid var(--border-soft);
+  border-radius: 0.875rem;
+  background: color-mix(in srgb, var(--surface-elevated) 95%, transparent);
+  color: var(--text-primary);
+  box-shadow: 0 16px 38px rgba(15, 23, 42, 0.2);
+  backdrop-filter: blur(12px);
+  transform: translateX(-50%);
+}
+
+.response-selection-dock-label {
+  display: flex;
+  min-width: 0;
+  flex: 1;
+  align-items: center;
+  gap: 0.375rem;
+  padding-left: 0.625rem;
+  color: var(--text-secondary);
+  font-size: 0.8125rem;
+  font-weight: 500;
+  white-space: nowrap;
+}
+
+.response-selection-dock-label svg {
+  width: 1rem;
+  height: 1rem;
+  flex: none;
+}
+
+.response-selection-dock-add,
+.response-selection-dock-dismiss {
+  min-height: 2.75rem !important;
+  touch-action: manipulation;
+}
+
+.response-selection-dock-add {
+  padding-inline: 0.875rem !important;
+}
+
+.response-selection-dock-dismiss {
+  width: 2.75rem !important;
+  color: var(--text-secondary) !important;
+}
+
+.response-selection-dock-enter-active,
+.response-selection-dock-leave-active {
+  transition: opacity 140ms ease, transform 140ms ease;
+}
+
+.response-selection-dock-enter-from,
+.response-selection-dock-leave-to {
+  opacity: 0;
+  transform: translate(-50%, 0.375rem);
+}
+
 :global(.response-annotation-popover) {
   width: min(22rem, calc(100vw - 1rem)) !important;
   padding: 0.75rem !important;
@@ -2095,6 +2431,26 @@ onBeforeUnmount(() => {
   background: var(--surface-elevated) !important;
   color: var(--text-primary) !important;
   box-shadow: 0 16px 38px rgba(15, 23, 42, 0.2) !important;
+}
+
+:global(.response-annotation-popover--compact) {
+  width: min(26rem, calc(100vw - 1rem)) !important;
+  max-height: calc(100dvh - 1rem) !important;
+  padding: 0.75rem !important;
+}
+
+:global(.response-annotation-popover--compact .response-annotation-input) {
+  min-height: 4.5rem !important;
+  font-size: 1rem !important;
+  resize: none;
+}
+
+:global(.response-annotation-popover--compact .response-annotation-actions button) {
+  min-height: 2.75rem;
+}
+
+:global(.response-annotation-popover--compact .response-annotation-mic) {
+  width: 2.75rem;
 }
 
 :global(.response-annotation-form) {

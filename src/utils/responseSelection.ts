@@ -1,0 +1,29 @@
+export type ResponseSelectionPointerType = '' | 'mouse' | 'pen' | 'touch'
+
+export const TOUCH_SELECTION_SETTLE_MS = 140
+
+export function normalizeResponseSelectionPointerType(pointerType: string): ResponseSelectionPointerType {
+  if (pointerType === 'touch' || pointerType === 'pen' || pointerType === 'mouse') return pointerType
+  return ''
+}
+
+export function shouldUseDockedResponseSelectionActions(
+  hasCoarsePointer: boolean,
+  pointerType: ResponseSelectionPointerType,
+): boolean {
+  return hasCoarsePointer || pointerType === 'touch' || pointerType === 'pen'
+}
+
+export function shouldCaptureResponseSelectionAfterPointerUp(
+  selectionChangedWhilePointerDown: boolean,
+): boolean {
+  // A plain tap on an existing browser selection must dismiss the action UI.
+  // Re-capture only when the browser reports that the range actually changed.
+  return selectionChangedWhilePointerDown
+}
+
+export function responseSelectionSettleDelay(
+  useDockedActions: boolean,
+): number {
+  return useDockedActions ? TOUCH_SELECTION_SETTLE_MS : 0
+}

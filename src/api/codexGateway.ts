@@ -31,6 +31,10 @@ import {
   type CodexThreadAudience,
 } from '../utils/codexThreadSource'
 import type {
+  GitWorkspaceReview,
+  GitWorkspaceReviewSource,
+  GitWorkspaceStatus,
+  GitWorkspaceSwitchResult,
   ReasoningEffort,
   ResponseTextAnnotation,
   ThreadGoalStatus,
@@ -286,6 +290,37 @@ export async function applyReviewChanges(
     '/codex-api/review-changes/apply',
     { threadId, turnId, reverse, scope },
     reverse ? 'review-changes/undo' : 'review-changes/reapply',
+  )
+}
+
+export async function getGitWorkspaceStatus(threadId: string): Promise<GitWorkspaceStatus> {
+  return await callBridgeEndpoint<GitWorkspaceStatus>(
+    '/codex-api/git-workspace/status',
+    { threadId },
+    'git-workspace/status',
+  )
+}
+
+export async function getGitWorkspaceReview(
+  threadId: string,
+  source: GitWorkspaceReviewSource,
+  baseBranch?: string,
+): Promise<GitWorkspaceReview> {
+  return await callBridgeEndpoint<GitWorkspaceReview>(
+    '/codex-api/git-workspace/review',
+    { threadId, source, ...(baseBranch ? { baseBranch } : {}) },
+    'git-workspace/review',
+  )
+}
+
+export async function switchGitWorkspaceBranch(
+  threadId: string,
+  branch: string,
+): Promise<GitWorkspaceSwitchResult> {
+  return await callBridgeEndpoint<GitWorkspaceSwitchResult>(
+    '/codex-api/git-workspace/switch-branch',
+    { threadId, branch },
+    'git-workspace/switch-branch',
   )
 }
 

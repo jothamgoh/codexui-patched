@@ -28,6 +28,11 @@ export class ReviewMutationGate {
   }
 
   reserveReview(): () => void {
+    if (this.reviewReservations > 0) {
+      throw new ReviewMutationConflictError(
+        'Wait for the current repository change to finish before starting another.',
+      )
+    }
     if (this.turnStartsInFlight > 0 || this.activeTurnIds.size > 0) {
       throw new ReviewMutationConflictError(
         'Wait for all active Codex turns to finish before changing earlier edits.',

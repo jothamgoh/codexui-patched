@@ -189,6 +189,73 @@ export type ReviewChangesData = {
   actionUnavailableReason?: string
 }
 
+export type GitWorkspaceReviewSource = 'uncommitted' | 'unstaged' | 'staged' | 'branch'
+
+export type GitWorkspaceBranch = {
+  name: string
+  ref: string
+  current: boolean
+  upstream?: string
+}
+
+export type GitWorkspaceBaseBranch = {
+  name: string
+  ref: string
+  remote: boolean
+}
+
+export type GitWorkspaceCounts = {
+  total: number
+  staged: number
+  unstaged: number
+  untracked: number
+  conflicted: number
+}
+
+export type GitWorkspaceStatus = {
+  cwd: string
+  root: string
+  currentBranch: string | null
+  detachedHead: string | null
+  branches: GitWorkspaceBranch[]
+  baseBranches: GitWorkspaceBaseBranch[]
+  defaultBaseBranch: string | null
+  branchesTruncated: boolean
+  counts: GitWorkspaceCounts
+  countsTruncated: boolean
+  isDirty: boolean
+}
+
+export type GitWorkspaceReview = {
+  source: GitWorkspaceReviewSource
+  baseBranch?: GitWorkspaceBaseBranch
+  changes: ReviewChangesData | null
+  omittedUntrackedFiles: number
+  untrackedFilesTruncated: boolean
+}
+
+export type GitWorkspaceSwitchErrorCode =
+  | 'branch_not_found'
+  | 'local_changes'
+  | 'conflicts'
+  | 'branch_in_use'
+  | 'repository_operation_in_progress'
+  | 'checkout_filters'
+  | 'checkout_interrupted'
+  | 'git_error'
+
+export type GitWorkspaceSwitchResult = {
+  status: 'success' | 'blocked' | 'failed'
+  branch: string
+  previousBranch: string | null
+  currentBranch: string | null
+  error?: string
+  details?: {
+    code: GitWorkspaceSwitchErrorCode
+    paths?: string[]
+  }
+}
+
 export type UiMessage = {
   id: string
   role: 'user' | 'assistant' | 'system'

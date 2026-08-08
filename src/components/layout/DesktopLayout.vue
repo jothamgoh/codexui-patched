@@ -85,6 +85,7 @@ function isEditableTarget(target: Element | null): boolean {
 function commitViewportMetrics(height: number): void {
   if (height > 0) {
     viewportHeightPx.value = height
+    document.documentElement.style.setProperty('--visual-viewport-height', `${height}px`)
   }
   const active = document.activeElement
   keyboardOpen.value =
@@ -152,6 +153,7 @@ onUnmounted(() => {
     window.cancelAnimationFrame(viewportHeightRafId)
     viewportHeightRafId = 0
   }
+  document.documentElement.style.removeProperty('--visual-viewport-height')
 })
 
 const layoutStyle = computed(() => {

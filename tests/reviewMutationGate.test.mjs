@@ -32,6 +32,16 @@ test('a Review reservation blocks interactive and automation turn starts', () =>
   releaseTurnStart()
 })
 
+test('Review and branch mutations are globally exclusive', () => {
+  const gate = new ReviewMutationGate()
+  const releaseFirst = gate.reserveReview()
+  assert.throws(() => gate.reserveReview(), ReviewMutationConflictError)
+  releaseFirst()
+
+  const releaseSecond = gate.reserveReview()
+  releaseSecond()
+})
+
 test('an in-flight or active turn blocks Review until completion', () => {
   const gate = new ReviewMutationGate()
   const releaseTurnStart = gate.reserveTurnStart()

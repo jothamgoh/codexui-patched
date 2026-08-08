@@ -124,7 +124,7 @@
     </template>
 
     <template #content>
-      <section class="content-root">
+      <section class="content-root" :class="{ 'has-workspace-review': workspaceReviewOpen }">
         <ContentHeader :title="contentTitle">
           <template #leading>
             <SidebarThreadControls
@@ -143,6 +143,14 @@
             </span>
           </template>
           <template #actions>
+            <WorkspaceSummaryButton
+              v-if="showWorkspaceSummary"
+              :thread-id="selectedThreadId"
+              :cwd="selectedThread?.cwd ?? ''"
+              :thread-in-progress="isSelectedThreadInProgress"
+              :last-turn-changes="latestTurnReviewChanges"
+              @review-open-change="workspaceReviewOpen = $event"
+            />
             <NotificationSettingsButton
               ref="notificationSettingsRef"
               :threads="notificationThreads"
@@ -292,6 +300,7 @@ import ChatSearchDialog from './components/content/ChatSearchDialog.vue'
 import RateLimitsSummary from './components/content/RateLimitsSummary.vue'
 import ThemeToggleButton from './components/content/ThemeToggleButton.vue'
 import NotificationSettingsButton from './components/content/NotificationSettingsButton.vue'
+import WorkspaceSummaryButton from './components/content/WorkspaceSummaryButton.vue'
 import SidebarThreadControls from './components/sidebar/SidebarThreadControls.vue'
 import IconTablerChevronDown from './components/icons/IconTablerChevronDown.vue'
 import IconTablerFilePencil from './components/icons/IconTablerFilePencil.vue'
@@ -526,6 +535,33 @@ const filteredMessages = computed(() => {
     shouldShowConversationMessage(message),
   )
 })
+const latestTurnReviewChanges = computed(() => {
+  const latestTurnIndex = messages.value.reduce((latest, message) => {
+    return typeof message.turnIndex === 'number' && Number.isFinite(message.turnIndex)
+      ? Math.max(latest, message.turnIndex)
+      : latest
+  }, -1)
+  if (latestTurnIndex < 0) return null
+  return messages.value.find((message) => (
+    message.turnIndex === latestTurnIndex && message.reviewChanges
+  ))?.reviewChanges ?? null
+})
+const workspaceReviewOpen = ref(false)
+const showWorkspaceSummary = computed(() => Boolean(
+  !isHomeRoute.value
+  && !isScheduledRoute.value
+  && !isSkillsRoute.value
+  && !isMcpRoute.value
+  && !isPluginsRoute.value
+  && selectedThreadId.value
+  && selectedThread.value?.cwd?.trim(),
+))
+watch(
+  () => [selectedThreadId.value, showWorkspaceSummary.value] as const,
+  ([threadId, showSummary], [previousThreadId]) => {
+    if (!showSummary || threadId !== previousThreadId) workspaceReviewOpen.value = false
+  },
+)
 const liveOverlay = computed(() => selectedLiveOverlay.value)
 const composerTurnActivityLabel = computed(() => liveOverlay.value?.activityLabel ?? 'Thinking')
 const composerThreadContextId = computed(() => (isHomeRoute.value ? '__new-thread__' : selectedThreadId.value))
@@ -1308,6 +1344,12 @@ async function submitFirstMessageForNewThread(
 .content-root {
   @apply h-full min-h-0 w-full flex flex-col overflow-y-hidden overflow-x-visible bg-white;
   overscroll-behavior: none;
+}
+
+@media (min-width: 1280px) and (pointer: fine) {
+  .content-root.has-workspace-review {
+    padding-right: min(64rem, max(34rem, 46vw));
+  }
 }
 
 .sidebar-thread-controls-host {

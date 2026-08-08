@@ -491,6 +491,284 @@ function parseFilePatch(
   }
 }
 
+type GitPathToken = {
+  value: string
+  end: number
+}
+
+function readGitPathToken(value: string, start = 0): GitPathToken | null {
+  let index = start
+  while (value[index] === ' ') index += 1
+  if (value[index] !== '"') {
+    const end = value.indexOf('\t', index)
+    return {
+      value: value.slice(index, end < 0 ? value.length : end),
+      end: end < 0 ? value.length : end,
+    }
+  }
+
+  index += 1
+  let decoded = ''
+  let escapedBytes: number[] = []
+  const flushEscapedBytes = (): void => {
+    if (escapedBytes.length === 0) return
+    decoded += new TextDecoder().decode(Uint8Array.from(escapedBytes))
+    escapedBytes = []
+  }
+  while (index < value.length) {
+    const character = value[index]
+    if (character === '"') {
+      flushEscapedBytes()
+      return { value: decoded, end: index + 1 }
+    }
+    if (character !== '\\') {
+      flushEscapedBytes()
+      decoded += character
+      index += 1
+      continue
+    }
+
+    const escaped = value[index + 1]
+    const octal = value.slice(index + 1, index + 4)
+    if (/^[0-7]{3}$/u.test(octal)) {
+      escapedBytes.push(Number.parseInt(octal, 8))
+      index += 4
+      continue
+    }
+    flushEscapedBytes()
+    const simpleEscapes: Record<string, string> = {
+      '"': '"',
+      '\\': '\\',
+      a: '\u0007',
+      b: '\b',
+      f: '\f',
+      n: '\n',
+      r: '\r',
+      t: '\t',
+      v: '\u000b',
+    }
+    if (!escaped || simpleEscapes[escaped] === undefined) return null
+    decoded += simpleEscapes[escaped]
+    index += 2
+  }
+  return null
+}
+
+function normalizeUnifiedPath(value: string, stripPrefix = true): string | null {
+  if (value === '/dev/null') return null
+  const path = stripPrefix && (value.startsWith('a/') || value.startsWith('b/'))
+    ? value.slice(2)
+    : value
+  if (!path || path.startsWith('/') || path.includes('\0')) return null
+  const segments = path.split('/')
+  if (segments.some((segment) => !segment || segment === '.' || segment === '..')) return null
+  return path
+}
+
+function readUnifiedHeaderPath(value: string, stripPrefix = true): string | null {
+  const token = readGitPathToken(value)
+  return token ? normalizeUnifiedPath(token.value, stripPrefix) : null
+}
+
+function readDiffGitPaths(line: string): { oldPath: string; newPath: string } | null {
+  const raw = line.slice('diff --git '.length)
+  if (raw.startsWith('"')) {
+    const oldToken = readGitPathToken(raw)
+    if (!oldToken) return null
+    const newToken = readGitPathToken(raw, oldToken.end)
+    if (!newToken) return null
+    const oldPath = normalizeUnifiedPath(oldToken.value)
+    const newPath = normalizeUnifiedPath(newToken.value)
+    return oldPath && newPath ? { oldPath, newPath } : null
+  }
+
+  const candidates: Array<{ oldPath: string; newPath: string }> = []
+  let separatorIndex = raw.indexOf(' b/')
+  while (separatorIndex >= 0) {
+    const oldPath = readUnifiedHeaderPath(raw.slice(0, separatorIndex))
+    const newPath = readUnifiedHeaderPath(raw.slice(separatorIndex + 1))
+    if (oldPath && newPath) candidates.push({ oldPath, newPath })
+    separatorIndex = raw.indexOf(' b/', separatorIndex + 1)
+  }
+  return candidates.find((candidate) => candidate.oldPath === candidate.newPath)
+    ?? candidates[0]
+    ?? null
+}
+
+type UnifiedFilePatch = {
+  change: ReviewPatchChange
+  patch: string
+}
+
+function parseUnifiedFilePatch(patch: string): UnifiedFilePatch | null {
+  let oldPath: string | null = null
+  let newPath: string | null = null
+  let renameFrom: string | null = null
+  let renameTo: string | null = null
+  let isAddition = false
+  let isDeletion = false
+  let inHunk = false
+
+  for (const [, line] of iteratePatchLines(patch)) {
+    if (line.startsWith('diff --git ')) {
+      const paths = readDiffGitPaths(line)
+      if (paths) {
+        oldPath = paths.oldPath
+        newPath = paths.newPath
+      }
+      continue
+    }
+    if (line.startsWith('@@ ')) {
+      inHunk = true
+      continue
+    }
+    if (inHunk) continue
+    if (line.startsWith('new file mode ')) {
+      isAddition = true
+      continue
+    }
+    if (line.startsWith('deleted file mode ')) {
+      isDeletion = true
+      continue
+    }
+    if (line.startsWith('--- ')) {
+      const rawPath = line.slice(4)
+      if (rawPath.startsWith('/dev/null')) isAddition = true
+      else oldPath = readUnifiedHeaderPath(rawPath)
+      continue
+    }
+    if (line.startsWith('+++ ')) {
+      const rawPath = line.slice(4)
+      if (rawPath.startsWith('/dev/null')) isDeletion = true
+      else newPath = readUnifiedHeaderPath(rawPath)
+      continue
+    }
+    if (line.startsWith('rename from ')) {
+      renameFrom = readUnifiedHeaderPath(line.slice('rename from '.length), false)
+      continue
+    }
+    if (line.startsWith('rename to ')) {
+      renameTo = readUnifiedHeaderPath(line.slice('rename to '.length), false)
+      continue
+    }
+  }
+
+  if (renameFrom) oldPath = renameFrom
+  if (renameTo) newPath = renameTo
+  if (isAddition && isDeletion) return null
+  if (isAddition) {
+    return newPath ? { change: { path: newPath, kind: 'add', diff: patch }, patch } : null
+  }
+  if (isDeletion) {
+    return oldPath ? { change: { path: oldPath, kind: 'delete', diff: patch }, patch } : null
+  }
+  if (!oldPath || !newPath) return null
+  return {
+    change: {
+      path: oldPath,
+      kind: 'update',
+      ...(newPath !== oldPath ? { movePath: newPath } : {}),
+      diff: patch,
+    },
+    patch,
+  }
+}
+
+function splitUnifiedPatch(value: string): string[] {
+  const starts: number[] = []
+  const pattern = /^diff --git /gmu
+  let match: RegExpExecArray | null
+  while ((match = pattern.exec(value)) !== null) starts.push(match.index)
+  if (starts.length === 0) {
+    return /^---\s/mu.test(value) && /^\+\+\+\s/mu.test(value) ? [value] : []
+  }
+  return starts.map((start, index) => value.slice(start, starts[index + 1] ?? value.length))
+}
+
+export function buildReviewChangesFromUnifiedPatch(
+  value: string,
+  options: {
+    id?: string
+    cwd?: string
+    actionUnavailableReason?: string
+  } = {},
+): ReviewChangesData | null {
+  if (typeof value !== 'string' || !value.trim()) return null
+  const byteLength = utf8ByteLength(value)
+  if (byteLength > MAX_REVIEW_TOTAL_PATCH_BYTES) {
+    throw new ReviewDiffDataError('The Git comparison is too large to review safely.')
+  }
+
+  const parsedFiles = splitUnifiedPatch(value)
+    .map((patch) => parseUnifiedFilePatch(patch))
+    .filter((file): file is UnifiedFilePatch => file !== null)
+  if (parsedFiles.length === 0) return null
+
+  const batchId = options.id || 'git-workspace-review'
+  const files: ReviewDiffFile[] = []
+  const fileByPath = new Map<string, ReviewDiffFile>()
+  const allPaths = new Set<string>()
+  let additions = 0
+  let deletions = 0
+  let remainingRenderedLines = MAX_REVIEW_LINES_PER_TURN
+  let remainingRenderedCharacters = MAX_REVIEW_CHARACTERS_PER_TURN
+
+  for (const [index, parsed] of parsedFiles.entries()) {
+    const displayPath = parsed.change.movePath || parsed.change.path
+    const existing = fileByPath.get(displayPath)
+    const canStoreFile = Boolean(existing) || files.length < MAX_REVIEW_FILES
+    const fileLineBudget = existing
+      ? Math.max(0, MAX_REVIEW_LINES_PER_FILE - existing.lines.length)
+      : MAX_REVIEW_LINES_PER_FILE
+    const maxLines = canStoreFile
+      ? Math.max(0, Math.min(fileLineBudget, remainingRenderedLines))
+      : 0
+    const maxCharacters = canStoreFile ? remainingRenderedCharacters : 0
+    const file = parseFilePatch(
+      parsed.change,
+      parsed.patch,
+      `${batchId}:${index.toString()}`,
+      maxLines,
+      maxCharacters,
+    )
+    additions += file.additions
+    deletions += file.deletions
+    allPaths.add(displayPath)
+    if (!canStoreFile) continue
+    remainingRenderedLines -= file.lines.length
+    remainingRenderedCharacters -= file.lines.reduce((sum, line) => sum + line.text.length, 0)
+    if (existing) mergeDiffFile(existing, file)
+    else {
+      fileByPath.set(displayPath, file)
+      files.push(file)
+    }
+  }
+
+  if (allPaths.size === 0) return null
+  const fingerprintValues = parsedFiles.map(({ change }) => ({
+    path: change.path,
+    kind: { type: change.kind, move_path: change.movePath },
+    diff: change.diff,
+  }))
+  return {
+    files,
+    fileCount: allPaths.size,
+    changeCount: parsedFiles.length,
+    filesTruncated: allPaths.size > files.length,
+    additions,
+    deletions,
+    patchBatches: [{
+      id: batchId,
+      cwd: options.cwd || '',
+      fingerprint: reviewBatchFingerprint(fingerprintValues),
+      byteLength,
+    }],
+    ...(options.actionUnavailableReason
+      ? { actionUnavailableReason: options.actionUnavailableReason }
+      : {}),
+  }
+}
+
 function parseWholeFileContent(
   change: ReviewPatchChange,
   idPrefix: string,

@@ -1014,7 +1014,7 @@ async function preflightPatchSequence(
   }
 }
 
-async function withRepositoryMutationLock<T>(
+export async function withRepositoryMutationLock<T>(
   repositoryKey: string,
   task: () => Promise<T>,
 ): Promise<T> {

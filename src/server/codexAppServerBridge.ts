@@ -36,6 +36,13 @@ import {
 } from './reviewPatch'
 import { ReviewMutationConflictError, ReviewMutationGate } from './reviewMutationGate'
 import { readReviewClientScope, reviewScopeMatches } from './reviewScope'
+import {
+  GitWorkspaceRequestError,
+  readGitWorkspaceReview,
+  readGitWorkspaceStatus,
+  switchGitWorkspaceBranch,
+} from './gitWorkspace'
+import type { GitWorkspaceReviewSource } from '../types/codex'
 
 type JsonRpcCall = {
   jsonrpc: '2.0'
@@ -1659,6 +1666,88 @@ export function createCodexBridgeMiddleware(): CodexBridgeMiddleware {
         return
       }
 
+      if (req.method === 'POST' && url.pathname === '/codex-api/git-workspace/status') {
+        const body = asRecord(await readJsonBody(req))
+        const threadId = typeof body?.threadId === 'string' ? body.threadId.trim() : ''
+        if (!threadId) {
+          setJson(res, 400, { error: 'Invalid body: expected { threadId }' })
+          return
+        }
+        const payload = asRecord(await appServer.rpc('thread/read', {
+          threadId,
+          includeTurns: false,
+        }))
+        const thread = asRecord(payload?.thread)
+        const cwd = typeof thread?.cwd === 'string' ? thread.cwd : ''
+        if (!cwd) throw new GitWorkspaceRequestError('The thread workspace is unavailable.', 404)
+        const result = await readGitWorkspaceStatus(cwd)
+        setJson(res, 200, { result })
+        return
+      }
+
+      if (req.method === 'POST' && url.pathname === '/codex-api/git-workspace/review') {
+        const body = asRecord(await readJsonBody(req))
+        const threadId = typeof body?.threadId === 'string' ? body.threadId.trim() : ''
+        const source = typeof body?.source === 'string' ? body.source : ''
+        const baseBranch = typeof body?.baseBranch === 'string' ? body.baseBranch : undefined
+        const allowedSources: GitWorkspaceReviewSource[] = ['uncommitted', 'unstaged', 'staged', 'branch']
+        if (!threadId || !allowedSources.includes(source as GitWorkspaceReviewSource)) {
+          setJson(res, 400, { error: 'Invalid body: expected { threadId, source, baseBranch? }' })
+          return
+        }
+        const payload = asRecord(await appServer.rpc('thread/read', {
+          threadId,
+          includeTurns: false,
+        }))
+        const thread = asRecord(payload?.thread)
+        const cwd = typeof thread?.cwd === 'string' ? thread.cwd : ''
+        if (!cwd) throw new GitWorkspaceRequestError('The thread workspace is unavailable.', 404)
+        const result = await readGitWorkspaceReview(
+          cwd,
+          source as GitWorkspaceReviewSource,
+          baseBranch,
+        )
+        setJson(res, 200, { result })
+        return
+      }
+
+      if (req.method === 'POST' && url.pathname === '/codex-api/git-workspace/switch-branch') {
+        const body = asRecord(await readJsonBody(req))
+        const threadId = typeof body?.threadId === 'string' ? body.threadId.trim() : ''
+        const branch = typeof body?.branch === 'string' ? body.branch : ''
+        if (!threadId || !branch.trim()) {
+          setJson(res, 400, { error: 'Invalid body: expected { threadId, branch }' })
+          return
+        }
+
+        let releaseReviewMutation: (() => void) | null = null
+        try {
+          releaseReviewMutation = appServer.reserveReviewMutation()
+          const payload = asRecord(await appServer.rpc('thread/read', {
+            threadId,
+            includeTurns: true,
+          }))
+          const thread = asRecord(payload?.thread)
+          const turns = Array.isArray(thread?.turns) ? thread.turns : []
+          if (turns.some((value) => asRecord(value)?.status === 'inProgress')) {
+            throw new GitWorkspaceRequestError('Wait for the current turn to finish before switching branches.', 409)
+          }
+          const cwd = typeof thread?.cwd === 'string' ? thread.cwd : ''
+          if (!cwd) throw new GitWorkspaceRequestError('The thread workspace is unavailable.', 404)
+          const result = await switchGitWorkspaceBranch(cwd, branch)
+          if (result.status === 'success') {
+            emitLocalNotification('git-workspace/changed', {
+              threadId,
+              branch: result.currentBranch,
+            })
+          }
+          setJson(res, 200, { result })
+        } finally {
+          releaseReviewMutation?.()
+        }
+        return
+      }
+
       if (req.method === 'POST' && url.pathname === '/codex-api/review-changes/apply') {
         const body = asRecord(await readJsonBody(req))
         const threadId = typeof body?.threadId === 'string' ? body.threadId.trim() : ''
@@ -1715,6 +1804,7 @@ export function createCodexBridgeMiddleware(): CodexBridgeMiddleware {
             patches: review.patchBatches.map((batch) => batch.patch ?? ''),
             reverse,
           })
+          emitLocalNotification('git-workspace/changed', { threadId })
           setJson(res, 200, { result })
         } catch (error) {
           const statusCode = error instanceof ReviewPatchRequestError
@@ -2308,7 +2398,14 @@ export function createCodexBridgeMiddleware(): CodexBridgeMiddleware {
       next()
     } catch (error) {
       const message = getErrorMessage(error, 'Unknown bridge error')
-      setJson(res, error instanceof ReviewMutationConflictError ? 409 : 502, { error: message })
+      const statusCode = error instanceof ReviewMutationConflictError
+        ? 409
+        : error instanceof GitWorkspaceRequestError
+          ? error.statusCode
+          : error instanceof ReviewDiffDataError
+            ? 413
+            : 502
+      setJson(res, statusCode, { error: message })
     }
   }
 

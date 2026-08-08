@@ -587,6 +587,37 @@ function areResponseAnnotationsEqual(
   return true
 }
 
+function areReviewChangesEqual(
+  first?: UiMessage['reviewChanges'],
+  second?: UiMessage['reviewChanges'],
+): boolean {
+  if (!first && !second) return true
+  if (!first || !second) return false
+  if (
+    first.fileCount !== second.fileCount
+    || first.changeCount !== second.changeCount
+    || first.actionUnavailableReason !== second.actionUnavailableReason
+    || first.filesTruncated !== second.filesTruncated
+    || first.additions !== second.additions
+    || first.deletions !== second.deletions
+    || first.patchBatches.length !== second.patchBatches.length
+    || first.files.length !== second.files.length
+  ) return false
+
+  for (let index = 0; index < first.patchBatches.length; index += 1) {
+    const left = first.patchBatches[index]
+    const right = second.patchBatches[index]
+    if (
+      left?.id !== right?.id
+      || left?.cwd !== right?.cwd
+      || left?.fingerprint !== right?.fingerprint
+      || left?.byteLength !== right?.byteLength
+      || left?.patch !== right?.patch
+    ) return false
+  }
+  return true
+}
+
 function areMessageFieldsEqual(first: UiMessage, second: UiMessage): boolean {
   return (
     first.id === second.id &&
@@ -602,6 +633,7 @@ function areMessageFieldsEqual(first: UiMessage, second: UiMessage): boolean {
     areCommandExecutionsEqual(first.commandExecution, second.commandExecution) &&
     areToolCallsEqual(first.toolCall, second.toolCall) &&
     areMcpAppResultsEqual(first.mcpApp, second.mcpApp) &&
+    areReviewChangesEqual(first.reviewChanges, second.reviewChanges) &&
     first.turnId === second.turnId &&
     first.turnIndex === second.turnIndex
   )

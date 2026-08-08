@@ -139,6 +139,56 @@ export type ResponseTextAnnotation = {
   sourceMessageId?: string
 }
 
+export type ReviewChangeKind = 'add' | 'delete' | 'update'
+
+export type ReviewPatchChange = {
+  path: string
+  kind: ReviewChangeKind
+  movePath?: string
+  diff: string
+}
+
+export type ReviewPatchBatch = {
+  id: string
+  cwd: string
+  fingerprint: string
+  byteLength: number
+  patch?: string
+}
+
+export type ReviewDiffLineKind = 'context' | 'added' | 'removed' | 'meta'
+
+export type ReviewDiffLine = {
+  id: string
+  kind: ReviewDiffLineKind
+  marker: ' ' | '+' | '-' | ''
+  text: string
+  oldLine: number | null
+  newLine: number | null
+}
+
+export type ReviewDiffFile = {
+  path: string
+  previousPath?: string
+  kind: ReviewChangeKind
+  additions: number
+  deletions: number
+  lines: ReviewDiffLine[]
+  totalLines: number
+  isTruncated: boolean
+}
+
+export type ReviewChangesData = {
+  files: ReviewDiffFile[]
+  fileCount: number
+  changeCount: number
+  filesTruncated: boolean
+  additions: number
+  deletions: number
+  patchBatches: ReviewPatchBatch[]
+  actionUnavailableReason?: string
+}
+
 export type UiMessage = {
   id: string
   role: 'user' | 'assistant' | 'system'
@@ -153,6 +203,7 @@ export type UiMessage = {
   commandExecution?: CommandExecutionData
   toolCall?: ToolCallData
   mcpApp?: McpAppResultData
+  reviewChanges?: ReviewChangesData
   turnId?: string
   turnIndex?: number
 }

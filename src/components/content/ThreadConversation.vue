@@ -162,8 +162,15 @@
               </details>
 
               <article v-if="shouldRenderMessageCard(message)" class="message-card" :data-role="message.role">
+                <ReviewChangesCard
+                  v-if="message.messageType === 'turnDiff' && message.reviewChanges && message.turnId"
+                  :changes="message.reviewChanges"
+                  :thread-id="activeThreadId"
+                  :turn-id="message.turnId"
+                  :disabled="isTurnInProgress === true"
+                />
                 <article
-                  v-if="message.messageType === 'commandExecution' && message.commandExecution"
+                  v-else-if="message.messageType === 'commandExecution' && message.commandExecution"
                   class="command-card"
                   aria-live="polite"
                 >
@@ -672,6 +679,7 @@ import IconTablerMicrophone from '../icons/IconTablerMicrophone.vue'
 import IconTablerGitFork from '../icons/IconTablerGitFork.vue'
 import AutomationProposalCard from './AutomationProposalCard.vue'
 import McpAppResult from './McpAppResult.vue'
+import ReviewChangesCard from './ReviewChangesCard.vue'
 
 const md = markdownit({
   html: false,
@@ -735,7 +743,7 @@ function compactReasoningPreview(text: string): string {
 
 function shouldRenderMessageCard(message: UiMessage): boolean {
   if (message.messageType === 'commandExecution' && message.commandExecution) return true
-  return Boolean(message.mcpApp) || Boolean(message.toolCall) || message.text.length > 0 || shouldRenderDetailsPayload(message)
+  return Boolean(message.reviewChanges) || Boolean(message.mcpApp) || Boolean(message.toolCall) || message.text.length > 0 || shouldRenderDetailsPayload(message)
 }
 
 function messageDeliveryState(message: UiMessage): 'pending' | 'sent' | 'failed' | '' {

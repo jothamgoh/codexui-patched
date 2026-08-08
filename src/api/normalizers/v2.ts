@@ -16,6 +16,7 @@ import type {
   UiThread,
 } from '../../types/codex'
 import { formatMcpToolCallPresentation, readMcpAppResult } from '../toolCallPresentation'
+import { buildReviewChanges } from '../../utils/reviewDiff'
 
 function toIso(seconds: number): string {
   return new Date(seconds * 1000).toISOString()
@@ -352,6 +353,10 @@ function toUiMessages(item: ThreadItem): UiMessage[] {
   const itemType = normalizeThreadItemType(item.type)
   const rawItem = item as Record<string, unknown>
 
+  // Completed file-change items are represented once by the aggregated turnDiff card.
+  // Keeping the raw fallback message as well duplicates the same change in reconciliation.
+  if (itemType === 'fileChange') return []
+
   if (itemType === 'agentMessage') {
     const text = typeof rawItem.text === 'string' ? rawItem.text : ''
     return [
@@ -547,6 +552,25 @@ export function normalizeThreadMessagesV2(payload: ThreadReadResponse, turnIndex
           orderKey: toMessageOrderKey(turnIndex, itemIndex, messageIndex),
         })
       }
+    }
+
+    const reviewChanges = turn.status === 'inProgress'
+      ? null
+      : buildReviewChanges(items, payload.thread.cwd, payload.thread.cwd, {
+          includeOutsideRoot: true,
+          includePatchText: false,
+        })
+    if (reviewChanges) {
+      messages.push({
+        id: `${turn.id}:turn-diff`,
+        role: 'system',
+        text: '',
+        messageType: 'turnDiff',
+        reviewChanges,
+        turnId: turn.id,
+        turnIndex,
+        orderKey: toMessageOrderKey(turnIndex, items.length, 0),
+      })
     }
   }
   return messages

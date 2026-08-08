@@ -1116,6 +1116,7 @@ function shouldShowConversationMessage(message: UiMessage): boolean {
     return message.toolCall?.status === 'failed'
   }
   if (type === 'fileChange' || type === 'contextCompaction') return false
+  if (type === 'turnDiff') return (message.reviewChanges?.fileCount ?? 0) > 0
   return true
 }
 

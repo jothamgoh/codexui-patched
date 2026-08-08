@@ -70,6 +70,21 @@ export type ThreadMessagePage = {
   hasEarlier: boolean
 }
 
+export type ReviewPatchActionResult = {
+  status: 'success' | 'failed'
+  action: 'undo' | 'reapply'
+  error?: string
+  state?: 'applied' | 'undone' | 'unknown'
+}
+
+export type ReviewPatchScope = {
+  additions: number
+  batchFingerprints: Array<{ id: string; cwd: string; fingerprint: string }>
+  changeCount: number
+  deletions: number
+  fileCount: number
+}
+
 type ThreadSearchResponse = {
   data?: Array<{
     thread?: Thread
@@ -259,6 +274,19 @@ function asRecord(value: unknown): Record<string, unknown> | null {
   return value !== null && typeof value === 'object' && !Array.isArray(value)
     ? (value as Record<string, unknown>)
     : null
+}
+
+export async function applyReviewChanges(
+  threadId: string,
+  turnId: string,
+  reverse: boolean,
+  scope: ReviewPatchScope,
+): Promise<ReviewPatchActionResult> {
+  return await callBridgeEndpoint<ReviewPatchActionResult>(
+    '/codex-api/review-changes/apply',
+    { threadId, turnId, reverse, scope },
+    reverse ? 'review-changes/undo' : 'review-changes/reapply',
+  )
 }
 
 function readString(value: unknown): string {

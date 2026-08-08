@@ -27,6 +27,15 @@ import {
   type InstalledSkillPath,
 } from './skillUninstall'
 import { readCodexUiRuntimeConfig } from './runtimeConfig'
+import { buildReviewChanges, ReviewDiffDataError } from '../utils/reviewDiff'
+import {
+  applyReviewPatchSequence,
+  canonicalizeReviewCommandWorkingDirectories,
+  resolveReviewGitWorkspace,
+  ReviewPatchRequestError,
+} from './reviewPatch'
+import { ReviewMutationConflictError, ReviewMutationGate } from './reviewMutationGate'
+import { readReviewClientScope, reviewScopeMatches } from './reviewScope'
 
 type JsonRpcCall = {
   jsonrpc: '2.0'
@@ -847,6 +856,7 @@ class AppServerProcess {
   private dynamicToolHandler: ((params: unknown) => Promise<unknown>) | null = null
   private readonly appServerCommand = resolveCodexAppServerCommand()
   private readonly appServerArgs = createAppServerArgs()
+  private readonly reviewMutationGate = new ReviewMutationGate()
 
   private start(): void {
     if (this.process) return
@@ -896,6 +906,7 @@ class AppServerProcess {
       this.initialized = false
       this.initializePromise = null
       this.readBuffer = ''
+      this.reviewMutationGate.resetTurns()
     })
   }
 
@@ -944,6 +955,9 @@ class AppServerProcess {
   }
 
   private emitNotification(notification: { method: string; params: unknown }): void {
+    const turnId = readNestedString(notification.params, 'turn', 'id')
+    if (notification.method === 'turn/started') this.reviewMutationGate.markTurnStarted(turnId)
+    if (notification.method === 'turn/completed') this.reviewMutationGate.markTurnCompleted(turnId)
     for (const listener of this.notificationListeners) {
       listener(notification)
     }
@@ -1081,8 +1095,27 @@ class AppServerProcess {
   }
 
   async rpc(method: string, params: unknown): Promise<unknown> {
-    await this.ensureInitialized()
-    return this.call(method, params)
+    const releaseTurnStart = method === 'turn/start'
+      ? this.reviewMutationGate.reserveTurnStart()
+      : null
+    try {
+      await this.ensureInitialized()
+      const result = await this.call(method, params)
+      if (method === 'turn/start') {
+        const turnId = readNestedString(result, 'turn', 'id')
+        const status = readNestedString(result, 'turn', 'status')
+        if (turnId && (!status || status === 'inProgress')) {
+          this.reviewMutationGate.markTurnStarted(turnId)
+        }
+      }
+      return result
+    } finally {
+      releaseTurnStart?.()
+    }
+  }
+
+  reserveReviewMutation(): () => void {
+    return this.reviewMutationGate.reserveReview()
   }
 
   onNotification(listener: (value: { method: string; params: unknown }) => void): () => void {
@@ -1617,13 +1650,86 @@ export function createCodexBridgeMiddleware(): CodexBridgeMiddleware {
           setJson(res, 400, { error: 'Invalid body: expected { method, params? }' })
           return
         }
-
         const params =
           body.method === 'thread/start'
             ? automationService.augmentThreadStartParams(body.params)
             : body.params ?? null
         const result = await appServer.rpc(body.method, params)
         setJson(res, 200, { result })
+        return
+      }
+
+      if (req.method === 'POST' && url.pathname === '/codex-api/review-changes/apply') {
+        const body = asRecord(await readJsonBody(req))
+        const threadId = typeof body?.threadId === 'string' ? body.threadId.trim() : ''
+        const turnId = typeof body?.turnId === 'string' ? body.turnId.trim() : ''
+        const reverse = body?.reverse
+        const scope = readReviewClientScope(body?.scope)
+        if (!threadId || !turnId || typeof reverse !== 'boolean' || !scope) {
+          setJson(res, 400, { error: 'Invalid body: expected { threadId, turnId, reverse, scope }' })
+          return
+        }
+
+        let releaseReviewMutation: (() => void) | null = null
+        try {
+          releaseReviewMutation = appServer.reserveReviewMutation()
+          const payload = asRecord(await appServer.rpc('thread/read', {
+            threadId,
+            includeTurns: true,
+          }))
+          const thread = asRecord(payload?.thread)
+          const turns = Array.isArray(thread?.turns) ? thread.turns : []
+          const turn = turns
+            .map((value) => asRecord(value))
+            .find((value) => value?.id === turnId)
+          if (!turn || !Array.isArray(turn.items)) {
+            throw new ReviewPatchRequestError('The saved turn could not be found.', 404)
+          }
+          if (turns.some((value) => asRecord(value)?.status === 'inProgress')) {
+            throw new ReviewPatchRequestError('Wait for the current turn to finish before changing earlier edits.', 409)
+          }
+
+          const threadCwd = typeof thread?.cwd === 'string' ? thread.cwd : ''
+          const gitWorkspace = await resolveReviewGitWorkspace(threadCwd)
+          const authoritativeItems = await canonicalizeReviewCommandWorkingDirectories(
+            gitWorkspace,
+            turn.items as Parameters<typeof buildReviewChanges>[0],
+          )
+          const review = buildReviewChanges(
+            authoritativeItems,
+            gitWorkspace.cwd,
+            gitWorkspace.root,
+            { strict: true },
+          )
+          if (!review) {
+            throw new ReviewPatchRequestError('This turn has no completed file changes.', 409)
+          }
+          if (!reviewScopeMatches(scope, review)) {
+            throw new ReviewPatchRequestError(
+              'The saved changes no longer match this Review card. Reload the thread and try again.',
+              409,
+            )
+          }
+          const result = await applyReviewPatchSequence({
+            cwd: gitWorkspace.root,
+            patches: review.patchBatches.map((batch) => batch.patch ?? ''),
+            reverse,
+          })
+          setJson(res, 200, { result })
+        } catch (error) {
+          const statusCode = error instanceof ReviewPatchRequestError
+            ? error.statusCode
+            : error instanceof ReviewMutationConflictError
+              ? 409
+              : error instanceof ReviewDiffDataError
+                ? 409
+                : 502
+          setJson(res, statusCode, {
+            error: getErrorMessage(error, 'Failed to update the saved changes'),
+          })
+        } finally {
+          releaseReviewMutation?.()
+        }
         return
       }
 
@@ -2202,7 +2308,7 @@ export function createCodexBridgeMiddleware(): CodexBridgeMiddleware {
       next()
     } catch (error) {
       const message = getErrorMessage(error, 'Unknown bridge error')
-      setJson(res, 502, { error: message })
+      setJson(res, error instanceof ReviewMutationConflictError ? 409 : 502, { error: message })
     }
   }
 

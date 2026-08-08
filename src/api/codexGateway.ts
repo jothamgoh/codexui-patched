@@ -23,7 +23,8 @@ import type {
   ThreadResumeResponse,
   ThreadStartResponse,
 } from './appServerDtos'
-import { CodexApiError, extractErrorMessage, normalizeCodexApiError } from './codexErrors'
+import { callBridgeEndpoint } from './bridgeEndpoint'
+import { normalizeCodexApiError } from './codexErrors'
 import { getInProgressTurnStateV2, normalizeThreadGroupsV2, normalizeThreadMessagesV2, normalizeThreadV2 } from './normalizers/v2'
 import { compactNotificationText } from '../utils/notificationText'
 import {
@@ -230,48 +231,6 @@ async function callRpc<T>(method: string, params?: unknown): Promise<T> {
   } catch (error) {
     throw normalizeCodexApiError(error, `RPC ${method} failed`, method)
   }
-}
-
-async function callBridgeEndpoint<T>(path: string, body: unknown, method: string): Promise<T> {
-  let response: Response
-  try {
-    response = await fetch(path, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-      },
-      body: JSON.stringify(body),
-    })
-  } catch (error) {
-    throw new CodexApiError(
-      error instanceof Error ? error.message : `${method} failed before request was sent`,
-      { code: 'network_error', method },
-    )
-  }
-
-  let payload: unknown = null
-  try {
-    payload = await response.json()
-  } catch {
-    payload = null
-  }
-
-  if (!response.ok) {
-    throw new CodexApiError(
-      extractErrorMessage(payload, `${method} failed with HTTP ${response.status}`),
-      { code: 'http_error', method, status: response.status },
-    )
-  }
-
-  const envelope = asRecord(payload)
-  if (!envelope || !('result' in envelope)) {
-    throw new CodexApiError(`${method} returned a malformed envelope`, {
-      code: 'invalid_response',
-      method,
-      status: response.status,
-    })
-  }
-  return envelope.result as T
 }
 
 function asRecord(value: unknown): Record<string, unknown> | null {

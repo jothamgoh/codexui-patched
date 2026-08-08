@@ -2395,6 +2395,11 @@ export function createCodexBridgeMiddleware(): CodexBridgeMiddleware {
         return
       }
 
+      if (url.pathname.startsWith('/codex-api/')) {
+        setJson(res, 404, { error: 'Unknown CodexUI API route.' })
+        return
+      }
+
       next()
     } catch (error) {
       const message = getErrorMessage(error, 'Unknown bridge error')

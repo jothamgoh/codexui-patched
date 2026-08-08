@@ -47,7 +47,7 @@
     "build:frontend": "vue-tsc --noEmit && vite build",
     "build:cli": "tsup",
     "build": "npm run build:frontend && npm run build:cli",
-    "test": "npm run test:env && npm run test:runtime-config && npm run test:automations && npm run test:composer-drafts && npm run test:response-selection && npm run test:codex-thread-source && npm run test:notification-routing && npm run test:pinned-threads && npm run test:thread-pagination && npm run test:thread-scroll && npm run test:web-push && npm run test:skill-uninstall && npm run test:review-diff && npm run test:review-patch && npm run test:review-mutation-gate && npm run test:review-scope && npm run test:git-workspace",
+    "test": "npm run test:env && npm run test:runtime-config && npm run test:automations && npm run test:composer-drafts && npm run test:response-selection && npm run test:codex-thread-source && npm run test:notification-routing && npm run test:pinned-threads && npm run test:thread-pagination && npm run test:thread-scroll && npm run test:web-push && npm run test:skill-uninstall && npm run test:review-diff && npm run test:review-patch && npm run test:review-mutation-gate && npm run test:review-scope && npm run test:git-workspace && npm run test:bridge-endpoint",
     "test:env": "node --test tests/envFile.test.mjs",
     "test:runtime-config": "node --test tests/runtimeConfig.test.mjs",
     "test:automations": "node --test tests/automationStore.test.mjs",
@@ -65,6 +65,7 @@
     "test:review-mutation-gate": "node --test tests/reviewMutationGate.test.mjs",
     "test:review-scope": "node --test tests/reviewScope.test.mjs",
     "test:git-workspace": "node --test tests/gitWorkspace.test.mjs",
+    "test:bridge-endpoint": "node --test tests/bridgeEndpoint.test.mjs",
     "preview": "vite preview",
     "prepublishOnly": "npm run build"
   },

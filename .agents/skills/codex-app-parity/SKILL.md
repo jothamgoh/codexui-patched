@@ -807,3 +807,9 @@ After each feature implementation session that uses this skill:
 - The desktop Review surface is a right task side panel. Narrow layouts retain the source selector, move branch comparison onto a second header row, collapse secondary controls into Review options, and allow the file tree to be hidden. The Electron renderer has no purpose-built coarse-pointer Review or branch picker.
 - For CodexUI, keep repository checkout separate from Review comparison, use the compact Summary/Environment overlay instead of inventing a top-bar count badge, and adapt Review plus branch selection to full-screen, safe-area-aware mobile surfaces with 44px controls.
 - Live Git endpoints must be purpose-built and scoped through the authoritative selected thread workspace. Do not expose arbitrary Git command execution or trust a browser-supplied repository path. Diff commands must disable external diff/textconv and inherited Git configuration injection; checkout must never force, reset, clean, or discard local changes.
+
+## Findings: Frontend/Server Bridge Version Skew (2026-08-08)
+
+- Production serves newly built `dist/` frontend assets without restarting Node, while new `/codex-api/*` server routes do not exist until the service restarts. During that version-skew window, an unmatched API request can fall through Express static handling to `index.html` with HTTP 200.
+- Bridge clients should recognize a successful `text/html` response as frontend/server version skew and show an explicit restart-required message instead of reporting a malformed JSON envelope.
+- Once the updated server is running, unmatched `/codex-api/*` paths should return a JSON 404 before the SPA fallback so future client/server mistakes remain diagnosable API errors.

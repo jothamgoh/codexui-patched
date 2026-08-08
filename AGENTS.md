@@ -30,6 +30,12 @@ The compiled service runs from `dist/` and `dist-cli/`, so always run `npm run b
 deploying a source change. Do not use Playwright or E2E testing unless the user specifically
 asks for it.
 
+Never wrap a service restart or health check in `launchctl submit`, a `KeepAlive` helper,
+a scheduler, or a retry loop. Launchd can reschedule a short-lived submitted job, turning a
+one-shot `kickstart -k` into a forced restart loop. Do not restart the service from a CodexUI
+session hosted by that same service. Leave the restart for a separate Terminal or SSH session,
+then verify health after reconnecting.
+
 ## Release and production workflow
 
 This repository is public. Unless the user explicitly asks for a local-only experiment, take a

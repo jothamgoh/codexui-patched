@@ -760,6 +760,12 @@ After each feature implementation session that uses this skill:
 - For CodexUI mobile web, preserve the native selection menu and dock a separate Add to chat/Cancel bar near the composer. Use at least 44px touch targets and a 16px annotation input to avoid Safari focus zoom.
 - Synchronize web selection state through `selectionchange`, clear the native range on Add and explicit dismiss, and only re-capture after pointerup when the browser reported a changed range. This prevents a plain tap on already-selected text from immediately reopening a dismissed action bar.
 
+## Findings: Mobile Native Response Selection Handles (2026-08-08)
+
+- The integrated ChatGPT/Codex `Yja`/`Xto` selection lifecycle treats pointerdown inside the selected response as the start of a drag: it hides the custom action overlay, marks the selection as dragging, preserves the native range, and recalculates actions after pointerup.
+- On iOS Safari, a native selection-handle touch targets the underlying response element. A capture-phase handler must not call `Selection.removeAllRanges()` for that pointerdown or the browser loses both handles before it can expand the phrase.
+- Keep native-range clearing for explicit Add, Cancel/X, Escape, and true outside dismissal. During a response-surface gesture, hide only the app-owned action UI and let `selectionchange` plus pointerup capture the expanded range.
+
 ## Findings: Subagent Notification Filtering (2026-08-08)
 
 - The integrated ChatGPT/Codex activity tray and completion-notification path suppress child-agent conversations; only interactive top-level chats appear as user-facing activity.

@@ -659,6 +659,7 @@ import {
 import {
   normalizeResponseSelectionPointerType,
   responseAnnotationPositionUpdateStrategy,
+  responseSelectionPointerDownAction,
   responseSelectionSettleDelay,
   shouldCaptureResponseSelectionAfterPointerUp,
   shouldUseDockedResponseSelectionActions,
@@ -1370,12 +1371,21 @@ function toggleResponseAnnotationDictation(): void {
 function onDocumentPointerDown(event: PointerEvent): void {
   const target = event.target
   if (!(target instanceof Element)) return
-  if (target.closest('[data-response-selection-actions], [data-response-annotation-editor], .response-annotation-marker')) return
-  if (responseAnnotationEditor.value) {
+  const action = responseSelectionPointerDownAction({
+    isInteractiveTarget: Boolean(target.closest(
+      '[data-response-selection-actions], [data-response-annotation-editor], .response-annotation-marker',
+    )),
+    hasAnnotationEditor: responseAnnotationEditor.value !== null,
+    isResponseSurface: Boolean(target.closest('[data-response-selection-surface]')),
+    hasCapturedSelection: capturedResponseSelection.value !== null,
+  })
+  if (action === 'close-editor') {
     closeResponseAnnotationEditor()
     return
   }
-  if (capturedResponseSelection.value) dismissResponseSelection()
+  // iOS selection handles target the underlying response content. Let the
+  // surface handler hide our dock and track the drag without clearing the range.
+  if (action === 'dismiss-selection') dismissResponseSelection()
 }
 
 function onDocumentPointerUp(): void {

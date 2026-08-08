@@ -1,4 +1,10 @@
 export type ResponseSelectionPointerType = '' | 'mouse' | 'pen' | 'touch'
+export type ResponseSelectionPointerDownAction =
+  | 'ignore'
+  | 'close-editor'
+  | 'track-selection'
+  | 'dismiss-selection'
+  | 'none'
 
 export const TOUCH_SELECTION_SETTLE_MS = 140
 
@@ -12,6 +18,19 @@ export function shouldUseDockedResponseSelectionActions(
   pointerType: ResponseSelectionPointerType,
 ): boolean {
   return hasCoarsePointer || pointerType === 'touch' || pointerType === 'pen'
+}
+
+export function responseSelectionPointerDownAction(options: {
+  isInteractiveTarget: boolean
+  hasAnnotationEditor: boolean
+  isResponseSurface: boolean
+  hasCapturedSelection: boolean
+}): ResponseSelectionPointerDownAction {
+  if (options.isInteractiveTarget) return 'ignore'
+  if (options.hasAnnotationEditor) return 'close-editor'
+  if (options.isResponseSurface) return 'track-selection'
+  if (options.hasCapturedSelection) return 'dismiss-selection'
+  return 'none'
 }
 
 export function shouldCaptureResponseSelectionAfterPointerUp(

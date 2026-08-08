@@ -16,6 +16,7 @@ const {
   TOUCH_SELECTION_SETTLE_MS,
   normalizeResponseSelectionPointerType,
   responseAnnotationPositionUpdateStrategy,
+  responseSelectionPointerDownAction,
   responseSelectionSettleDelay,
   shouldCaptureResponseSelectionAfterPointerUp,
   shouldUseDockedResponseSelectionActions,
@@ -32,6 +33,33 @@ test('uses docked selection actions for touch, pen, and coarse-pointer devices',
 test('does not reopen selection actions after a plain tap on an unchanged range', () => {
   assert.equal(shouldCaptureResponseSelectionAfterPointerUp(false), false)
   assert.equal(shouldCaptureResponseSelectionAfterPointerUp(true), true)
+})
+
+test('preserves the native range when a selection handle targets response text', () => {
+  assert.equal(responseSelectionPointerDownAction({
+    isInteractiveTarget: false,
+    hasAnnotationEditor: false,
+    isResponseSurface: true,
+    hasCapturedSelection: true,
+  }), 'track-selection')
+  assert.equal(responseSelectionPointerDownAction({
+    isInteractiveTarget: false,
+    hasAnnotationEditor: false,
+    isResponseSurface: false,
+    hasCapturedSelection: true,
+  }), 'dismiss-selection')
+  assert.equal(responseSelectionPointerDownAction({
+    isInteractiveTarget: false,
+    hasAnnotationEditor: true,
+    isResponseSurface: true,
+    hasCapturedSelection: true,
+  }), 'close-editor')
+  assert.equal(responseSelectionPointerDownAction({
+    isInteractiveTarget: true,
+    hasAnnotationEditor: true,
+    isResponseSurface: true,
+    hasCapturedSelection: true,
+  }), 'ignore')
 })
 
 test('allows touch selection to settle without delaying desktop selection', () => {

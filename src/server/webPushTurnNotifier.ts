@@ -81,6 +81,7 @@ export type WebPushTurnNotifier = {
   statusMessage: string
   handleNotification: (notification: BridgeNotification) => void
   handleRequest: (req: IncomingMessage, res: ServerResponse, next: () => void) => void
+  removeThreadHistory: (threadIds: Iterable<string>) => Promise<void>
 }
 
 const STATE_FILE_ENV = 'CODEXUI_WEB_PUSH_STATE_FILE'
@@ -523,6 +524,18 @@ export function createWebPushTurnNotifier(): WebPushTurnNotifier {
     })
   }
 
+  const removeThreadHistory = async (threadIds: Iterable<string>): Promise<void> => {
+    const excludedThreadIds = new Set(
+      Array.from(threadIds, (threadId) => threadId.trim()).filter(Boolean),
+    )
+    if (excludedThreadIds.size === 0) return
+
+    await mutateState((state) => {
+      state.history = state.history.filter((item) => !excludedThreadIds.has(item.threadId))
+      state.dismissals = state.dismissals.filter((item) => !excludedThreadIds.has(item.threadId))
+    })
+  }
+
   const handleRequest = (req: IncomingMessage, res: ServerResponse, next: () => void): void => {
     if (!req.url) {
       next()
@@ -755,5 +768,6 @@ export function createWebPushTurnNotifier(): WebPushTurnNotifier {
     statusMessage: `Web Push initializing (state ${stateFile}).`,
     handleNotification,
     handleRequest,
+    removeThreadHistory,
   }
 }

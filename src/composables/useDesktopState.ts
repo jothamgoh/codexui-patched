@@ -12,6 +12,7 @@ import {
   getPendingServerRequests,
   getSkillsList,
   getSharedThreadReadState,
+  getThreadAudience,
   getThreadGoal,
   interruptThreadTurn,
   replyToServerRequest,
@@ -67,6 +68,7 @@ import {
   isWebPushLocallyEnabled,
 } from './useWebPushNotifications'
 import { compactNotificationText } from '../utils/notificationText'
+import type { CodexThreadAudience } from '../utils/codexThreadSource'
 
 function flattenThreads(groups: UiProjectGroup[]): UiThread[] {
   return groups.flatMap((group) => group.threads)
@@ -92,6 +94,7 @@ const BROWSER_TURN_NOTIFICATION_BODY_MAX_LENGTH = 180
 const MAX_BROWSER_NOTIFIED_TURNS = 200
 const GOAL_CONTINUATION_DELAY_MS = 350
 const THREAD_MESSAGE_PAGE_SIZE = 20
+const THREAD_AUDIENCE_LOOKUP_TIMEOUT_MS = 4_000
 
 function loadReadStateMap(): Record<string, string> {
   if (typeof window === 'undefined') return {}
@@ -1302,6 +1305,8 @@ export function useDesktopState() {
   const inProgressReconcileTimerByThreadId = new Map<string, number>()
   const browserNotifiedTurnKeys = new Set<string>()
   const browserNotifiedTurnOrder: string[] = []
+  const audienceByThreadId = new Map<string, Exclude<CodexThreadAudience, 'unknown'>>()
+  const pendingAudienceLookupByThreadId = new Map<string, Promise<CodexThreadAudience>>()
 
   const allThreads = computed(() => flattenThreads(projectGroups.value))
   const selectedThread = computed(() =>
@@ -2827,6 +2832,47 @@ export function useDesktopState() {
     return threadTitle || 'Turn complete'
   }
 
+  function resolveNotificationThreadAudience(threadId: string): Promise<CodexThreadAudience> {
+    if (allThreads.value.some((thread) => thread.id === threadId)) {
+      audienceByThreadId.set(threadId, 'interactive')
+      return Promise.resolve('interactive')
+    }
+
+    const knownAudience = audienceByThreadId.get(threadId)
+    if (knownAudience) return Promise.resolve(knownAudience)
+    const pendingLookup = pendingAudienceLookupByThreadId.get(threadId)
+    if (pendingLookup) return pendingLookup
+
+    let timeout: ReturnType<typeof setTimeout> | null = null
+    const readAudience = getThreadAudience(threadId)
+      .then((audience) => {
+        if (audience !== 'unknown') audienceByThreadId.set(threadId, audience)
+        return audience
+      })
+      .catch(() => 'unknown' as const)
+    const lookup = Promise.race([
+      readAudience,
+      new Promise<CodexThreadAudience>((resolve) => {
+        timeout = setTimeout(() => resolve('unknown'), THREAD_AUDIENCE_LOOKUP_TIMEOUT_MS)
+      }),
+    ]).finally(() => {
+      if (timeout) clearTimeout(timeout)
+      pendingAudienceLookupByThreadId.delete(threadId)
+    })
+    pendingAudienceLookupByThreadId.set(threadId, lookup)
+    return lookup
+  }
+
+  async function handleCompletedTurnAttention(
+    completedTurn: TurnCompletedInfo,
+    notification: RpcNotification,
+  ): Promise<void> {
+    const audience = await resolveNotificationThreadAudience(completedTurn.threadId)
+    if (audience === 'internalSubagent') return
+    markThreadUnreadByEvent(completedTurn.threadId)
+    notifyBrowserAboutCompletedTurn(completedTurn, notification)
+  }
+
   function notifyBrowserAboutCompletedTurn(completedTurn: TurnCompletedInfo, notification: RpcNotification): void {
     if (!shouldShowBrowserTurnNotification()) return
 
@@ -3410,8 +3456,7 @@ export function useDesktopState() {
       setThreadInProgress(completedTurn.threadId, false)
       setTurnActivityForThread(completedTurn.threadId, null)
       promoteThreadForActivity(completedTurn.threadId, new Date(completedTurn.completedAtMs).toISOString())
-      markThreadUnreadByEvent(completedTurn.threadId)
-      notifyBrowserAboutCompletedTurn(completedTurn, notification)
+      void handleCompletedTurnAttention(completedTurn, notification)
       void processQueuedMessages(completedTurn.threadId)
       void continueActiveThreadGoal(completedTurn.threadId)
     }
@@ -3565,7 +3610,6 @@ export function useDesktopState() {
         setActiveTurnIdForThread(completedThreadId, null)
         setThreadInProgress(completedThreadId, false)
         setTurnActivityForThread(completedThreadId, null)
-        markThreadUnreadByEvent(completedThreadId)
         void processQueuedMessages(completedThreadId)
       }
     }
@@ -4727,6 +4771,8 @@ export function useDesktopState() {
     inProgressReconcileTimerByThreadId.clear()
     browserNotifiedTurnKeys.clear()
     browserNotifiedTurnOrder.length = 0
+    audienceByThreadId.clear()
+    pendingAudienceLookupByThreadId.clear()
     activeReasoningItemId = ''
     shouldAutoScrollOnNextAgentEvent = false
     liveOrderCounterByThreadId.clear()

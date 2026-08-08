@@ -3,6 +3,7 @@ import vue from "@vitejs/plugin-vue";
 import { createCodexBridgeMiddleware } from "./src/server/codexAppServerBridge";
 import { createWebPushTurnNotifier } from "./src/server/webPushTurnNotifier";
 import { createTelegramTurnNotifier } from "./src/server/telegramTurnNotifier";
+import { createTurnNotificationRouter } from "./src/server/turnNotificationRouter";
 import { loadCodexUiEnv } from "./src/server/envFile";
 import tailwindcss from "@tailwindcss/vite";
 import { createReadStream } from "node:fs";
@@ -79,8 +80,10 @@ export default defineConfig({
         const bridge = createCodexBridgeMiddleware();
         const webPushTurnNotifier = createWebPushTurnNotifier();
         const telegramTurnNotifier = createTelegramTurnNotifier();
-        const unsubscribeWebPushNotifier = bridge.subscribeNotifications((notification) => {
-          webPushTurnNotifier.handleNotification(notification);
+        const turnNotificationRouter = createTurnNotificationRouter({
+          bridge,
+          telegramTurnNotifier,
+          webPushTurnNotifier,
         });
         server.middlewares.use((req, res, next) => {
           if (!req.url || (req.method !== "GET" && req.method !== "HEAD")) return next();
@@ -119,7 +122,7 @@ export default defineConfig({
         server.middlewares.use(webPushTurnNotifier.handleRequest);
         server.middlewares.use(bridge);
         server.httpServer?.once("close", () => {
-          unsubscribeWebPushNotifier();
+          turnNotificationRouter.dispose();
           bridge.dispose();
         });
       },

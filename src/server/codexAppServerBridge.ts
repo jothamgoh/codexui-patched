@@ -1526,6 +1526,8 @@ class ThreadTitleGenerator {
 
 type CodexBridgeMiddleware = ((req: IncomingMessage, res: ServerResponse, next: () => void) => Promise<void>) & {
   dispose: () => void
+  listThreads: (params: Record<string, unknown>) => Promise<unknown>
+  readThread: (threadId: string) => Promise<unknown>
   subscribeNotifications: (listener: (value: { method: string; params: unknown; atIso: string }) => void) => () => void
 }
 
@@ -2208,6 +2210,11 @@ export function createCodexBridgeMiddleware(): CodexBridgeMiddleware {
     appServer.dispose()
     threadTitleGenerator.dispose()
   }
+  middleware.listThreads = (params: Record<string, unknown>) => appServer.rpc('thread/list', params)
+  middleware.readThread = (threadId: string) => appServer.rpc('thread/read', {
+    threadId,
+    includeTurns: false,
+  })
   middleware.subscribeNotifications = (
     listener: (value: { method: string; params: unknown; atIso: string }) => void,
   ) => {

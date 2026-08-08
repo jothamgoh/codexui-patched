@@ -5,6 +5,7 @@ import express, { type Express } from 'express'
 import { createCodexBridgeMiddleware } from './codexAppServerBridge.js'
 import { createAuthSession } from './authMiddleware.js'
 import { createTelegramTurnNotifier } from './telegramTurnNotifier.js'
+import { createTurnNotificationRouter } from './turnNotificationRouter.js'
 import { createWebPushTurnNotifier } from './webPushTurnNotifier.js'
 import { WebSocketServer, type WebSocket } from 'ws'
 
@@ -50,11 +51,10 @@ export function createServer(options: ServerOptions = {}): ServerInstance {
   const bridge = createCodexBridgeMiddleware()
   const telegramTurnNotifier = createTelegramTurnNotifier()
   const webPushTurnNotifier = createWebPushTurnNotifier()
-  const unsubscribeTelegramNotifier = bridge.subscribeNotifications((notification) => {
-    telegramTurnNotifier.handleNotification(notification)
-  })
-  const unsubscribeWebPushNotifier = bridge.subscribeNotifications((notification) => {
-    webPushTurnNotifier.handleNotification(notification)
+  const turnNotificationRouter = createTurnNotificationRouter({
+    bridge,
+    telegramTurnNotifier,
+    webPushTurnNotifier,
   })
   const authSession = options.password ? createAuthSession(options.password) : null
 
@@ -113,8 +113,7 @@ export function createServer(options: ServerOptions = {}): ServerInstance {
   return {
     app,
     dispose: () => {
-      unsubscribeTelegramNotifier()
-      unsubscribeWebPushNotifier()
+      turnNotificationRouter.dispose()
       bridge.dispose()
     },
     attachWebSocket: (server: HttpServer) => {

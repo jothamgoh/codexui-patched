@@ -752,3 +752,11 @@ After each feature implementation session that uses this skill:
 - The desktop action toolbar is placed above the selected range and has no coarse-pointer/mobile branch or visible dismiss control. That placement directly competes with iOS Safari's native Copy/Look Up callout, which Electron never needs to handle.
 - For CodexUI mobile web, preserve the native selection menu and dock a separate Add to chat/Cancel bar near the composer. Use at least 44px touch targets and a 16px annotation input to avoid Safari focus zoom.
 - Synchronize web selection state through `selectionchange`, clear the native range on Add and explicit dismiss, and only re-capture after pointerup when the browser reported a changed range. This prevents a plain tap on already-selected text from immediately reopening a dismissed action bar.
+
+## Findings: Subagent Notification Filtering (2026-08-08)
+
+- The integrated ChatGPT/Codex activity tray and completion-notification path suppress child-agent conversations; only interactive top-level chats appear as user-facing activity.
+- Current app-server v2 child threads carry `source: { subAgent: ... }`; spawned children include `thread_spawn.parent_thread_id` and `depth`. Legacy sessions may use lowercase `subagent`, while `thread/list` exposes `subAgent*` source-kind variants.
+- CodexUI must classify child threads from structured source metadata, never from titles, previews, or absence from the currently loaded interactive thread page. Auto-attached child sessions can emit `turn/completed` without a preceding `thread/started`, so unknown completion IDs require an authoritative `thread/read` source lookup and caching of both child and interactive results.
+- Backfill current and archived child IDs with paginated `thread/list` requests, remove their legacy Web Push history, and suppress new completions before Web Push history/delivery or Telegram delivery. Bound lookup/backfill requests and fail open after a timeout so app-server trouble does not indefinitely swallow top-level notifications.
+- Use the same notification router in production and Vite development. Browser-local unread/banner handling also needs authoritative source lookup; filtering history by only the visible 100-thread page incorrectly hides valid off-page or archived top-level activity.

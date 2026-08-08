@@ -26,6 +26,10 @@ import type {
 import { CodexApiError, extractErrorMessage, normalizeCodexApiError } from './codexErrors'
 import { getInProgressTurnStateV2, normalizeThreadGroupsV2, normalizeThreadMessagesV2, normalizeThreadV2 } from './normalizers/v2'
 import { compactNotificationText } from '../utils/notificationText'
+import {
+  readCodexThreadAudience,
+  type CodexThreadAudience,
+} from '../utils/codexThreadSource'
 import type {
   ReasoningEffort,
   ResponseTextAnnotation,
@@ -505,6 +509,14 @@ export async function getThreadGroups(): Promise<UiProjectGroup[]> {
   } catch (error) {
     throw normalizeCodexApiError(error, 'Failed to load thread groups', 'thread/list')
   }
+}
+
+export async function getThreadAudience(threadId: string): Promise<CodexThreadAudience> {
+  const payload = await callRpc<ThreadReadResponse>('thread/read', {
+    threadId,
+    includeTurns: false,
+  })
+  return readCodexThreadAudience(payload.thread)
 }
 
 export async function searchThreads(query: string, limit = 50): Promise<ThreadSearchResult[]> {

@@ -5,6 +5,10 @@ import ts from 'typescript'
 
 const sourceUrl = new URL('../src/utils/responseSelection.ts', import.meta.url)
 const source = await readFile(sourceUrl, 'utf8')
+const conversationSource = await readFile(
+  new URL('../src/components/content/ThreadConversation.vue', import.meta.url),
+  'utf8',
+)
 const compiled = ts.transpileModule(source, {
   compilerOptions: {
     module: ts.ModuleKind.ES2022,
@@ -19,6 +23,7 @@ const {
   responseSelectionPointerDownAction,
   responseSelectionSettleDelay,
   shouldCaptureResponseSelectionAfterPointerUp,
+  shouldRetainResponseSelectionAfterCollapse,
   shouldUseDockedResponseSelectionActions,
 } = await import(moduleUrl)
 
@@ -33,6 +38,35 @@ test('uses docked selection actions for touch, pen, and coarse-pointer devices',
 test('does not reopen selection actions after a plain tap on an unchanged range', () => {
   assert.equal(shouldCaptureResponseSelectionAfterPointerUp(false), false)
   assert.equal(shouldCaptureResponseSelectionAfterPointerUp(true), true)
+})
+
+test('retains a cloned touch selection through transient Android collapse events', () => {
+  assert.equal(shouldRetainResponseSelectionAfterCollapse({
+    hasCapturedSelection: true,
+    isPointerDown: false,
+    useDockedActions: true,
+  }), true)
+  assert.equal(shouldRetainResponseSelectionAfterCollapse({
+    hasCapturedSelection: true,
+    isPointerDown: false,
+    useDockedActions: false,
+  }), false)
+  assert.equal(shouldRetainResponseSelectionAfterCollapse({
+    hasCapturedSelection: false,
+    isPointerDown: true,
+    useDockedActions: true,
+  }), true)
+})
+
+test('snapshots the selected range before opening the annotation editor on click', () => {
+  assert.match(
+    conversationSource,
+    /@pointerdown\.prevent\.stop="snapshotResponseSelectionForAnnotationEditor"/u,
+  )
+  assert.doesNotMatch(
+    conversationSource,
+    /@pointerdown\.prevent\.stop="openResponseAnnotationEditor"/u,
+  )
 })
 
 test('preserves the native range when a selection handle targets response text', () => {

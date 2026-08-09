@@ -41,6 +41,17 @@ export function shouldCaptureResponseSelectionAfterPointerUp(
   return selectionChangedWhilePointerDown
 }
 
+export function shouldRetainResponseSelectionAfterCollapse(options: {
+  hasCapturedSelection: boolean
+  isPointerDown: boolean
+  useDockedActions: boolean
+}): boolean {
+  // Touch browsers can briefly report a collapsed native selection while
+  // dismissing their own selection menu or transferring the tap to our dock.
+  // The cloned range remains valid until an explicit app interaction resolves it.
+  return options.isPointerDown || (options.useDockedActions && options.hasCapturedSelection)
+}
+
 export function responseSelectionSettleDelay(
   useDockedActions: boolean,
 ): number {

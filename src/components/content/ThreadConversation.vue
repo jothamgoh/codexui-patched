@@ -451,7 +451,7 @@
           size="sm"
           class="response-selection-toolbar-button"
           data-response-selection-add
-          @pointerdown.prevent.stop="openResponseAnnotationEditor"
+          @pointerdown.prevent.stop="snapshotResponseSelectionForAnnotationEditor"
           @click="openResponseAnnotationEditor"
         >
           <MessageSquarePlus />
@@ -492,7 +492,7 @@
           size="sm"
           class="response-selection-dock-add"
           data-response-selection-add
-          @pointerdown.prevent.stop="openResponseAnnotationEditor"
+          @pointerdown.prevent.stop="snapshotResponseSelectionForAnnotationEditor"
           @click="openResponseAnnotationEditor"
         >
           Add to chat
@@ -683,6 +683,7 @@ import {
   responseSelectionPointerDownAction,
   responseSelectionSettleDelay,
   shouldCaptureResponseSelectionAfterPointerUp,
+  shouldRetainResponseSelectionAfterCollapse,
   shouldUseDockedResponseSelectionActions,
 } from '../../utils/responseSelection'
 import type { ResponseSelectionPointerType } from '../../utils/responseSelection'
@@ -1051,6 +1052,7 @@ let lastScrollTop = 0
 let userHasScrolledAwayFromBottom = false
 let responseSelectionPointerIsDown = false
 let responseSelectionChangedWhilePointerDown = false
+let pendingResponseAnnotationSelection: CapturedResponseSelection | null = null
 let coarsePointerMediaQuery: MediaQueryList | null = null
 let pendingPrependAnchor: {
   threadId: string
@@ -1147,6 +1149,16 @@ function clearCapturedResponseSelection(): void {
   capturedResponseSelection.value = null
 }
 
+function cloneCapturedResponseSelection(
+  selection: CapturedResponseSelection,
+): CapturedResponseSelection {
+  return {
+    ...selection,
+    range: selection.range.cloneRange(),
+    rect: DOMRect.fromRect(selection.rect),
+  }
+}
+
 function responseSelectionSurfaceForRange(range: Range): HTMLElement | null {
   const startElement = range.startContainer instanceof Element
     ? range.startContainer
@@ -1182,6 +1194,7 @@ function onResponseSelectionPointerDown(event: PointerEvent): void {
   responseSelectionPointerType.value = normalizeResponseSelectionPointerType(event.pointerType)
   responseSelectionPointerIsDown = true
   responseSelectionChangedWhilePointerDown = false
+  pendingResponseAnnotationSelection = null
   clearCapturedResponseSelection()
 }
 
@@ -1213,6 +1226,7 @@ function preventPopoverAutoFocus(event: Event): void {
 function dismissResponseSelection(): void {
   responseSelectionPointerIsDown = false
   responseSelectionChangedWhilePointerDown = false
+  pendingResponseAnnotationSelection = null
   clearCapturedResponseSelection()
   window.getSelection()?.removeAllRanges()
 }
@@ -1223,15 +1237,19 @@ function onResponseSelectionPopoverOpenChange(open: boolean): void {
   }
 }
 
-function openResponseAnnotationEditor(): void {
+function snapshotResponseSelectionForAnnotationEditor(): void {
   const selection = capturedResponseSelection.value
+  pendingResponseAnnotationSelection = selection
+    ? cloneCapturedResponseSelection(selection)
+    : null
+}
+
+function openResponseAnnotationEditor(): void {
+  const selection = pendingResponseAnnotationSelection ?? capturedResponseSelection.value
+  pendingResponseAnnotationSelection = null
   if (!selection) return
   cancelScheduledResponseSelectionUpdate()
-  responseAnnotationEditor.value = {
-    ...selection,
-    range: selection.range.cloneRange(),
-    rect: DOMRect.fromRect(selection.rect),
-  }
+  responseAnnotationEditor.value = cloneCapturedResponseSelection(selection)
   editingResponseAnnotationId.value = null
   responseAnnotationDraft.value = ''
   capturedResponseSelection.value = null
@@ -1425,6 +1443,7 @@ function onDocumentPointerUp(): void {
 function onDocumentPointerCancel(): void {
   responseSelectionPointerIsDown = false
   responseSelectionChangedWhilePointerDown = false
+  pendingResponseAnnotationSelection = null
   scheduleResponseSelectionUpdate(
     updateResponseSelectionFromDocument,
     responseSelectionSettleDelay(useDockedResponseSelectionActions.value),
@@ -1435,6 +1454,15 @@ function onDocumentSelectionChange(): void {
   if (responseAnnotationEditor.value) return
   const selection = document.getSelection()
   if (!selection || selection.isCollapsed || selection.rangeCount === 0) {
+    const retainSelection = shouldRetainResponseSelectionAfterCollapse({
+      hasCapturedSelection: capturedResponseSelection.value !== null,
+      isPointerDown: responseSelectionPointerIsDown,
+      useDockedActions: useDockedResponseSelectionActions.value,
+    })
+    if (retainSelection) {
+      if (responseSelectionPointerIsDown) responseSelectionChangedWhilePointerDown = true
+      return
+    }
     clearCapturedResponseSelection()
     return
   }

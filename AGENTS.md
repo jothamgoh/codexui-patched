@@ -32,9 +32,11 @@ asks for it.
 
 Never wrap a service restart or health check in `launchctl submit`, a `KeepAlive` helper,
 a scheduler, or a retry loop. Launchd can reschedule a short-lived submitted job, turning a
-one-shot `kickstart -k` into a forced restart loop. Do not restart the service from a CodexUI
-session hosted by that same service. Leave the restart for a separate Terminal or SSH session,
-then verify health after reconnecting.
+one-shot `kickstart -k` into a forced restart loop. Never invoke `kickstart -k` directly from a
+CodexUI session hosted by that same service. When the user explicitly authorizes the disconnect
+and the local deployment instructions provide a separate-Terminal handoff, launch exactly one
+restart through that independent Terminal process. Otherwise, leave the restart for the user.
+Verify health after reconnecting.
 
 ## Release and production workflow
 

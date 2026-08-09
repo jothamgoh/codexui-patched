@@ -122,7 +122,11 @@ after logout or restart:
 5. Start from the provided
    [macOS service template](deployment/macos/com.codexui.user.plist.example),
    replacing `USER`, the checkout path, port, and service name.
-6. Put the public address behind Cloudflare Access or another secure login.
+6. Prepare the
+   [one-shot restart template](deployment/macos/restart-codexui.command.example)
+   in private local config if you want an independently running Terminal to
+   restart and check the service.
+7. Put the public address behind Cloudflare Access or another secure login.
 
 Create the private settings file:
 
@@ -136,6 +140,27 @@ chmod 600 ~/.config/codexui/.env
 The service template deliberately contains no passwords or API keys. Read
 [`SECURITY.md`](SECURITY.md) before making the site reachable outside your home
 network.
+
+To prepare the one-shot restart command, copy the public template outside the
+repository, replace its service label and health-check port, and restrict it to
+your account:
+
+```bash
+cp deployment/macos/restart-codexui.command.example \
+  ~/.config/codexui/restart-once.command
+chmod 700 ~/.config/codexui/restart-once.command
+```
+
+After a successful build, open that command in a separate Terminal process:
+
+```bash
+open -a Terminal ~/.config/codexui/restart-once.command
+```
+
+This intentionally performs one restart and one delayed health check. It does
+not create a scheduled job or retry loop. Running it from a CodexUI-hosted chat
+will disconnect that chat briefly, so only do so when the disconnect is
+explicitly authorized.
 
 ## Run it on a Linux server
 
@@ -228,8 +253,10 @@ npm run build
 ```
 
 Restart the background service only after the tests and build succeed. Do not
-restart CodexUI from a chat that is currently running through that same
-CodexUI process.
+invoke `launchctl kickstart` directly from a chat running through that same
+CodexUI process. On macOS, the separately opened one-shot Terminal command
+described above can perform the restart when the disconnect is explicitly
+authorized.
 
 ## Important security note
 

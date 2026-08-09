@@ -24,7 +24,9 @@ Requires Node.js >= 18 and `codex` CLI installed and in PATH.
 
 Keep machine-specific paths, service labels, ports, domains, and restart commands outside
 the repository. If `~/.config/codexui/AGENTS.local.md` exists, read it before local deployment
-work. Use `deployment/macos/com.codexui.user.plist.example` as the public-safe service template.
+work. Use `deployment/macos/com.codexui.user.plist.example` as the public-safe service template
+and `deployment/macos/restart-codexui.command.example` as the public-safe one-shot restart
+template.
 
 The compiled service runs from `dist/` and `dist-cli/`, so always run `npm run build` before
 deploying a source change. Do not use Playwright or E2E testing unless the user specifically

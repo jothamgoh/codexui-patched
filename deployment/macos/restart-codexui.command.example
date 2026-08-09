@@ -1,0 +1,22 @@
+#!/bin/zsh
+
+set -eu
+
+# Copy this file outside the repository, then replace these public placeholders.
+service_label="com.codexui.USER"
+health_url="http://127.0.0.1:5999/codex-api/meta/methods"
+
+if [[ "$service_label" == *USER* ]]; then
+  echo "Replace the service_label placeholder before running this command."
+  exit 64
+fi
+
+sudo -n /bin/launchctl kickstart -k "system/$service_label"
+/bin/sleep 5
+
+if /usr/bin/curl --fail --silent --output /dev/null "$health_url"; then
+  echo "CodexUI is back."
+else
+  echo "CodexUI health check failed."
+  exit 1
+fi

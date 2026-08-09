@@ -841,3 +841,10 @@ After each feature implementation session that uses this skill:
 - While `MediaRecorder` is actively recording, request a best-effort `navigator.wakeLock.request('screen')` lock. Release it before transcription, on cancellation, on errors, and on unmount; reacquire after a visibility return only if recording is still active.
 - Wake-lock support or acquisition failure must never block recording. A request that resolves after recording stopped must immediately release its late sentinel.
 - Pause nonessential presentation clocks (for example relative timestamps and per-second goal duration labels) while the document is hidden, then refresh once on visibility return. Keep realtime transports active so battery savings do not trade away completion delivery.
+
+## Findings: Referencing Other Chats (2026-08-10)
+
+- The integrated ChatGPT/Codex renderer version `26.727.51351` represents `thread://` paths with its agent-mention node. ChatGPT conversation references are a distinct node and use `chatgpt-conversation://`; the ordinary Codex `@` flow remains primarily file-oriented.
+- App-server `UserInput` mention blocks contain only `name` and `path`. They do not carry transcript content, and a `thread://` mention must not be assumed to expand a local Codex thread into model context.
+- For CodexUI's explicit local-chat reference feature, resolve each selected thread through authoritative `thread/read`, include only bounded recent user/assistant transcript text, and label it as incomplete quoted context rather than instructions. Exclude tool/system payloads, cap both reference count and total text, and escape the enclosing delimiter inside serialized content.
+- Preserve the structured `thread://` mention alongside the bounded text so sent messages can reconstruct a visible chat chip and navigate back to the referenced thread. Removing the typed token in the composer and then ignoring persisted mention blocks makes a working reference appear to have vanished.

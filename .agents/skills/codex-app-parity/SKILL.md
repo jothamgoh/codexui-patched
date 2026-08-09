@@ -319,6 +319,12 @@ After each feature implementation session that uses this skill:
   - `ThreadGoal = { threadId, objective, status, tokenBudget, tokensUsed, timeUsedSeconds, createdAt, updatedAt }`
   - `ThreadGoalStatus = active | paused | blocked | usageLimited | budgetLimited | complete`
 
+## Findings: Authenticated PWA Manifests (2026-08-10)
+
+- Codex.app has no equivalent browser installation path because its UI is packaged in Electron.
+- CodexUI deployments that protect all same-origin resources with an authenticated gateway such as Cloudflare Access must load the web-app manifest with `crossorigin="use-credentials"`.
+- Without that attribute, Chromium omits credentials from the manifest request, receives the authentication redirect, reports `manifest-parsing-or-network-error` and `no-manifest`, and offers only a browser shortcut instead of a standalone PWA installation.
+
 ## Findings: Sidebar Thread Reordering / New Thread Folder Defaults (2026-07-04)
 
 - Current Codex.app bundles expose persisted project/workspace-root ordering through `electron-saved-workspace-roots`, `electron-workspace-root-labels`, and `active-workspace-roots`.

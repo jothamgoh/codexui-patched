@@ -14,6 +14,17 @@ const serviceWorkerSource = await readFile(
   new URL('../public/sw.js', import.meta.url),
   'utf8',
 )
+const indexHtmlSource = await readFile(
+  new URL('../index.html', import.meta.url),
+  'utf8',
+)
+
+test('the PWA manifest includes credentials for authenticated deployments', () => {
+  assert.match(
+    indexHtmlSource,
+    /<link rel="manifest" href="\/manifest\.webmanifest" crossorigin="use-credentials" \/>/u,
+  )
+})
 
 test('the test action delegates notification display to server Web Push', () => {
   assert.match(notificationSettingsSource, /await sendWebPushTest\(/u)

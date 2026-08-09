@@ -844,7 +844,7 @@ After each feature implementation session that uses this skill:
 
 ## Findings: Referencing Other Chats (2026-08-10)
 
-- The integrated ChatGPT/Codex renderer version `26.727.51351` represents `thread://` paths with its agent-mention node. ChatGPT conversation references are a distinct node and use `chatgpt-conversation://`; the ordinary Codex `@` flow remains primarily file-oriented.
+- The integrated ChatGPT/Codex renderer version `26.727.51351` includes chats in its `@` picker. Local Codex chats use `thread://` paths through its agent-mention node, while ChatGPT conversation references use the distinct `chatgpt-conversation://` node and scheme; files and plugins are additional mention sources in the same composer.
 - App-server `UserInput` mention blocks contain only `name` and `path`. They do not carry transcript content, and a `thread://` mention must not be assumed to expand a local Codex thread into model context.
 - For CodexUI's explicit local-chat reference feature, resolve each selected thread through authoritative `thread/read`, include only bounded recent user/assistant transcript text, and label it as incomplete quoted context rather than instructions. Exclude tool/system payloads, cap both reference count and total text, and escape the enclosing delimiter inside serialized content.
 - Preserve the structured `thread://` mention alongside the bounded text so sent messages can reconstruct a visible chat chip and navigate back to the referenced thread. Removing the typed token in the composer and then ignoring persisted mention blocks makes a working reference appear to have vanished.

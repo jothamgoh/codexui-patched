@@ -259,6 +259,20 @@ After each feature implementation session that uses this skill:
 - This supports a mobile web composer strategy where narrow viewports keep only essential controls visible in one row: add files, model, reasoning effort, context usage, mic/stop, and send.
 - The Safari iOS keyboard accessory bar for textarea navigation/dismissal is browser-owned UI and cannot be reliably removed from normal web content. Reducing the app composer height and keeping the textarea at `rows="1"` is the practical mitigation.
 
+## Findings: ChatGPT-Integrated Codex UI Font Size (2026-08-10)
+
+- When standalone `/Applications/Codex.app` is absent, the current ChatGPT bundle exposes the Codex Appearance settings in:
+  - `/Applications/ChatGPT.app/Contents/Resources/app.asar`
+  - extracted chunk `webview/assets/general-settings-*.js`
+- The setting uses the label `UI font size` and description `Adjust the base size used for the {appName} UI`.
+- The stored setting key is represented by `sansFontSize` in the compiled bundle.
+- Current behavior uses a numeric pixel input with:
+  - default: `14`
+  - minimum: `11`
+  - maximum: `16`
+  - step: `1`
+- For mobile web parity, preserve device-local persistence and pixel-labelled choices. A stricter minimum is appropriate when the user explicitly requires that the existing web size cannot be reduced.
+
 ## Findings: Rate-Limit Reset Redemption (2026-07-18)
 
 - The integrated Codex renderer in ChatGPT.app fetches `/wham/rate-limit-reset-credits` with a one-minute refetch interval and a five-second stale window.

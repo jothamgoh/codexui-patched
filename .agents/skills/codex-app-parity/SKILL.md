@@ -813,3 +813,11 @@ After each feature implementation session that uses this skill:
 - Production serves newly built `dist/` frontend assets without restarting Node, while new `/codex-api/*` server routes do not exist until the service restarts. During that version-skew window, an unmatched API request can fall through Express static handling to `index.html` with HTTP 200.
 - Bridge clients should recognize a successful `text/html` response as frontend/server version skew and show an explicit restart-required message instead of reporting a malformed JSON envelope.
 - Once the updated server is running, unmatched `/codex-api/*` paths should return a JSON 404 before the SPA fallback so future client/server mistakes remain diagnosable API errors.
+
+## Findings: Mobile Submit Focus and Recording Wake Lock (2026-08-09)
+
+- The integrated ChatGPT/Codex composer is an Electron desktop surface: it keeps composer focus after submission and its dictation implementation has no Screen Wake Lock API integration.
+- Mobile Safari and Android browsers need an intentional web adaptation. After a successful local submit, blur the composer on phone/touch-iPad user agents so the software keyboard closes; preserve desktop refocus for rapid keyboard-driven follow-ups.
+- While `MediaRecorder` is actively recording, request a best-effort `navigator.wakeLock.request('screen')` lock. Release it before transcription, on cancellation, on errors, and on unmount; reacquire after a visibility return only if recording is still active.
+- Wake-lock support or acquisition failure must never block recording. A request that resolves after recording stopped must immediately release its late sentinel.
+- Pause nonessential presentation clocks (for example relative timestamps and per-second goal duration labels) while the document is hidden, then refresh once on visibility return. Keep realtime transports active so battery savings do not trade away completion delivery.

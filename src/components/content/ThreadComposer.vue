@@ -502,6 +502,8 @@ import type {
 } from '../../types/codex'
 import { useDictation } from '../../composables/useDictation'
 import { useComposerDraftStore } from '../../stores/composerDrafts'
+import { settleComposerFocusAfterSubmit } from '../../utils/mobileComposerFocus'
+import { createVisibilityAwareInterval } from '../../utils/visibilityAwareInterval'
 import type {
   ComposerSelectedSkill,
   ComposerDraftState,
@@ -642,9 +644,7 @@ const isFileMentionOpen = ref(false)
 const fileMentionHighlightedIndex = ref(0)
 let fileMentionSearchToken = 0
 let fileMentionDebounceTimer: ReturnType<typeof setTimeout> | null = null
-let goalProgressTimer: ReturnType<typeof setInterval> | null = null
 let pluginLoadToken = 0
-const isAndroid = typeof navigator !== 'undefined' && /Android/i.test(navigator.userAgent)
 const isIOS =
   typeof navigator !== 'undefined' &&
   (/iP(ad|hone|od)/.test(navigator.userAgent) ||
@@ -861,12 +861,10 @@ function onSubmit(mode: 'steer' | 'queue' = 'steer'): void {
   isAttachMenuOpen.value = false
   isSlashMenuOpen.value = false
   closeFileMention()
-  nextTick(syncComposerInputHeight)
-  if (isAndroid) {
-    inputRef.value?.blur()
-    return
-  }
-  nextTick(() => inputRef.value?.focus())
+  nextTick(() => {
+    syncComposerInputHeight()
+    settleComposerFocusAfterSubmit(inputRef.value)
+  })
 }
 
 function formatGoalDuration(durationMs: number): string {
@@ -879,20 +877,13 @@ function formatGoalDuration(durationMs: number): string {
   return seconds > 0 ? `${minutes}m ${seconds}s` : `${minutes}m`
 }
 
-function clearGoalProgressTimer(): void {
-  if (goalProgressTimer === null) return
-  clearInterval(goalProgressTimer)
-  goalProgressTimer = null
-}
+const goalProgressClock = createVisibilityAwareInterval(() => {
+  goalProgressNow.value = Date.now()
+}, 1000)
 
 function syncGoalProgressTimer(): void {
-  clearGoalProgressTimer()
-  goalProgressNow.value = Date.now()
-  if (props.goal?.status !== 'active') return
-
-  goalProgressTimer = setInterval(() => {
-    goalProgressNow.value = Date.now()
-  }, 1000)
+  if (props.goal?.status === 'active') goalProgressClock.start()
+  else goalProgressClock.stop()
 }
 
 function openGoalEditor(objective = ''): void {
@@ -1503,7 +1494,7 @@ onBeforeUnmount(() => {
   if (fileMentionDebounceTimer) {
     clearTimeout(fileMentionDebounceTimer)
   }
-  clearGoalProgressTimer()
+  goalProgressClock.stop()
 })
 
 watch(

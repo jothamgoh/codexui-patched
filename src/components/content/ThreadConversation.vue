@@ -139,6 +139,19 @@
                 </span>
               </div>
 
+              <div v-if="message.threadReferences && message.threadReferences.length > 0" class="message-thread-references">
+                <RouterLink
+                  v-for="reference in message.threadReferences"
+                  :key="reference.id"
+                  class="message-thread-reference-chip"
+                  :to="{ name: 'thread', params: { threadId: reference.id } }"
+                  :title="`Open chat: ${reference.name}`"
+                >
+                  <MessageSquare class="message-thread-reference-icon" aria-hidden="true" />
+                  <span class="message-thread-reference-name">{{ reference.name }}</span>
+                </RouterLink>
+              </div>
+
               <details
                 v-if="message.responseAnnotations && message.responseAnnotations.length > 0"
                 class="message-response-annotations"
@@ -637,7 +650,8 @@
 import '@fontsource-variable/inter'
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import markdownit from 'markdown-it'
-import { MessageSquarePlus, MessageSquareQuote } from '@lucide/vue'
+import { MessageSquare, MessageSquarePlus, MessageSquareQuote } from '@lucide/vue'
+import { RouterLink } from 'vue-router'
 import {
   DialogContent,
   DialogDescription,
@@ -2326,6 +2340,30 @@ onBeforeUnmount(() => {
 
 .message-file-chip-name {
   @apply truncate max-w-40 font-mono;
+}
+
+.message-thread-references {
+  @apply mb-2 flex flex-wrap gap-1.5;
+}
+
+.message-thread-reference-chip {
+  @apply inline-flex max-w-52 items-center gap-1 rounded-md border px-2 py-0.5 text-xs no-underline transition-colors;
+  border-color: var(--border-soft);
+  background: var(--surface-muted);
+  color: var(--text-secondary);
+}
+
+.message-thread-reference-chip:hover {
+  border-color: var(--border-strong);
+  color: var(--text-primary);
+}
+
+.message-thread-reference-icon {
+  @apply h-3 w-3 shrink-0;
+}
+
+.message-thread-reference-name {
+  @apply truncate;
 }
 
 .message-response-annotations {

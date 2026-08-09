@@ -517,6 +517,7 @@ import {
   type PluginMentionParam,
   type ThreadMentionParam,
 } from '../../api/codexGateway'
+import { MAX_THREAD_REFERENCE_COUNT } from '../../utils/threadReferences'
 import { Button } from '@/components/ui/button'
 import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover'
 import IconTablerArrowUp from '../icons/IconTablerArrowUp.vue'
@@ -1329,7 +1330,10 @@ function applyPluginMention(plugin: PluginMentionParam): void {
 }
 
 function applyThreadMention(thread: ThreadMentionParam): void {
-  if (!selectedThreadMentionIds.value.has(thread.id)) {
+  if (
+    !selectedThreadMentionIds.value.has(thread.id)
+    && selectedThreads.value.length < MAX_THREAD_REFERENCE_COUNT
+  ) {
     selectedThreads.value = [...selectedThreads.value, thread]
   }
   clearActiveMentionToken()

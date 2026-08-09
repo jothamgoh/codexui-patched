@@ -36,6 +36,7 @@ import {
   type RpcNotification,
   type SkillInfo,
   type ThreadMentionParam,
+  type ResolvedThreadMentionParam,
   type ThreadModelConfig,
   type ThreadMessagePage,
   type ThreadTurnSummary,
@@ -69,6 +70,7 @@ import {
 } from './useWebPushNotifications'
 import { compactNotificationText } from '../utils/notificationText'
 import type { CodexThreadAudience } from '../utils/codexThreadSource'
+import { MAX_THREAD_REFERENCE_COUNT } from '../utils/threadReferences'
 
 function flattenThreads(groups: UiProjectGroup[]): UiThread[] {
   return groups.flatMap((group) => group.threads)
@@ -587,6 +589,21 @@ function areResponseAnnotationsEqual(
   return true
 }
 
+function areThreadReferencesEqual(
+  first?: UiMessage['threadReferences'],
+  second?: UiMessage['threadReferences'],
+): boolean {
+  const left = Array.isArray(first) ? first : []
+  const right = Array.isArray(second) ? second : []
+  if (left.length !== right.length) return false
+  for (let index = 0; index < left.length; index += 1) {
+    if (left[index]?.id !== right[index]?.id) return false
+    if (left[index]?.name !== right[index]?.name) return false
+    if (left[index]?.path !== right[index]?.path) return false
+  }
+  return true
+}
+
 function areReviewChangesEqual(
   first?: UiMessage['reviewChanges'],
   second?: UiMessage['reviewChanges'],
@@ -625,6 +642,7 @@ function areMessageFieldsEqual(first: UiMessage, second: UiMessage): boolean {
     first.text === second.text &&
     areStringArraysEqual(first.images, second.images) &&
     areFileAttachmentsEqual(first.fileAttachments, second.fileAttachments) &&
+    areThreadReferencesEqual(first.threadReferences, second.threadReferences) &&
     areResponseAnnotationsEqual(first.responseAnnotations, second.responseAnnotations) &&
     first.orderKey === second.orderKey &&
     first.messageType === second.messageType &&
@@ -698,6 +716,7 @@ function haveSameUserMessagePayload(first: UiMessage, second: UiMessage): boolea
     normalizeMessageText(first.text) === normalizeMessageText(second.text) &&
     areStringArraysEqual(first.images, second.images) &&
     areFileAttachmentsEqual(first.fileAttachments, second.fileAttachments) &&
+    areThreadReferencesEqual(first.threadReferences, second.threadReferences) &&
     areResponseAnnotationsEqual(first.responseAnnotations, second.responseAnnotations)
   )
 }
@@ -4126,6 +4145,7 @@ export function useDesktopState() {
         orderKey: nextLiveOrderKey(threadId),
         images: imageUrls.length > 0 ? imageUrls : undefined,
         fileAttachments: fileAttachments.length > 0 ? fileAttachments.map(a => ({ label: a.label, path: a.path })) : undefined,
+        threadReferences: threads.length > 0 ? threads : undefined,
         responseAnnotations: responseTextAnnotations.length > 0 ? responseTextAnnotations : undefined,
       }
       const steerPrevious = persistedMessagesByThreadId.value[threadId] ?? []
@@ -4160,6 +4180,7 @@ export function useDesktopState() {
       orderKey: nextLiveOrderKey(threadId),
       images: imageUrls.length > 0 ? imageUrls : undefined,
       fileAttachments: fileAttachments.length > 0 ? fileAttachments.map(a => ({ label: a.label, path: a.path })) : undefined,
+      threadReferences: threads.length > 0 ? threads : undefined,
       responseAnnotations: responseTextAnnotations.length > 0 ? responseTextAnnotations : undefined,
     }
     const previousMessages = persistedMessagesByThreadId.value[threadId] ?? []
@@ -4229,6 +4250,7 @@ export function useDesktopState() {
         orderKey: nextLiveOrderKey(threadId),
         images: imageUrls.length > 0 ? imageUrls : undefined,
         fileAttachments: fileAttachments.length > 0 ? fileAttachments.map(a => ({ label: a.label, path: a.path })) : undefined,
+        threadReferences: threads.length > 0 ? threads : undefined,
         responseAnnotations: responseTextAnnotations.length > 0 ? responseTextAnnotations : undefined,
       }
       const newThreadPrevious = persistedMessagesByThreadId.value[threadId] ?? []
@@ -4288,6 +4310,7 @@ export function useDesktopState() {
         }
       }
 
+      const resolvedThreads = await resolveThreadMentions(threadId, threads)
       await startThreadTurn(
         threadId,
         nextText,
@@ -4298,7 +4321,7 @@ export function useDesktopState() {
         fileAttachments,
         responseTextAnnotations,
         plugins,
-        threads,
+        resolvedThreads,
       )
 
       resumedThreadById.value = {
@@ -4312,6 +4335,39 @@ export function useDesktopState() {
     } catch (unknownError) {
       throw unknownError
     }
+  }
+
+  async function resolveThreadMentions(
+    activeThreadId: string,
+    threads: ThreadMentionParam[],
+  ): Promise<ResolvedThreadMentionParam[]> {
+    const uniqueThreads: ThreadMentionParam[] = []
+    const seen = new Set<string>()
+    for (const thread of threads) {
+      const id = thread.id.trim()
+      if (!id || id === activeThreadId || seen.has(id)) continue
+      seen.add(id)
+      uniqueThreads.push({
+        id,
+        name: thread.name.trim() || 'Untitled chat',
+        path: `thread://${id}`,
+      })
+      if (uniqueThreads.length >= MAX_THREAD_REFERENCE_COUNT) break
+    }
+
+    return Promise.all(uniqueThreads.map(async (thread) => {
+      try {
+        const page = await getThreadMessagesWithStatus(thread.id, { limit: THREAD_MESSAGE_PAGE_SIZE })
+        return {
+          ...thread,
+          messages: page.messages.map((message) => ({ role: message.role, text: message.text })),
+          hasEarlier: page.hasEarlier,
+        }
+      } catch (unknownError) {
+        const detail = unknownError instanceof Error ? unknownError.message : 'Unknown application error'
+        throw new Error(`Could not reference chat “${thread.name}”: ${detail}`)
+      }
+    }))
   }
 
   async function processQueuedMessages(threadId: string): Promise<void> {

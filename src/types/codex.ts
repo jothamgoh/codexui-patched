@@ -132,6 +132,12 @@ export type UiThreadTokenUsage = {
 
 export type UiFileAttachment = { label: string; path: string }
 
+export type UiThreadReference = {
+  id: string
+  name: string
+  path: string
+}
+
 export type ResponseTextAnnotation = {
   id: string
   text: string
@@ -262,6 +268,7 @@ export type UiMessage = {
   text: string
   images?: string[]
   fileAttachments?: UiFileAttachment[]
+  threadReferences?: UiThreadReference[]
   responseAnnotations?: ResponseTextAnnotation[]
   orderKey?: string
   messageType?: string

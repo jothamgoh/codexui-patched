@@ -17,6 +17,7 @@ import type {
 } from '../../types/codex'
 import { formatMcpToolCallPresentation, readMcpAppResult } from '../toolCallPresentation'
 import { buildReviewChanges } from '../../utils/reviewDiff'
+import { parseThreadReferenceMention } from '../../utils/threadReferences'
 
 function toIso(seconds: number): string {
   return new Date(seconds * 1000).toISOString()
@@ -305,15 +306,17 @@ function parseUserMessageContent(
   text: string
   images: string[]
   fileAttachments: UiFileAttachment[]
+  threadReferences: NonNullable<UiMessage['threadReferences']>
   responseAnnotations: ResponseTextAnnotation[]
   rawBlocks: UiMessage[]
 } {
   if (!Array.isArray(content)) {
-    return { text: '', images: [], fileAttachments: [], responseAnnotations: [], rawBlocks: [] }
+    return { text: '', images: [], fileAttachments: [], threadReferences: [], responseAnnotations: [], rawBlocks: [] }
   }
 
   const textChunks: string[] = []
   const images: string[] = []
+  const threadReferences: NonNullable<UiMessage['threadReferences']> = []
   const rawBlocks: UiMessage[] = []
 
   for (const [index, block] of content.entries()) {
@@ -322,6 +325,10 @@ function parseUserMessageContent(
     }
     if (block.type === 'image' && typeof block.url === 'string' && block.url.trim().length > 0) {
       images.push(block.url.trim())
+    }
+    const threadReference = parseThreadReferenceMention(block)
+    if (threadReference && !threadReferences.some((reference) => reference.id === threadReference.id)) {
+      threadReferences.push(threadReference)
     }
 
     if (block.type !== 'text' && block.type !== 'image' && block.type !== 'mention') {
@@ -344,6 +351,7 @@ function parseUserMessageContent(
     text: extractCodexUserRequestText(fullText),
     images,
     fileAttachments,
+    threadReferences,
     responseAnnotations,
     rawBlocks,
   }
@@ -375,6 +383,7 @@ function toUiMessages(item: ThreadItem): UiMessage[] {
     const hasRenderableUserContent = parsed.text.length > 0
       || parsed.images.length > 0
       || parsed.fileAttachments.length > 0
+      || parsed.threadReferences.length > 0
       || parsed.responseAnnotations.length > 0
 
     if (hasRenderableUserContent) {
@@ -384,6 +393,7 @@ function toUiMessages(item: ThreadItem): UiMessage[] {
         text: parsed.text,
         images: parsed.images,
         fileAttachments: parsed.fileAttachments.length > 0 ? parsed.fileAttachments : undefined,
+        threadReferences: parsed.threadReferences.length > 0 ? parsed.threadReferences : undefined,
         responseAnnotations: parsed.responseAnnotations.length > 0 ? parsed.responseAnnotations : undefined,
         messageType: itemType,
       })

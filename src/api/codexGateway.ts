@@ -28,6 +28,11 @@ import { normalizeCodexApiError } from './codexErrors'
 import { getInProgressTurnStateV2, normalizeThreadGroupsV2, normalizeThreadMessagesV2, normalizeThreadV2 } from './normalizers/v2'
 import { compactNotificationText } from '../utils/notificationText'
 import {
+  buildThreadReferenceSection,
+  type ResolvedThreadReference,
+  type ThreadReference,
+} from '../utils/threadReferences'
+import {
   readCodexThreadAudience,
   type CodexThreadAudience,
 } from '../utils/codexThreadSource'
@@ -196,11 +201,9 @@ export type PluginMentionParam = {
   path: string
 }
 
-export type ThreadMentionParam = {
-  id: string
-  name: string
-  path: string
-}
+export type ThreadMentionParam = ThreadReference
+
+export type ResolvedThreadMentionParam = ResolvedThreadReference
 
 export type PluginCatalogItem = PluginMentionParam & {
   longDescription: string
@@ -829,7 +832,7 @@ function buildTextWithAttachments(
   files: FileAttachmentParam[],
   responseTextAnnotations: ResponseTextAnnotation[],
   pluginMentions: PluginMentionParam[],
-  threadMentions: ThreadMentionParam[],
+  threadMentions: ResolvedThreadMentionParam[],
 ): string {
   if (
     files.length === 0
@@ -868,12 +871,8 @@ function buildTextWithAttachments(
   }
 
   if (threadMentions.length > 0) {
-    prefix += prefix ? '\n' : ''
-    for (const thread of threadMentions) {
-      const mentionLabel = thread.name.replace(/\\/g, '\\\\').replace(/\]/g, '\\]')
-      prefix += `[@${mentionLabel}](${thread.path}) `
-    }
-    prefix += '\n'
+    const referenceSection = buildThreadReferenceSection(threadMentions)
+    prefix += `${prefix ? '\n' : ''}${referenceSection}\n`
   }
 
   return `${prefix}\n## My request for Codex:\n\n${prompt}\n`
@@ -889,7 +888,7 @@ export async function startThreadTurn(
   fileAttachments: FileAttachmentParam[] = [],
   responseTextAnnotations: ResponseTextAnnotation[] = [],
   pluginMentions: PluginMentionParam[] = [],
-  threadMentions: ThreadMentionParam[] = [],
+  threadMentions: ResolvedThreadMentionParam[] = [],
 ): Promise<void> {
   try {
     const finalText = buildTextWithAttachments(

@@ -108,6 +108,10 @@
                   :label="themeToggleLabel"
                   @toggle="toggleTheme"
                 />
+                <UiFontSizeControl
+                  :model-value="uiFontSize"
+                  @update:model-value="setUiFontSize"
+                />
               </div>
             </div>
           </section>
@@ -299,6 +303,7 @@ import ScheduledTasksHub from './components/content/ScheduledTasksHub.vue'
 import ChatSearchDialog from './components/content/ChatSearchDialog.vue'
 import RateLimitsSummary from './components/content/RateLimitsSummary.vue'
 import ThemeToggleButton from './components/content/ThemeToggleButton.vue'
+import UiFontSizeControl from './components/content/UiFontSizeControl.vue'
 import NotificationSettingsButton from './components/content/NotificationSettingsButton.vue'
 import WorkspaceSummaryButton from './components/content/WorkspaceSummaryButton.vue'
 import SidebarThreadControls from './components/sidebar/SidebarThreadControls.vue'
@@ -313,6 +318,7 @@ import { useMobile } from './composables/useMobile'
 import { usePinnedThreads } from './composables/usePinnedThreads'
 import { useAutomations } from './composables/useAutomations'
 import { useTheme } from './composables/useTheme'
+import { useUiFontSize } from './composables/useUiFontSize'
 import {
   getHomeDirectory,
   getProjectRootSuggestion,
@@ -394,6 +400,7 @@ const route = useRoute()
 const router = useRouter()
 const { isMobile } = useMobile()
 const { isDarkTheme, toggleTheme } = useTheme()
+const { uiFontSize, setUiFontSize } = useUiFontSize()
 const {
   pinnedThreadIds,
   refreshPinnedThreads,

@@ -6,6 +6,7 @@
 
 :root {
   color-scheme: light;
+  --ui-font-scale: 1;
   --app-bg: #f1f5f9;
   --sidebar-bg: #f1f5f9;
   --content-bg: #ffffff;
@@ -47,6 +48,10 @@
   --input: var(--border-strong);
   --ring: var(--text-tertiary);
   --radius: 0.625rem;
+}
+
+html {
+  font-size: calc(16px * var(--ui-font-scale));
 }
 
 html[data-theme='dark'] {

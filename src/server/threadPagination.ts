@@ -13,6 +13,10 @@ export type PaginatedThreadReadResult = {
   page: ThreadPageMetadata
 }
 
+type ThreadResumeRpc = {
+  rpc(method: string, params: unknown): Promise<unknown>
+}
+
 function asRecord(value: unknown): Record<string, unknown> | null {
   return value !== null && typeof value === 'object' && !Array.isArray(value)
     ? value as Record<string, unknown>
@@ -73,4 +77,15 @@ export function stripThreadTurnsFromResumeResult(result: unknown): unknown {
       turns: [],
     },
   }
+}
+
+export async function resumeThreadLite(
+  appServer: ThreadResumeRpc,
+  threadId: string,
+): Promise<unknown> {
+  const result = await appServer.rpc('thread/resume', {
+    threadId,
+    excludeTurns: true,
+  })
+  return stripThreadTurnsFromResumeResult(result)
 }

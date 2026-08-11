@@ -752,9 +752,9 @@ After each feature implementation session that uses this skill:
 
 ## Findings: Long Conversation Paging (2026-07-30)
 
-- App-server `thread/read` currently exposes only `includeTurns`; it has no turn cursor or turn limit. `thread/resume` also returns the complete thread, even when a client only needs the resumed model configuration.
+- App-server `thread/read` currently exposes only `includeTurns`; it has no turn cursor or turn limit. Current `thread/resume` supports `excludeTurns`, while older versions may ignore it and return the complete thread even when a client only needs the resumed model configuration.
 - The integrated desktop renderer still requests all turns, then uses a measured turn virtualizer with an estimated 280px row height, viewport distance-from-bottom tracking, and overscan to keep most historical turns out of the DOM.
-- For a remote browser/PWA, DOM virtualization alone does not prevent the complete transcript from crossing the network or entering browser memory. CodexUI intentionally adds a bridge-owned page boundary that slices `thread/read` before JSON serialization and strips turns from its model-only resume response.
+- For a remote browser/PWA, DOM virtualization alone does not prevent the complete transcript from crossing the network or entering browser memory. CodexUI intentionally adds a bridge-owned page boundary that slices `thread/read` before JSON serialization and requests `excludeTurns` for its model-only resume response, retaining response stripping as an older-server fallback.
 - Message order keys for paged results must retain the absolute server turn index. Relative page indices cause earlier pages to collide with or sort after newer turns.
 - Upward infinite scrolling should capture scroll height and scroll top before requesting an earlier page, then add the new height delta to scroll top after prepend. This preserves the reader's exact visual anchor while keeping normal bottom-follow behavior for live turns.
 
@@ -854,3 +854,9 @@ After each feature implementation session that uses this skill:
 - The integrated ChatGPT/Codex selected-text toolbar prevents the default press behavior on `mousedown`, but invokes Add to chat from the completed `click`; its selection controller keeps a cloned DOM range and dismisses the native range only as the action is committed.
 - Do not replace the selection toolbar with the annotation editor during `pointerdown`. On Android Chrome, removing the pressed button before click dispatch can leave the selection bar gone without opening the editor. Snapshot the range during pointerdown, keep the button mounted, then open from click; this also retains keyboard activation.
 - Android can emit a transient collapsed `selectionchange` while closing its native selection menu or handing the tap to the app-owned touch dock. A cloned touch selection should survive that event until Add, Cancel, an outside tap, or a new response-surface gesture explicitly resolves it. Desktop collapsed-selection dismissal remains immediate.
+
+## Findings: Tail-Hydrated Thread Resume (2026-08-11)
+
+- The integrated ChatGPT/Codex renderer version `26.727.51351` sends `excludeTurns: true` on `thread/resume` when tail hydration is enabled. Its native paginated path may also request `initialTurnsPage`, while legacy paths can fall back to `thread/read { includeTurns: true }`.
+- A client that loads history separately should set `excludeTurns: true` on its metadata-only resume call. Keep response-side turn stripping as a compatibility fallback for older app-server versions that ignore the parameter.
+- CodexUI's `/thread-page` route still calls `thread/read { includeTurns: true }` and slices the result in the bridge. That limits browser transfer and memory, but true app-server turn pagination is a separate protocol migration.

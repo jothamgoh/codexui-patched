@@ -19,7 +19,7 @@ import { AUTOMATION_DYNAMIC_TOOL_SPEC, AutomationService } from './automationSer
 import { getCodexUiChildEnv } from './envFile'
 import {
   paginateThreadReadResult,
-  stripThreadTurnsFromResumeResult,
+  resumeThreadLite,
 } from './threadPagination'
 import {
   resolveSkillUninstallTarget,
@@ -1866,8 +1866,7 @@ export function createCodexBridgeMiddleware(): CodexBridgeMiddleware {
           return
         }
 
-        const result = await appServer.rpc('thread/resume', { threadId })
-        setJson(res, 200, { result: stripThreadTurnsFromResumeResult(result) })
+        setJson(res, 200, { result: await resumeThreadLite(appServer, threadId) })
         return
       }
 

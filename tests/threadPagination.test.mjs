@@ -15,6 +15,7 @@ const moduleUrl = `data:text/javascript;base64,${Buffer.from(compiled).toString(
 const {
   MAX_THREAD_PAGE_SIZE,
   paginateThreadReadResult,
+  resumeThreadLite,
   stripThreadTurnsFromResumeResult,
 } = await import(moduleUrl)
 
@@ -74,6 +75,37 @@ test('removes historical turns from thread resume responses', () => {
       turns: [{ id: 'turn-1' }],
     },
   })
+  assert.deepEqual(result, {
+    model: 'gpt-5',
+    thread: {
+      id: 'thread-1',
+      turns: [],
+    },
+  })
+})
+
+test('resumes a thread without replaying historical turns', async () => {
+  const calls = []
+  const result = await resumeThreadLite({
+    async rpc(method, params) {
+      calls.push({ method, params })
+      return {
+        model: 'gpt-5',
+        thread: {
+          id: 'thread-1',
+          turns: [{ id: 'legacy-turn' }],
+        },
+      }
+    },
+  }, 'thread-1')
+
+  assert.deepEqual(calls, [{
+    method: 'thread/resume',
+    params: {
+      threadId: 'thread-1',
+      excludeTurns: true,
+    },
+  }])
   assert.deepEqual(result, {
     model: 'gpt-5',
     thread: {

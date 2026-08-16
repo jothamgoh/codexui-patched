@@ -860,3 +860,9 @@ After each feature implementation session that uses this skill:
 - The integrated ChatGPT/Codex renderer version `26.727.51351` sends `excludeTurns: true` on `thread/resume` when tail hydration is enabled. Its native paginated path may also request `initialTurnsPage`, while legacy paths can fall back to `thread/read { includeTurns: true }`.
 - A client that loads history separately should set `excludeTurns: true` on its metadata-only resume call. Keep response-side turn stripping as a compatibility fallback for older app-server versions that ignore the parameter.
 - CodexUI's `/thread-page` route still calls `thread/read { includeTurns: true }` and slices the result in the bridge. That limits browser transfer and memory, but true app-server turn pagination is a separate protocol migration.
+
+## Findings: Notification Read Actions (2026-08-17)
+
+- The installed integrated ChatGPT/Codex renderer (`26.803.41515`) uses the exact `Mark all as read` wording for bulk unread actions in sidebar context menus, disables the action when no unread items exist, and exposes per-item `Mark as read`/`Mark as unread` actions in the same contextual pattern.
+- Its unread badges prefer a numeric count with a `99+` cap, falling back to a simple unread indicator when no count is available.
+- No dedicated notification-center unread filter was present in the inspected bundle. CodexUI's Activity `All`/`Unread` filter is an intentional local enhancement because its notification badge combines shared thread unread state with separate Web Push history read markers.

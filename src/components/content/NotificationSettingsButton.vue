@@ -33,6 +33,18 @@
           <p class="notification-title">Notifications</p>
           <p class="notification-subtitle">{{ activitySummary }}</p>
         </div>
+        <button
+          v-if="activeView === 'activity' && unreadAttentionCount > 0"
+          class="notification-mark-all"
+          type="button"
+          :disabled="markAllReadBusy"
+          :aria-busy="markAllReadBusy"
+          @click="void markAllActivityRead()"
+        >
+          <LoaderCircle v-if="markAllReadBusy" class="notification-mark-all-icon is-spinning" />
+          <MailOpen v-else class="notification-mark-all-icon" />
+          <span>{{ markAllReadBusy ? 'Marking…' : 'Mark all as read' }}</span>
+        </button>
       </header>
 
       <div class="notification-tabs" role="tablist" aria-label="Notification views">
@@ -59,75 +71,104 @@
         </button>
       </div>
 
+      <div v-if="activeView === 'activity'" class="notification-activity-toolbar">
+        <div class="notification-filter" role="group" aria-label="Activity filter">
+          <button
+            class="notification-filter-button"
+            :class="{ 'is-active': activityFilter === 'all' }"
+            type="button"
+            :aria-pressed="activityFilter === 'all'"
+            @click="activityFilter = 'all'"
+          >
+            All
+          </button>
+          <button
+            class="notification-filter-button"
+            :class="{ 'is-active': activityFilter === 'unread' }"
+            type="button"
+            :aria-pressed="activityFilter === 'unread'"
+            @click="activityFilter = 'unread'"
+          >
+            Unread
+            <span class="notification-filter-count">{{ compactCount(unreadAttentionCount) }}</span>
+          </button>
+        </div>
+      </div>
+
       <div v-if="activeView === 'activity'" class="notification-activity" role="tabpanel">
-        <div v-if="hasActivity" class="notification-sections">
-          <section v-if="runningThreads.length > 0" class="notification-section">
-            <div class="notification-section-header">
-              <span>Running</span>
-              <span class="notification-section-count">{{ runningThreads.length }}</span>
-            </div>
-            <button
-              v-for="thread in runningThreads"
-              :key="`running:${thread.id}`"
-              class="notification-row"
-              type="button"
-              @click="openThread(thread.id)"
-            >
-              <span class="notification-row-icon is-running">
-                <LoaderCircle />
-              </span>
-              <span class="notification-row-copy">
-                <span class="notification-row-title">{{ threadTitle(thread) }}</span>
-                <span class="notification-row-meta">
-                  <span>In progress</span>
-                  <span aria-hidden="true">·</span>
-                  <span>{{ formatRelative(thread.updatedAtIso) }}</span>
-                  <kbd v-if="shortcutNumber(thread.id)" class="notification-shortcut">
-                    ⌘{{ shortcutNumber(thread.id) }}
-                  </kbd>
+        <div v-if="hasVisibleActivity" class="notification-sections">
+          <template v-if="activityFilter === 'all'">
+            <section v-if="runningThreads.length > 0" class="notification-section">
+              <div class="notification-section-header">
+                <span>Running</span>
+                <span class="notification-section-count">{{ runningThreads.length }}</span>
+              </div>
+              <button
+                v-for="thread in runningThreads"
+                :key="`running:${thread.id}`"
+                class="notification-row"
+                type="button"
+                @click="openThread(thread.id)"
+              >
+                <span class="notification-row-icon is-running">
+                  <LoaderCircle />
                 </span>
-              </span>
-            </button>
-          </section>
-
-          <section v-if="unreadThreads.length > 0" class="notification-section">
-            <div class="notification-section-header">
-              <span>Unread</span>
-              <span class="notification-section-count">{{ unreadThreads.length }}</span>
-            </div>
-            <button
-              v-for="thread in unreadThreads"
-              :key="`unread:${thread.id}`"
-              class="notification-row"
-              type="button"
-              @click="openThread(thread.id)"
-            >
-              <span class="notification-row-icon is-unread">
-                <Circle />
-              </span>
-              <span class="notification-row-copy">
-                <span class="notification-row-title-line">
+                <span class="notification-row-copy">
                   <span class="notification-row-title">{{ threadTitle(thread) }}</span>
-                  <span class="notification-unread-pill">Unread</span>
+                  <span class="notification-row-meta">
+                    <span>In progress</span>
+                    <span aria-hidden="true">·</span>
+                    <span>{{ formatRelative(thread.updatedAtIso) }}</span>
+                    <kbd v-if="shortcutNumber(thread.id)" class="notification-shortcut">
+                      ⌘{{ shortcutNumber(thread.id) }}
+                    </kbd>
+                  </span>
                 </span>
-                <span class="notification-row-meta">
-                  <span>Completed — not opened</span>
-                  <span aria-hidden="true">·</span>
-                  <span>{{ formatRelative(thread.updatedAtIso) }}</span>
-                  <kbd v-if="shortcutNumber(thread.id)" class="notification-shortcut">
-                    ⌘{{ shortcutNumber(thread.id) }}
-                  </kbd>
-                </span>
-              </span>
-            </button>
-          </section>
+              </button>
+            </section>
 
-          <section v-if="recentHistory.length > 0" class="notification-section">
+            <section v-if="unreadThreads.length > 0" class="notification-section">
+              <div class="notification-section-header">
+                <span>Unread</span>
+                <span class="notification-section-count">{{ unreadThreads.length }}</span>
+              </div>
+              <button
+                v-for="thread in unreadThreads"
+                :key="`unread:${thread.id}`"
+                class="notification-row"
+                type="button"
+                @click="openThread(thread.id)"
+              >
+                <span class="notification-row-icon is-unread">
+                  <Circle />
+                </span>
+                <span class="notification-row-copy">
+                  <span class="notification-row-title-line">
+                    <span class="notification-row-title">{{ threadTitle(thread) }}</span>
+                    <span class="notification-unread-pill">Unread</span>
+                  </span>
+                  <span class="notification-row-meta">
+                    <span>Completed — not opened</span>
+                    <span aria-hidden="true">·</span>
+                    <span>{{ formatRelative(thread.updatedAtIso) }}</span>
+                    <kbd v-if="shortcutNumber(thread.id)" class="notification-shortcut">
+                      ⌘{{ shortcutNumber(thread.id) }}
+                    </kbd>
+                  </span>
+                </span>
+              </button>
+            </section>
+          </template>
+
+          <section v-if="visibleRecentHistory.length > 0" class="notification-section">
             <div class="notification-section-header">
-              <span>Recently completed</span>
+              <span>{{ activityFilter === 'unread' ? 'Unread' : 'Recently completed' }}</span>
+              <span v-if="activityFilter === 'unread'" class="notification-section-count">
+                {{ unreadAttentionCount }}
+              </span>
             </div>
             <div
-              v-for="item in recentHistory"
+              v-for="item in visibleRecentHistory"
               :key="item.id"
               class="notification-recent-row"
             >
@@ -189,6 +230,7 @@
                   {{ item.isUnread ? 'Mark read' : 'Mark unread' }}
                 </button>
                 <button
+                  v-if="activityFilter === 'all' || item.source === 'history'"
                   class="is-destructive"
                   type="button"
                   @click.stop="void dismissRecentActivity(item)"
@@ -199,7 +241,7 @@
               </div>
             </div>
             <button
-              v-if="canToggleRecentLimit"
+              v-if="activityFilter === 'all' && canToggleRecentLimit"
               class="notification-show-more"
               type="button"
               @click="toggleRecentLimit"
@@ -216,8 +258,14 @@
 
         <div v-else class="notification-empty">
           <CheckCircle2 class="notification-empty-icon" />
-          <p class="notification-empty-title">You're all caught up</p>
-          <p>Running and recently completed chats will appear here.</p>
+          <p class="notification-empty-title">
+            {{ activityFilter === 'unread' ? 'No unread notifications' : "You're all caught up" }}
+          </p>
+          <p>
+            {{ activityFilter === 'unread'
+              ? 'Switch to All to see recent activity.'
+              : 'Running and recently completed chats will appear here.' }}
+          </p>
         </div>
 
         <p v-if="historyError" class="notification-error" role="alert">{{ historyError }}</p>
@@ -363,6 +411,7 @@ import { formatCompactRelativeTime } from '../../utils/relativeTime'
 type RecentActivityItem = {
   id: string
   threadId: string
+  source: 'history' | 'thread'
   status: string
   title: string
   body: string
@@ -374,6 +423,8 @@ type ManualThreadUnreadOverride = {
   unread: boolean
   activityAt: string
 }
+
+type ActivityFilter = 'all' | 'unread'
 
 const DEFAULT_RECENT_LIMIT = 6
 const MAX_RECENT_ITEMS = 30
@@ -390,6 +441,7 @@ const emit = defineEmits<{
 
 const isOpen = ref(false)
 const activeView = ref<'activity' | 'settings'>('activity')
+const activityFilter = ref<ActivityFilter>('all')
 const history = ref<WebPushHistoryItem[]>([])
 const dismissedActivityByThreadId = ref<Record<string, string>>({})
 const recentLimit = ref(DEFAULT_RECENT_LIMIT)
@@ -399,6 +451,7 @@ const expandedActionItemId = ref('')
 const manualUnreadByThreadId = ref<Record<string, ManualThreadUnreadOverride>>({})
 const historyBusy = ref(false)
 const historyError = ref('')
+const markAllReadBusy = ref(false)
 const telegramConfig = ref<TelegramNotificationConfig | null>(null)
 const telegramBusy = ref(false)
 const telegramError = ref('')
@@ -440,6 +493,7 @@ const allRecentHistory = computed<RecentActivityItem[]>(() => {
     candidates.push({
       id: item.id,
       threadId: item.threadId,
+      source: 'history',
       status: item.status,
       title: thread ? threadTitle(thread) : (normalizeLabel(item.title) || `Chat ${item.threadId.slice(0, 8)}`),
       body: compactNotificationText(item.body, '', 220),
@@ -452,6 +506,7 @@ const allRecentHistory = computed<RecentActivityItem[]>(() => {
     candidates.push({
       id: `thread:${thread.id}`,
       threadId: thread.id,
+      source: 'thread',
       status: 'completed',
       title: threadTitle(thread),
       body: normalizeLabel(thread.preview),
@@ -473,32 +528,78 @@ const allRecentHistory = computed<RecentActivityItem[]>(() => {
     return dismissedActivityByThreadId.value[item.threadId] !== item.completedAt
   }).slice(0, MAX_RECENT_ITEMS)
 })
+const unreadActivity = computed<RecentActivityItem[]>(() => {
+  const candidates: RecentActivityItem[] = []
+  for (const item of history.value) {
+    if (item.readAt !== null) continue
+    if (dismissedActivityByThreadId.value[item.threadId] === item.completedAt) continue
+    const thread = props.threads.find((candidate) => candidate.id === item.threadId)
+    candidates.push({
+      id: item.id,
+      threadId: item.threadId,
+      source: 'history',
+      status: item.status,
+      title: thread ? threadTitle(thread) : (normalizeLabel(item.title) || `Chat ${item.threadId.slice(0, 8)}`),
+      body: compactNotificationText(item.body, '', 220),
+      completedAt: item.completedAt,
+      isUnread: true,
+    })
+  }
+  for (const thread of props.threads) {
+    if (!isThreadUnread(thread) || thread.inProgress) continue
+    candidates.push({
+      id: `thread:${thread.id}`,
+      threadId: thread.id,
+      source: 'thread',
+      status: 'completed',
+      title: threadTitle(thread),
+      body: normalizeLabel(thread.preview),
+      completedAt: thread.updatedAtIso || thread.createdAtIso,
+      isUnread: true,
+    })
+  }
+  candidates.sort((left, right) => {
+    const leftTimestamp = Date.parse(left.completedAt)
+    const rightTimestamp = Date.parse(right.completedAt)
+    return (Number.isFinite(rightTimestamp) ? rightTimestamp : 0) -
+      (Number.isFinite(leftTimestamp) ? leftTimestamp : 0)
+  })
+
+  const seen = new Set<string>()
+  return candidates.filter((item) => {
+    if (seen.has(item.threadId)) return false
+    seen.add(item.threadId)
+    return true
+  })
+})
 const recentHistory = computed(() => allRecentHistory.value.slice(0, recentLimit.value))
+const visibleRecentHistory = computed(() =>
+  activityFilter.value === 'unread' ? unreadActivity.value : recentHistory.value,
+)
 const shortcutThreadIds = computed(() => [
-  ...runningThreads.value.map((thread) => thread.id),
-  ...unreadThreads.value.map((thread) => thread.id),
-  ...recentHistory.value.map((item) => item.threadId),
+  ...(activityFilter.value === 'unread'
+    ? unreadActivity.value.map((item) => item.threadId)
+    : [
+      ...runningThreads.value.map((thread) => thread.id),
+      ...unreadThreads.value.map((thread) => thread.id),
+      ...recentHistory.value.map((item) => item.threadId),
+    ]),
 ].slice(0, 9))
 const hiddenRecentCount = computed(() =>
   Math.max(0, allRecentHistory.value.length - DEFAULT_RECENT_LIMIT),
 )
 const canToggleRecentLimit = computed(() =>
-  allRecentHistory.value.length > DEFAULT_RECENT_LIMIT,
+  activityFilter.value === 'all' && allRecentHistory.value.length > DEFAULT_RECENT_LIMIT,
 )
-const attentionThreadIds = computed(() => {
-  const ids = new Set(currentActivityThreadIds.value)
-  for (const item of history.value) {
-    if (item.readAt === null) ids.add(item.threadId)
-  }
-  return ids
-})
-const unreadAttentionCount = computed(() => [...attentionThreadIds.value]
-  .filter((threadId) => !runningThreads.value.some((thread) => thread.id === threadId))
-  .length)
+const unreadAttentionCount = computed(() => unreadActivity.value.length)
+const hasUnreadActivity = computed(() => unreadActivity.value.length > 0)
 const hasActivity = computed(() =>
   runningThreads.value.length > 0 ||
   unreadThreads.value.length > 0 ||
   recentHistory.value.length > 0,
+)
+const hasVisibleActivity = computed(() =>
+  activityFilter.value === 'unread' ? hasUnreadActivity.value : hasActivity.value,
 )
 const activitySummary = computed(() => {
   const parts: string[] = []
@@ -563,6 +664,7 @@ const threadActivitySignature = computed(() =>
 watch(isOpen, (open) => {
   if (!open) return
   activeView.value = 'activity'
+  activityFilter.value = 'all'
   recentLimit.value = DEFAULT_RECENT_LIMIT
   resetRecentSwipe()
   expandedActionItemId.value = ''
@@ -615,6 +717,47 @@ async function markThreadHistoryRead(threadId: string): Promise<void> {
     applyHistoryResult(result)
   } catch {
     // Navigation should still work if the activity read marker cannot be saved.
+  }
+}
+
+async function markAllActivityRead(): Promise<void> {
+  if (markAllReadBusy.value || unreadAttentionCount.value === 0) return
+
+  const threadsToMark = props.threads.filter((thread) =>
+    !thread.inProgress && (
+      isThreadUnread(thread) ||
+      history.value.some((item) => item.threadId === thread.id && item.readAt === null)
+    ),
+  )
+  const previousOverrides = { ...manualUnreadByThreadId.value }
+  const nextOverrides = { ...previousOverrides }
+  for (const thread of threadsToMark) {
+    nextOverrides[thread.id] = {
+      unread: false,
+      activityAt: thread.updatedAtIso,
+    }
+  }
+
+  markAllReadBusy.value = true
+  historyError.value = ''
+  expandedActionItemId.value = ''
+  manualUnreadByThreadId.value = nextOverrides
+
+  try {
+    const [historyResult] = await Promise.all([
+      markWebPushHistoryRead({ all: true }),
+      ...threadsToMark.map((thread) => updateSharedThreadReadState(thread.id, {
+        unread: false,
+        readAtIso: thread.updatedAtIso,
+      })),
+    ])
+    applyHistoryResult(historyResult)
+  } catch (error) {
+    manualUnreadByThreadId.value = previousOverrides
+    historyError.value = error instanceof Error ? error.message : 'Could not mark all notifications as read'
+    void refreshHistory()
+  } finally {
+    markAllReadBusy.value = false
   }
 }
 
@@ -948,6 +1091,27 @@ function onModeChange(event: Event): void {
   @apply flex items-start justify-between gap-3 px-4 pb-3 pt-4;
 }
 
+.notification-mark-all {
+  @apply inline-flex min-h-8 shrink-0 items-center gap-1.5 rounded-md border px-2 text-xs font-medium transition;
+  border-color: var(--border-soft);
+  background: var(--surface-muted);
+  color: var(--text-secondary);
+}
+
+.notification-mark-all:hover:not(:disabled) {
+  border-color: var(--border-strong);
+  color: var(--text-primary);
+}
+
+.notification-mark-all:disabled {
+  cursor: wait;
+  opacity: 0.65;
+}
+
+.notification-mark-all-icon {
+  @apply h-3.5 w-3.5 shrink-0;
+}
+
 .notification-title {
   @apply text-sm font-semibold;
   color: var(--text-primary);
@@ -976,6 +1140,36 @@ function onModeChange(event: Event): void {
   background: var(--surface-elevated);
   color: var(--text-primary);
   box-shadow: 0 1px 3px color-mix(in srgb, var(--text-primary) 12%, transparent);
+}
+
+.notification-activity-toolbar {
+  @apply mx-4 mb-2;
+}
+
+.notification-filter {
+  @apply grid grid-cols-2 rounded-lg p-1;
+  background: var(--surface-muted);
+}
+
+.notification-filter-button {
+  @apply inline-flex min-h-8 items-center justify-center gap-1.5 rounded-md px-3 text-xs font-medium transition;
+  color: var(--text-muted);
+}
+
+.notification-filter-button:hover {
+  color: var(--text-primary);
+}
+
+.notification-filter-button.is-active {
+  background: var(--surface-elevated);
+  color: var(--text-primary);
+  box-shadow: 0 1px 3px color-mix(in srgb, var(--text-primary) 12%, transparent);
+}
+
+.notification-filter-count {
+  @apply inline-flex min-w-4 items-center justify-center rounded-full px-1 text-[10px] tabular-nums;
+  background: color-mix(in srgb, #22c55e 14%, transparent);
+  color: #16a34a;
 }
 
 .notification-tab-icon {

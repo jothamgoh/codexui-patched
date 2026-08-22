@@ -866,3 +866,11 @@ After each feature implementation session that uses this skill:
 - The installed integrated ChatGPT/Codex renderer (`26.803.41515`) uses the exact `Mark all as read` wording for bulk unread actions in sidebar context menus, disables the action when no unread items exist, and exposes per-item `Mark as read`/`Mark as unread` actions in the same contextual pattern.
 - Its unread badges prefer a numeric count with a `99+` cap, falling back to a simple unread indicator when no count is available.
 - No dedicated notification-center unread filter was present in the inspected bundle. CodexUI's Activity `All`/`Unread` filter is an intentional local enhancement because its notification badge combines shared thread unread state with separate Web Push history read markers.
+
+## Findings: Fast Mode Speed Setting (2026-08-22)
+
+- The installed integrated ChatGPT/Codex renderer (`26.803.41515`) places a `Speed` selector in General Settings with `Standard` (`Default speed`) and `Fast` (`1.5x speed, increased usage`) options. A settings-row control is therefore the native-parity surface; CodexUI maps it to Tools → Settings rather than adding another composer-bar control.
+- Current app-server model metadata advertises Fast through `serviceTiers` with protocol ID `priority`; older builds may expose `additionalSpeedTiers`, and persisted configuration uses the alias `fast`. Treat both `fast` and `priority` as Fast while sending each model's advertised protocol ID.
+- `thread/start` and `turn/start` accept `serviceTier`; the latter applies the override to the current and subsequent turns. Send an explicit tier or `null` on every turn so changing the setting affects existing chats on their next turn and switching back to Standard clears a previously fast thread.
+- The shared Codex configuration is the cross-device authority. Persist Fast as `service_tier = "fast"` with `features.fast_mode = true`; persist Standard as a null `service_tier`. Read the value again when Tools opens or the page resumes so another device's choice is reflected locally.
+- Fast availability is model-specific. Hide the setting when no available model advertises a fast tier, and fall back to Standard for an unsupported selected model even when the shared preference remains Fast.

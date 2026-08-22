@@ -36,6 +36,12 @@ import {
   readCodexThreadAudience,
   type CodexThreadAudience,
 } from '../utils/codexThreadSource'
+import {
+  FAST_SERVICE_TIER_CONFIG_VALUE,
+  isFastServiceTier,
+  readFastServiceTierByModel,
+  type FastServiceTierByModel,
+} from '../utils/serviceTier'
 import type {
   GitWorkspaceReview,
   GitWorkspaceReviewSource,
@@ -53,6 +59,7 @@ import type {
 type CurrentModelConfig = {
   model: string
   reasoningEffort: ReasoningEffort | ''
+  fastModeEnabled: boolean
 }
 
 export type CodexUiRuntimeConfig = {
@@ -62,6 +69,11 @@ export type CodexUiRuntimeConfig = {
 export type ThreadModelConfig = {
   model: string
   reasoningEffort: ReasoningEffort | ''
+}
+
+export type AvailableModelCatalog = {
+  ids: string[]
+  fastServiceTierByModel: FastServiceTierByModel
 }
 
 export type ThreadSearchResult = {
@@ -802,7 +814,11 @@ function normalizeThreadIdFromPayload(payload: unknown): string {
   return ''
 }
 
-export async function startThread(cwd?: string, model?: string): Promise<{ threadId: string; modelConfig: ThreadModelConfig }> {
+export async function startThread(
+  cwd?: string,
+  model?: string,
+  serviceTier?: string | null,
+): Promise<{ threadId: string; modelConfig: ThreadModelConfig }> {
   try {
     const params: Record<string, unknown> = {}
     if (typeof cwd === 'string' && cwd.trim().length > 0) {
@@ -810,6 +826,9 @@ export async function startThread(cwd?: string, model?: string): Promise<{ threa
     }
     if (typeof model === 'string' && model.trim().length > 0) {
       params.model = model.trim()
+    }
+    if (serviceTier !== undefined) {
+      params.serviceTier = serviceTier
     }
     const payload = await callRpc<ThreadStartResponse>('thread/start', params)
     const threadId = normalizeThreadIdFromPayload(payload)
@@ -889,6 +908,7 @@ export async function startThreadTurn(
   responseTextAnnotations: ResponseTextAnnotation[] = [],
   pluginMentions: PluginMentionParam[] = [],
   threadMentions: ResolvedThreadMentionParam[] = [],
+  serviceTier?: string | null,
 ): Promise<void> {
   try {
     const finalText = buildTextWithAttachments(
@@ -930,6 +950,9 @@ export async function startThreadTurn(
     }
     if (typeof effort === 'string' && effort.length > 0) {
       params.effort = effort
+    }
+    if (serviceTier !== undefined) {
+      params.serviceTier = serviceTier
     }
     await callRpc('turn/start', params)
   } catch (error) {
@@ -1113,30 +1136,59 @@ export async function setDefaultModel(model: string | null, reasoningEffort?: Re
   })
 }
 
-export async function getAvailableModelIds(): Promise<string[]> {
+export async function setFastModePreference(enabled: boolean): Promise<void> {
+  const edits: Array<Record<string, unknown>> = []
+  if (enabled) {
+    edits.push({
+      keyPath: 'features.fast_mode',
+      value: true,
+      mergeStrategy: 'replace',
+    })
+  }
+  edits.push({
+    keyPath: 'service_tier',
+    value: enabled ? FAST_SERVICE_TIER_CONFIG_VALUE : null,
+    mergeStrategy: 'replace',
+  })
+
+  await callRpc('config/batchWrite', {
+    edits,
+    reloadUserConfig: false,
+  })
+}
+
+export async function getAvailableModelCatalog(): Promise<AvailableModelCatalog> {
   const payload = await callRpc<ModelListResponse>('model/list', {})
-  const ids: string[] = []
-  for (const row of payload.data) {
-    const candidate = row.id || row.model
-    if (!candidate || ids.includes(candidate)) continue
-    ids.push(candidate)
-  }
-
   const extendedPayload = await callRpc<ModelListResponse>('model/list', { includeHidden: true })
-  for (const row of extendedPayload.data) {
-    const candidate = row.id || row.model
+  const models: unknown[] = [...payload.data, ...extendedPayload.data]
+  const ids: string[] = []
+  for (const row of models) {
+    const record = asRecord(row)
+    const candidate = readString(record?.id) || readString(record?.model)
     if (!candidate || ids.includes(candidate)) continue
     ids.push(candidate)
   }
 
-  return ids
+  return {
+    ids,
+    fastServiceTierByModel: readFastServiceTierByModel(models),
+  }
+}
+
+export async function getAvailableModelIds(): Promise<string[]> {
+  return (await getAvailableModelCatalog()).ids
 }
 
 export async function getCurrentModelConfig(): Promise<CurrentModelConfig> {
   const payload = await callRpc<ConfigReadResponse>('config/read', {})
   const model = payload.config.model ?? ''
   const reasoningEffort = normalizeReasoningEffort(payload.config.model_reasoning_effort)
-  return { model, reasoningEffort }
+  const config = asRecord(payload.config)
+  return {
+    model,
+    reasoningEffort,
+    fastModeEnabled: isFastServiceTier(config?.service_tier),
+  }
 }
 
 export async function getCodexUiRuntimeConfig(): Promise<CodexUiRuntimeConfig> {

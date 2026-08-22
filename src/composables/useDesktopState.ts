@@ -6,7 +6,7 @@ import {
   createWorktree,
   forkThread,
   getAccountRateLimits,
-  getAvailableModelIds,
+  getAvailableModelCatalog,
   getCodexUiRuntimeConfig,
   getCurrentModelConfig,
   getPendingServerRequests,
@@ -26,6 +26,7 @@ import {
   generateThreadTitle,
   resumeThread,
   setDefaultModel,
+  setFastModePreference,
   setThreadName,
   setThreadGoal,
   startThread,
@@ -64,6 +65,10 @@ import type {
   UiThreadGoal,
   UiTokenUsageBreakdown,
 } from '../types/codex'
+import {
+  serviceTierForModel,
+  type FastServiceTierByModel,
+} from '../utils/serviceTier'
 import {
   getLocalTurnNotificationMode,
   isWebPushLocallyEnabled,
@@ -1300,6 +1305,10 @@ export function useDesktopState() {
   const availableModelIds = ref<string[]>([])
   const defaultModelId = ref(PREFERRED_DEFAULT_MODEL_ID)
   const defaultReasoningEffort = ref<ReasoningEffort | ''>(DEFAULT_REASONING_EFFORT)
+  const fastServiceTierByModel = ref<FastServiceTierByModel>({})
+  const fastModeEnabled = ref(false)
+  const isUpdatingFastMode = ref(false)
+  const fastModeError = ref('')
   const selectedModelId = ref(persistedNewThreadModelConfig.model)
   const selectedReasoningEffort = ref<ReasoningEffort | ''>(persistedNewThreadModelConfig.reasoningEffort)
   const threadModelConfigById = ref<Record<string, ThreadModelConfig>>(loadThreadModelConfigMap())
@@ -1359,6 +1368,7 @@ export function useDesktopState() {
   const audienceByThreadId = new Map<string, Exclude<CodexThreadAudience, 'unknown'>>()
   const pendingAudienceLookupByThreadId = new Map<string, Promise<CodexThreadAudience>>()
 
+  const fastModeAvailable = computed(() => Object.keys(fastServiceTierByModel.value).length > 0)
   const allThreads = computed(() => flattenThreads(projectGroups.value))
   const selectedThread = computed(() =>
     allThreads.value.find((thread) => thread.id === selectedThreadId.value) ?? null,
@@ -1524,6 +1534,15 @@ export function useDesktopState() {
     return threadModelConfigById.value[threadId] ?? getDefaultModelConfig()
   }
 
+  function getRequestedServiceTier(modelId: string): string | null {
+    const resolvedModelId = modelId.trim() || getDefaultModelConfig().model
+    return serviceTierForModel(
+      fastModeEnabled.value,
+      resolvedModelId,
+      fastServiceTierByModel.value,
+    )
+  }
+
   async function setSelectedModelId(modelId: string): Promise<void> {
     const nextModelId = modelId.trim()
     if (selectedModelId.value === nextModelId) return
@@ -1566,6 +1585,36 @@ export function useDesktopState() {
     saveNewThreadModelConfig(newThreadModelConfig.value)
   }
 
+  async function setFastModeEnabled(enabled: boolean): Promise<void> {
+    if (isUpdatingFastMode.value || (fastModeEnabled.value === enabled && !fastModeError.value)) return
+
+    const previousValue = fastModeEnabled.value
+    fastModeEnabled.value = enabled
+    fastModeError.value = ''
+    isUpdatingFastMode.value = true
+    try {
+      await setFastModePreference(enabled)
+    } catch (unknownError) {
+      fastModeEnabled.value = previousValue
+      fastModeError.value = unknownError instanceof Error
+        ? unknownError.message
+        : 'Could not save the Speed setting'
+    } finally {
+      isUpdatingFastMode.value = false
+    }
+  }
+
+  async function refreshFastModePreference(): Promise<void> {
+    if (isUpdatingFastMode.value) return
+    try {
+      const currentConfig = await getCurrentModelConfig()
+      fastModeEnabled.value = currentConfig.fastModeEnabled
+      fastModeError.value = ''
+    } catch {
+      // Keep the last known preference when another device cannot be reached.
+    }
+  }
+
   function buildPendingTurnDetails(modelId: string, effort: ReasoningEffort | ''): string[] {
     const modelLabel = modelId.trim() || 'default'
     const effortLabel = effort || 'default'
@@ -1574,13 +1623,19 @@ export function useDesktopState() {
 
   async function refreshModelPreferences(): Promise<void> {
     try {
-      const [modelIds, currentConfig, runtimeConfig] = await Promise.all([
-        getAvailableModelIds(),
+      const [modelCatalog, currentConfig, runtimeConfig] = await Promise.all([
+        getAvailableModelCatalog(),
         getCurrentModelConfig(),
         getCodexUiRuntimeConfig(),
       ])
+      const modelIds = modelCatalog.ids
 
       availableModelIds.value = modelIds
+      fastServiceTierByModel.value = modelCatalog.fastServiceTierByModel
+      if (!isUpdatingFastMode.value) {
+        fastModeEnabled.value = currentConfig.fastModeEnabled
+        fastModeError.value = ''
+      }
 
       defaultModelId.value = modelIds.length === 0 || modelIds.includes(PREFERRED_DEFAULT_MODEL_ID)
         ? PREFERRED_DEFAULT_MODEL_ID
@@ -4058,7 +4113,11 @@ export function useDesktopState() {
     if (!normalizedObjective) return ''
 
     error.value = ''
-    const startResult = await startThread(targetCwd || undefined, selectedModel || undefined)
+    const startResult = await startThread(
+      targetCwd || undefined,
+      selectedModel || undefined,
+      getRequestedServiceTier(selectedModel),
+    )
     const threadId = startResult.threadId
     if (!threadId) return ''
 
@@ -4219,7 +4278,11 @@ export function useDesktopState() {
     let threadId = ''
 
     try {
-      const startResult = await startThread(targetCwd || undefined, selectedModel || undefined)
+      const startResult = await startThread(
+        targetCwd || undefined,
+        selectedModel || undefined,
+        getRequestedServiceTier(selectedModel),
+      )
       threadId = startResult.threadId
       if (!threadId) return ''
       applyThreadModelConfig(threadId, {
@@ -4299,14 +4362,16 @@ export function useDesktopState() {
     threads: ThreadMentionParam[] = [],
   ): Promise<void> {
     const modelConfig = getTurnModelConfig(threadId)
-    const modelId = modelConfig.model.trim()
-    const reasoningEffort = modelConfig.reasoningEffort
+    let modelId = modelConfig.model.trim()
+    let reasoningEffort = modelConfig.reasoningEffort
 
     try {
       if (resumedThreadById.value[threadId] !== true) {
         const resumedConfig = await resumeThread(threadId)
         if (!modelId && !reasoningEffort) {
           applyThreadModelConfig(threadId, resumedConfig, threadId === selectedThreadId.value)
+          modelId = resumedConfig.model.trim()
+          reasoningEffort = resumedConfig.reasoningEffort
         }
       }
 
@@ -4322,6 +4387,7 @@ export function useDesktopState() {
         responseTextAnnotations,
         plugins,
         resolvedThreads,
+        getRequestedServiceTier(modelId),
       )
 
       resumedThreadById.value = {
@@ -4932,6 +4998,10 @@ export function useDesktopState() {
     availableModelIds,
     selectedModelId,
     selectedReasoningEffort,
+    fastModeAvailable,
+    fastModeEnabled,
+    isUpdatingFastMode,
+    fastModeError,
     accountRateLimits,
     installedSkills,
     messages,
@@ -4971,6 +5041,8 @@ export function useDesktopState() {
     steerQueuedMessage,
     setSelectedModelId,
     setSelectedReasoningEffort,
+    setFastModeEnabled,
+    refreshFastModePreference,
     respondToPendingServerRequest,
     renameProject,
     removeProject,

@@ -112,6 +112,13 @@
                   :model-value="uiFontSize"
                   @update:model-value="setUiFontSize"
                 />
+                <SpeedSettingControl
+                  v-if="fastModeAvailable"
+                  :model-value="fastModeEnabled"
+                  :is-saving="isUpdatingFastMode"
+                  :error="fastModeError"
+                  @update:model-value="setFastModeEnabled"
+                />
               </div>
             </div>
           </section>
@@ -304,6 +311,7 @@ import ChatSearchDialog from './components/content/ChatSearchDialog.vue'
 import RateLimitsSummary from './components/content/RateLimitsSummary.vue'
 import ThemeToggleButton from './components/content/ThemeToggleButton.vue'
 import UiFontSizeControl from './components/content/UiFontSizeControl.vue'
+import SpeedSettingControl from './components/content/SpeedSettingControl.vue'
 import NotificationSettingsButton from './components/content/NotificationSettingsButton.vue'
 import WorkspaceSummaryButton from './components/content/WorkspaceSummaryButton.vue'
 import SidebarThreadControls from './components/sidebar/SidebarThreadControls.vue'
@@ -347,6 +355,10 @@ const {
   availableModelIds,
   selectedModelId,
   selectedReasoningEffort,
+  fastModeAvailable,
+  fastModeEnabled,
+  isUpdatingFastMode,
+  fastModeError,
   accountRateLimits,
   installedSkills,
   messages,
@@ -385,6 +397,8 @@ const {
   steerQueuedMessage,
   setSelectedModelId,
   setSelectedReasoningEffort,
+  setFastModeEnabled,
+  refreshFastModePreference,
   respondToPendingServerRequest,
   renameProject,
   removeProject,
@@ -657,6 +671,7 @@ function onAppResume(): void {
   if (now - lastAppResumeRefreshAt < 750) return
   lastAppResumeRefreshAt = now
   void refreshThreadReadState()
+  void refreshFastModePreference()
   void refreshPinnedThreads()
   void refreshAutomations()
 }
@@ -686,6 +701,7 @@ function setSidebarToolsOpen(nextValue: boolean): void {
   if (isSidebarToolsOpen.value === nextValue) return
   isSidebarToolsOpen.value = nextValue
   saveSidebarToolsOpen(nextValue)
+  if (nextValue) void refreshFastModePreference()
 }
 
 function openSkillsHub(): void {

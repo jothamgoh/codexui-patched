@@ -874,3 +874,9 @@ After each feature implementation session that uses this skill:
 - `thread/start` and `turn/start` accept `serviceTier`; the latter applies the override to the current and subsequent turns. Send an explicit tier or `null` on every turn so changing the setting affects existing chats on their next turn and switching back to Standard clears a previously fast thread.
 - The shared Codex configuration is the cross-device authority. Persist Fast as `service_tier = "fast"` with `features.fast_mode = true`; persist Standard as a null `service_tier`. Read the value again when Tools opens or the page resumes so another device's choice is reflected locally.
 - Fast availability is model-specific. Hide the setting when no available model advertises a fast tier, and fall back to Standard for an unsupported selected model even when the shared preference remains Fast.
+
+## Findings: Send-Button-Only Composer Submission (2026-08-27)
+
+- The installed Codex renderer exposes three configurable send-shortcut modes in `general-settings-*.js`: `enter`, `cmdIfMultiline`, and `cmdAlways`. Its settings copy explicitly distinguishes sending from inserting a newline.
+- CodexUI's mobile web composer uses a native multiline `textarea`, so leaving Enter unhandled inserts a newline across mobile keyboards without custom key synthesis.
+- For a strict send-button-only interaction requested by the user, prevent native form submission without calling the submit handler, keep submission on the visible Send button's click handler, and retain Enter/Tab only for committing an open mention-picker selection. This intentionally goes beyond Codex.app's `cmdAlways` mode by disabling modifier-key submission too.

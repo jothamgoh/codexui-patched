@@ -1,5 +1,5 @@
 <template>
-  <form class="thread-composer" @submit.prevent="onSubmit('steer')">
+  <form class="thread-composer" @submit.prevent>
     <div class="thread-composer-shell" :class="{ 'thread-composer-shell--no-top-radius': hasQueueAbove }">
       <div v-if="responseTextAnnotations.length > 0" class="thread-composer-response-annotations">
         <Popover>
@@ -1241,12 +1241,6 @@ function onInputKeydown(event: KeyboardEvent): void {
       }
       return
     }
-  }
-
-  if (event.key === 'Enter' && !event.shiftKey) {
-    event.preventDefault()
-    onSubmit('steer')
-    return
   }
 
   if (isSlashMenuOpen.value) {

@@ -3,6 +3,11 @@ import { readFile } from 'node:fs/promises'
 import test from 'node:test'
 import ts from 'typescript'
 
+const threadComposerSource = await readFile(
+  new URL('../src/components/content/ThreadComposer.vue', import.meta.url),
+  'utf8',
+)
+
 async function loadTypeScriptModule(sourcePath) {
   const source = await readFile(sourcePath, 'utf8')
   const compiled = ts.transpileModule(source, {
@@ -30,6 +35,12 @@ const {
 } = mobileFocusModule
 const { createScreenWakeLockController } = wakeLockModule
 const { createVisibilityAwareInterval } = visibilityIntervalModule
+
+test('only the chat send button submits composer text', () => {
+  assert.match(threadComposerSource, /<form class="thread-composer" @submit\.prevent>/)
+  assert.match(threadComposerSource, /class="thread-composer-submit"[\s\S]*?@click="onSubmit\('steer'\)"/)
+  assert.doesNotMatch(threadComposerSource, /event\.key === 'Enter' && !event\.shiftKey/)
+})
 
 class FakeVisibilityDocument extends EventTarget {
   visibilityState = 'visible'

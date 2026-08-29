@@ -22,6 +22,9 @@ async function loadTypeScriptModule(sourcePath) {
 const mobileFocusModule = await loadTypeScriptModule(
   new URL('../src/utils/mobileComposerFocus.ts', import.meta.url),
 )
+const composerKeyboardModule = await loadTypeScriptModule(
+  new URL('../src/utils/composerKeyboard.ts', import.meta.url),
+)
 const wakeLockModule = await loadTypeScriptModule(
   new URL('../src/utils/screenWakeLock.ts', import.meta.url),
 )
@@ -33,13 +36,31 @@ const {
   settleComposerFocusAfterSubmit,
   shouldDismissComposerKeyboardAfterSubmit,
 } = mobileFocusModule
+const { shouldSubmitComposerWithCommandEnter } = composerKeyboardModule
 const { createScreenWakeLockController } = wakeLockModule
 const { createVisibilityAwareInterval } = visibilityIntervalModule
 
-test('only the chat send button submits composer text', () => {
+test('the composer sends with Command+Enter while plain Enter remains a newline', () => {
   assert.match(threadComposerSource, /<form class="thread-composer" @submit\.prevent>/)
   assert.match(threadComposerSource, /class="thread-composer-submit"[\s\S]*?@click="onSubmit\('steer'\)"/)
+  assert.match(threadComposerSource, /shouldSubmitComposerWithCommandEnter\(event\)[\s\S]*?onSubmit\('steer'\)/)
   assert.doesNotMatch(threadComposerSource, /event\.key === 'Enter' && !event\.shiftKey/)
+
+  const keyEvent = (overrides = {}) => ({
+    altKey: false,
+    ctrlKey: false,
+    isComposing: false,
+    key: 'Enter',
+    metaKey: false,
+    shiftKey: false,
+    ...overrides,
+  })
+
+  assert.equal(shouldSubmitComposerWithCommandEnter(keyEvent({ metaKey: true })), true)
+  assert.equal(shouldSubmitComposerWithCommandEnter(keyEvent()), false)
+  assert.equal(shouldSubmitComposerWithCommandEnter(keyEvent({ ctrlKey: true })), false)
+  assert.equal(shouldSubmitComposerWithCommandEnter(keyEvent({ metaKey: true, shiftKey: true })), false)
+  assert.equal(shouldSubmitComposerWithCommandEnter(keyEvent({ metaKey: true, isComposing: true })), false)
 })
 
 class FakeVisibilityDocument extends EventTarget {

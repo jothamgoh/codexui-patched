@@ -520,6 +520,13 @@ After each feature implementation session that uses this skill:
 - Persisting model picker changes now works via `config/value/write` on `keyPath: 'model'` and `keyPath: 'model_reasoning_effort'`, which writes to `~/.codex/config.toml`.
 - If the picker visually changes and then snaps back, the frontend is likely doing an optimistic update and then reverting when that obsolete RPC fails.
 
+## Findings: Current Composer Send Shortcut Settings (2026-08-29)
+
+- The ChatGPT-integrated Codex renderer stores its send-key preference as `composerEnterBehavior`.
+- The current renderer exposes three behaviors: `enter`, `cmdIfMultiline`, and `cmdAlways`.
+- Settings copy identifies the modifier shortcut as `{modifierSymbol} + Enter`; on macOS the modifier is Command.
+- For a multiline web composer that preserves plain Enter for newlines, an exact, IME-safe `Command+Enter` binding is the conservative parity choice.
+
 ## Findings: Thread Model Metadata (2026-04-27)
 
 - The v2 `Thread` object returned by `thread/list` and `thread/read` does not include per-thread `model` or `reasoningEffort` fields.

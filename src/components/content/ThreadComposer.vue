@@ -502,6 +502,7 @@ import type {
 } from '../../types/codex'
 import { useDictation } from '../../composables/useDictation'
 import { useComposerDraftStore } from '../../stores/composerDrafts'
+import { shouldSubmitComposerWithCommandEnter } from '../../utils/composerKeyboard'
 import { settleComposerFocusAfterSubmit } from '../../utils/mobileComposerFocus'
 import { createVisibilityAwareInterval } from '../../utils/visibilityAwareInterval'
 import type {
@@ -1205,6 +1206,12 @@ function onInputFocus(): void {
 }
 
 function onInputKeydown(event: KeyboardEvent): void {
+  if (shouldSubmitComposerWithCommandEnter(event)) {
+    event.preventDefault()
+    onSubmit('steer')
+    return
+  }
+
   if (isFileMentionOpen.value) {
     if (event.key === 'Escape') {
       event.preventDefault()

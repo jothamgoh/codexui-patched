@@ -33,6 +33,7 @@ export function collectProjectBoardNotifications(
     events.push({
       id: `project-board-run:${run.id}:${run.status}`,
       kind: failed ? 'failed' : 'plan_ready',
+      ...(failed && run.stoppedByUser ? { quiet: true } : {}),
       boardId: run.boardId,
       featureId: card ? card.parentCardId || card.id : '',
       cardId: run.cardId,

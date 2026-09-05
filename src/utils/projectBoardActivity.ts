@@ -19,7 +19,7 @@ export function collectProjectBoardActivity(snapshot: ProjectBoardSnapshot): Pro
     if (card.type === 'task' || !boards.has(card.boardId)) continue
     const runs = snapshot.runs.filter((run) => run.cardId === card.id)
     const activeRun = runs.find((run) => run.status === 'queued' || run.status === 'running')
-    const latestRun = runs.find((run) => run.id === card.lastRunId) || runs.at(-1)
+    const latestRun = runs.find((run) => run.id === card.lastRunId) || runs[0]
     activity.push({
       boardId: card.boardId,
       featureId: card.id,
@@ -34,16 +34,17 @@ export function collectProjectBoardActivity(snapshot: ProjectBoardSnapshot): Pro
   for (const board of snapshot.boards) {
     const runs = snapshot.runs.filter((run) => run.boardId === board.id && run.kind === 'board_plan')
     const activeRun = runs.find((run) => run.status === 'queued' || run.status === 'running')
-    if (!activeRun) continue
+    const latestRun = activeRun || runs[0]
+    if (!latestRun || !(latestRun.threadId || board.planningThreadId)) continue
     activity.push({
       boardId: board.id,
       featureId: '',
-      threadId: activeRun.threadId || board.planningThreadId,
+      threadId: latestRun.threadId || board.planningThreadId,
       title: `Plan ${board.name}`,
       boardName: board.name,
-      status: 'running',
-      updatedAtIso: activeRun.startedAtIso || board.updatedAtIso,
-      summary: '',
+      status: activeRun ? 'running' : latestRun.status === 'succeeded' ? 'review' : 'blocked',
+      updatedAtIso: latestRun.finishedAtIso || latestRun.startedAtIso || board.updatedAtIso,
+      summary: latestRun.error || latestRun.summary || '',
     })
   }
   return activity

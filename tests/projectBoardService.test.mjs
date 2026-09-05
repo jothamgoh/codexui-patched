@@ -120,6 +120,8 @@ function toolCall(threadId, action, fields = {}) {
 
 test('Stop interrupts only the current run, preserves handoffs, and permits deleting its unanswered questions', async (t) => {
   const { appServer, feature, service, store } = await createHarness(t)
+  const clearedRequests = []
+  appServer.clearPendingServerRequestsForTurn = (...ids) => { clearedRequests.push(ids) }
   const started = await service.startFeature(feature.id, { allowWorkspaceWrite: true })
   await waitFor(() => appServer.calls.find((call) => call.method === 'turn/start'), 'No Lead turn')
   await service.handleDynamicToolCall(toolCall('lead-thread', 'ask_user', { question: 'A decision we no longer need.' }))
@@ -132,10 +134,12 @@ test('Stop interrupts only the current run, preserves handoffs, and permits dele
   }
   await assert.rejects(service.stopFeature(feature.id, { expectedRunId: started.runs[0].id }), /Interrupt unavailable/u)
   assert.equal((await store.read()).runs[0].status, 'running')
+  assert.deepEqual(clearedRequests, [], 'An unconfirmed cancellation must retain its pending requests')
   rejectInterrupt = false
   const stopped = await service.stopFeature(feature.id, { expectedRunId: started.runs[0].id })
   assert.equal(stopped.runs[0].status, 'interrupted')
   assert.equal((await store.read()).runs[0].stoppedByUser, true, 'Explicit Stop is persisted separately from an unexpected failure')
+  assert.deepEqual(clearedRequests, [['lead-thread', 'lead-turn-1']], 'A terminal read clears only the confirmed turn’s pending UI requests')
   assert.equal(stopped.questions[0].status, 'open', 'Stopping must not invent an answer')
   assert.deepEqual(appServer.calls.find((call) => call.method === 'turn/interrupt').params, { threadId: 'lead-thread', turnId: 'lead-turn-1' })
   await service.stopFeature(feature.id, { expectedRunId: started.runs[0].id })

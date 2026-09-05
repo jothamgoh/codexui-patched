@@ -73,6 +73,7 @@ test('completed turns clear only their own pending approval and question UI with
   const ast = ts.createSourceFile('bridge.ts', source, ts.ScriptTarget.Latest, true)
   const processClass = ast.statements.find((node) => ts.isClassDeclaration(node) && node.name?.text === 'AppServerProcess')
   const method = processClass.members.find((node) => ts.isMethodDeclaration(node) && node.name.getText(ast) === 'emitNotification')
+  const cleanup = processClass.members.find((node) => ts.isMethodDeclaration(node) && node.name.getText(ast) === 'clearPendingServerRequestsForTurn')
   const compiled = ts.transpileModule(`
     const asRecord = (value) => value && typeof value === 'object' ? value : null;
     const readNestedString = (value, first, second) => value?.[first]?.[second] || '';
@@ -81,6 +82,7 @@ test('completed turns clear only their own pending approval and question UI with
       notificationListeners = new Set();
       reviewMutationGate = { markTurnStarted() {}, markTurnCompleted() {} };
       ${method.getText(ast)}
+      ${cleanup.getText(ast)}
     }
   `, { compilerOptions: { module: ts.ModuleKind.ES2022, target: ts.ScriptTarget.ES2022 } }).outputText
   const { NotificationHarness } = await import(`data:text/javascript;base64,${Buffer.from(compiled).toString('base64')}`)
@@ -94,8 +96,12 @@ test('completed turns clear only their own pending approval and question UI with
     [4, 'item/tool/requestUserInput', 'other-chat', 'turn-1'],
   ]) bridge.pendingServerRequests.set(id, { id, method, params: { threadId, turnId } })
   const completed = { method: 'turn/completed', params: { threadId: 'lead', turn: { id: 'turn-1', status: 'interrupted' } } }
+  bridge.clearPendingServerRequestsForTurn('lead', 'turn-1')
   bridge.emitNotification(completed)
   bridge.emitNotification(completed)
   assert.deepEqual([...bridge.pendingServerRequests.keys()], [3, 4])
   assert.deepEqual(events.filter((event) => event.method === 'server/request/resolved').map((event) => [event.params.id, event.params.mode]), [[1, 'cancelled'], [2, 'cancelled']])
+  bridge.emitNotification({ method: 'turn/completed', params: { threadId: 'lead', turn: { id: 'turn-2', status: 'completed' } } })
+  assert.deepEqual([...bridge.pendingServerRequests.keys()], [4])
+  assert.deepEqual(events.filter((event) => event.method === 'server/request/resolved').map((event) => event.params.id), [1, 2, 3])
 })

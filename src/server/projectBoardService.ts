@@ -17,6 +17,7 @@ import { ProjectBoardStore, projectBoardFeatureFingerprint } from './projectBoar
 type RpcClient = {
   rpc: (method: string, params: unknown) => Promise<unknown>
   publishLocalNotification: (method: string, params: unknown) => void
+  clearPendingServerRequestsForTurn?: (threadId: string, turnId: string) => void
 }
 
 type ProjectBoardServiceOptions = {
@@ -505,6 +506,7 @@ export class ProjectBoardService {
         }
         context.nativeTurnEnded = true
       }
+      if (context.turnId && context.nativeTurnEnded) this.appServer.clearPendingServerRequestsForTurn?.(context.threadId, context.turnId)
       if (context.turnReady) await this.interruptFeatureDescendants(context.threadId)
       if (this.activeRunsById.get(context.runId) === context && !context.finishing) {
         context.error = 'Stopped by you. Completed files and handoffs are preserved.'

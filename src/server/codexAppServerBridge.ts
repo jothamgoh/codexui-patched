@@ -977,18 +977,7 @@ class AppServerProcess {
     if (notification.method === 'turn/completed') {
       this.reviewMutationGate.markTurnCompleted(turnId)
       const threadId = asRecord(notification.params)?.threadId
-      if (typeof threadId === 'string' && turnId) {
-        for (const request of this.pendingServerRequests.values()) {
-          const params = asRecord(request.params)
-          if (params?.threadId !== threadId || params.turnId !== turnId) continue
-          this.pendingServerRequests.delete(request.id)
-          // The native turn ended; clear its UI request without answering or
-          // approving anything, and leave other turns' requests untouched.
-          this.emitNotification({ method: 'server/request/resolved', params: {
-            id: request.id, method: request.method, threadId, mode: 'cancelled', resolvedAtIso: new Date().toISOString(),
-          } })
-        }
-      }
+      if (typeof threadId === 'string' && turnId) this.clearPendingServerRequestsForTurn(threadId, turnId)
     }
     for (const listener of this.notificationListeners) {
       listener(notification)
@@ -1197,6 +1186,18 @@ class AppServerProcess {
 
   listPendingServerRequests(): PendingServerRequest[] {
     return Array.from(this.pendingServerRequests.values())
+  }
+
+  clearPendingServerRequestsForTurn(threadId: string, turnId: string): void {
+    for (const request of this.pendingServerRequests.values()) {
+      const params = asRecord(request.params)
+      if (params?.threadId !== threadId || params.turnId !== turnId) continue
+      this.pendingServerRequests.delete(request.id)
+      // Clear only a proven ended turn's UI requests; never send an answer or approval.
+      this.emitNotification({ method: 'server/request/resolved', params: {
+        id: request.id, method: request.method, threadId, mode: 'cancelled', resolvedAtIso: new Date().toISOString(),
+      } })
+    }
   }
 
   dispose(): void {
@@ -1592,6 +1593,7 @@ type CodexBridgeMiddleware = ((req: IncomingMessage, res: ServerResponse, next: 
   listThreads: (params: Record<string, unknown>) => Promise<unknown>
   readThread: (threadId: string) => Promise<unknown>
   readProjectBoards: () => Promise<ProjectBoardSnapshot>
+  listPendingServerRequests: () => PendingServerRequest[]
   takeProjectBoardRecoveryBaseline: () => Promise<ProjectBoardSnapshot> | null
   publishLocalNotification: (method: string, params: unknown) => void
   subscribeNotifications: (listener: (value: { method: string; params: unknown; atIso: string }) => void) => () => void
@@ -2646,6 +2648,7 @@ export function createCodexBridgeMiddleware(): CodexBridgeMiddleware {
     includeTurns: false,
   })
   middleware.readProjectBoards = () => projectBoardService.read()
+  middleware.listPendingServerRequests = () => appServer.listPendingServerRequests()
   middleware.takeProjectBoardRecoveryBaseline = () => {
     const shared = getSharedBridgeState()
     const baseline = shared.projectBoardRecoveryBaseline

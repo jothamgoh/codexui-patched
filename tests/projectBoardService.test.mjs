@@ -103,10 +103,18 @@ function toolCall(threadId, action, fields = {}) {
   }
 }
 
-test('constructs a native Lead chat while preserving other dynamic tools', async (t) => {
+test('any reusable profile can coordinate and a resumed chat uses the current selected profile', async (t) => {
   const { appServer, board, feature, service, store } = await createHarness(t)
+  const withCoordinator = await service.createAgent({
+    boardId: board.id,
+    name: 'Research coordinator', role: 'custom', sandbox: 'read-only',
+    instructions: 'Original coordinator instructions.', model: 'research-model', reasoningEffort: 'high',
+  })
+  const coordinator = withCoordinator.agents.find((agent) => agent.name === 'Research coordinator')
+  await service.updateCard(feature.id, { assignedAgentId: coordinator.id })
   const started = await service.startFeature(feature.id, { allowWorkspaceWrite: true })
   assert.equal(started.runs[0].status, 'running')
+  assert.equal(started.runs[0].agentId, coordinator.id)
 
   const turnCall = await waitFor(
     () => appServer.calls.find((call) => call.method === 'turn/start'),
@@ -124,8 +132,16 @@ test('constructs a native Lead chat while preserving other dynamic tools', async
     ['automation_update', 'project_board_update'],
   )
   assert.match(threadCall.params.developerInstructions, /scheduled-task tool/u)
-  assert.match(threadCall.params.developerInstructions, /Lead orchestrator/u)
+  assert.match(threadCall.params.developerInstructions, /any reusable agent profile can coordinate/u)
+  assert.match(threadCall.params.developerInstructions, new RegExp(coordinator.id, 'u'))
   assert.match(threadCall.params.developerInstructions, /native subagents/u)
+  assert.equal(threadCall.params.model, 'research-model')
+  assert.equal(turnCall.params.model, 'research-model')
+  assert.equal(turnCall.params.effort, 'high')
+  assert.equal(turnCall.params.collaborationMode, undefined)
+  assert.equal(turnCall.params.additionalContext.codexui_project_board_coordinator.kind, 'application')
+  assert.match(turnCall.params.additionalContext.codexui_project_board_coordinator.value, new RegExp(coordinator.id, 'u'))
+  assert.match(turnCall.params.input[0].text, /Original coordinator instructions/u)
   assert.equal(turnCall.params.threadId, 'lead-thread')
   assert.equal(turnCall.params.cwd, board.projectPath)
   assert.match(turnCall.params.input[0].text, /Build the project board/u)
@@ -139,10 +155,70 @@ test('constructs a native Lead chat while preserving other dynamic tools', async
     appServer.notifications.some((notification) => notification.method === 'codexui/projectBoards/updated'),
   )
   assert.equal(PROJECT_BOARD_DYNAMIC_TOOL_SPEC.name, 'project_board_update')
+  const taskSchema = PROJECT_BOARD_DYNAMIC_TOOL_SPEC.inputSchema.properties.plan.properties.tasks.items
+  assert.ok(taskSchema.required.includes('agentId'))
+  assert.ok(taskSchema.required.includes('taskPurpose'))
+  assert.equal('agentRole' in taskSchema.properties, false)
+  const contextResult = await service.handleDynamicToolCall(toolCall('lead-thread', 'read_context'))
+  const context = JSON.parse(contextResult.contentItems[0].text)
+  const profile = context.agents.find((agent) => agent.id === coordinator.id)
+  assert.equal(profile.model, 'research-model')
+  assert.equal(profile.reasoningEffort, 'high')
+
+  await service.handleNotification({
+    method: 'turn/completed',
+    params: { threadId: 'lead-thread', turn: { id: 'lead-turn-1', status: 'failed' } },
+  })
+  const withReplacement = await service.createAgent({
+    boardId: board.id,
+    name: 'Replacement coordinator', role: 'custom', sandbox: 'read-only',
+    instructions: 'Stale replacement instructions.', model: 'old-model', reasoningEffort: 'low',
+  })
+  const replacement = withReplacement.agents.find((agent) => agent.name === 'Replacement coordinator')
+  await service.updateAgent(replacement.id, {
+    instructions: 'Current replacement instructions.', model: 'current-model', reasoningEffort: 'medium',
+  })
+  await service.updateCard(feature.id, { assignedAgentId: replacement.id })
+  await service.updateBoard(board.id, { agentIds: [coordinator.id] })
+  await assert.rejects(service.startFeature(feature.id, { allowWorkspaceWrite: true }), /Enable the assigned agent on this board/u)
+  await service.updateBoard(board.id, { agentIds: [coordinator.id, replacement.id, 'builtin-engineer'] })
+  await service.startFeature(feature.id, { allowWorkspaceWrite: true })
+  const resumedTurn = await waitFor(
+    () => appServer.calls.filter((call) => call.method === 'turn/start')[1],
+    'Replacement coordinator did not resume the feature chat',
+  )
+  const resume = appServer.calls.find((call) => call.method === 'thread/resume')
+  assert.equal(appServer.calls.filter((call) => call.method === 'thread/start').length, 1)
+  assert.equal(resume.params.threadId, 'lead-thread')
+  assert.equal(resume.params.model, 'current-model')
+  assert.equal(resume.params.dynamicTools, undefined)
+  assert.match(resume.params.developerInstructions, /scheduled-task tool/u)
+  assert.match(resume.params.developerInstructions, new RegExp(replacement.id, 'u'))
+  const currentAssignment = resumedTurn.params.additionalContext.codexui_project_board_coordinator
+  assert.equal(currentAssignment.kind, 'application')
+  assert.match(currentAssignment.value, new RegExp(replacement.id, 'u'))
+  assert.match(currentAssignment.value, /supersede earlier coordinator profiles/u)
+  assert.doesNotMatch(currentAssignment.value, new RegExp(coordinator.id, 'u'))
+  assert.match(resumedTurn.params.input[0].text, /Current replacement instructions/u)
+  assert.doesNotMatch(resumedTurn.params.input[0].text, /Stale replacement instructions/u)
+  assert.equal(resumedTurn.params.threadId, 'lead-thread')
+  assert.equal(resumedTurn.params.model, 'current-model')
+  assert.equal(resumedTurn.params.effort, 'medium')
+  assert.equal((await store.read()).runs[0].agentId, replacement.id)
 })
 
 test('drives plan, dependency handoff, Needs You, answer, QA, and completion through the board tool', async (t) => {
-  const { appServer, feature, service, store } = await createHarness(t)
+  const { appServer, board, feature, service, store } = await createHarness(t)
+  const withBuilder = await service.createAgent({
+    boardId: board.id,
+    name: 'Custom builder', role: 'custom', sandbox: 'workspace-write', instructions: 'Implement the feature.',
+  })
+  const builder = withBuilder.agents.find((agent) => agent.name === 'Custom builder')
+  const withReviewer = await service.createAgent({
+    boardId: board.id,
+    name: 'Custom reviewer', role: 'custom', sandbox: 'read-only', instructions: 'Review the feature.',
+  })
+  const reviewer = withReviewer.agents.find((agent) => agent.name === 'Custom reviewer')
   await service.startFeature(feature.id, { allowWorkspaceWrite: true })
   await waitFor(
     () => appServer.calls.find((call) => call.method === 'turn/start'),
@@ -162,7 +238,8 @@ test('drives plan, dependency handoff, Needs You, answer, QA, and completion thr
           title: 'Implement project board',
           description: 'Build the native project board.',
           acceptanceCriteria: 'Persistent UI and service are implemented.',
-          agentRole: 'engineering',
+          agentId: builder.id,
+          taskPurpose: 'work',
           dependsOn: [],
         },
         {
@@ -170,7 +247,8 @@ test('drives plan, dependency handoff, Needs You, answer, QA, and completion thr
           title: 'Validate project board',
           description: 'Check the implementation against its acceptance criteria.',
           acceptanceCriteria: 'All focused tests pass.',
-          agentRole: 'qa',
+          agentId: reviewer.id,
+          taskPurpose: 'verification',
           dependsOn: ['implementation'],
         },
       ],
@@ -182,7 +260,14 @@ test('drives plan, dependency handoff, Needs You, answer, QA, and completion thr
   const qa = snapshot.cards.find((card) => card.title === 'Validate project board')
   assert.ok(implementation)
   assert.ok(qa)
+  assert.equal(implementation.assignedAgentId, builder.id)
+  assert.equal(implementation.taskPurpose, 'work')
+  assert.equal(qa.assignedAgentId, reviewer.id)
+  assert.equal(qa.taskPurpose, 'verification')
   assert.deepEqual(qa.dependencyIds, [implementation.id])
+  assert.deepEqual(JSON.parse(planResult.contentItems[0].text).tasks, [implementation, qa].map(
+    ({ id, title, assignedAgentId, taskPurpose, dependencyIds }) => ({ id, title, assignedAgentId, taskPurpose, dependencyIds }),
+  ))
   assert.equal(implementation.lastRunId, snapshot.runs[0].id)
 
   await assert.rejects(

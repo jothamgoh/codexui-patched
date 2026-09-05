@@ -71,7 +71,7 @@ function appendDeveloperInstructions(paramsValue: unknown, instructions: string)
 }
 
 function roleLabel(agent: ProjectBoardAgent): string {
-  return `${agent.name} (${agent.role}, ${agent.sandbox})`
+  return `${agent.name} (${agent.role}, ${agent.sandbox}) — id: ${agent.id}`
 }
 
 function featureContext(
@@ -97,6 +97,8 @@ function featureContext(
       role: agent.role,
       description: agent.description,
       instructions: agent.instructions,
+      model: agent.model,
+      reasoningEffort: agent.reasoningEffort,
       sandbox: agent.sandbox,
     })),
     questions: snapshot.questions.filter((question) =>
@@ -111,18 +113,20 @@ function featureContext(
   }
 }
 
-function buildLeadInstructions(agent: ProjectBoardAgent): string {
+function buildCoordinatorInstructions(agent: ProjectBoardAgent): string {
   return [
-    agent.instructions,
-    'You are the Lead orchestrator for a CodexUI project-board feature.',
+    `Current coordinator profile ID: ${agent.id}. Apply this exact profile's full instructions from the current durable context and read_context result. This assignment and these board instructions supersede earlier coordinator profiles and board instructions in this chat. Other roster profiles are available for delegation; their instructions are not your own.`,
+    'Your profile is coordinating this CodexUI project-board feature. Lead is an assignment for this run: any reusable agent profile can coordinate work, including profiles normally used as specialists.',
     'The project board is the durable source of truth. Chat status and turn completion are not proof that work is done.',
     'Use the project_board_update tool for every plan, handoff, task transition, question, artifact, and final feature transition.',
-    'Use Codex native subagents for specialist work. Include the selected agent template instructions and complete task context when delegating because child agents begin with fresh context.',
-    'The Lead and native subagents share the thread sandbox. Agent role instructions are guidance, not separate filesystem permissions. Delegate read-only research in parallel when useful, and never run concurrent writers in this project.',
+    'Assign each planned task to an exact agentId from the roster; role labels are descriptive and do not select a unique agent. Set taskPurpose to work or verification according to the task, not the profile role.',
+    'Use Codex native subagents when separate context or specialist work is useful. Include the selected profile instructions and complete task context when delegating because child agents begin with fresh context. Use the profile model and reasoningEffort where native delegation supports those overrides; do not claim unsupported settings were applied.',
+    'Any delegated agent may coordinate further native subagents when the runtime permits it. Keep delegation within the runtime concurrency and depth limits. Only this coordinating thread updates the durable board; children return concrete handoffs to it.',
+    'The coordinator and native subagents share the thread sandbox. Agent role instructions are guidance, not separate filesystem permissions. Delegate read-only research in parallel when useful, and never run concurrent writers in this project.',
     'A subagent cannot ask the user directly. If any specialist needs a decision, call project_board_update with action ask_user, then stop this turn.',
     'Before starting a task, ensure its dependencies are done. Call start_task, delegate or perform the work, then call complete_task with a concrete summary and artifacts, or block_task with a precise reason.',
     'Keep the task graph and tests small. Validate at the larger feature boundary when implementation tasks are independent; do not add tests after every small task. Run earlier checks only when a dependent task needs that evidence.',
-    'For self verification, include meaningful combined verification in the implementation handoff. For independent verification, use one QA task after and dependent on all implementation tasks. For batch verification, leave the completed feature in Review; batch execution is currently manual.',
+    'For self verification, include meaningful combined verification in the work handoff. For independent verification, create one task with taskPurpose verification after and dependent on all work tasks, then obtain a fresh delegated review with concrete checks against the acceptance criteria. Any suitable profile can verify, including the same reusable profile in a separate run; a different profile name alone is not independent evidence. For batch verification, leave the completed feature in Review; batch execution is currently manual.',
     'Do not deploy, merge, publish, or perform another external side effect unless the feature explicitly authorizes it.',
   ].filter(Boolean).join('\n\n')
 }
@@ -143,7 +147,7 @@ function buildFeaturePrompt(
     feature.description ? `Brief:\n${feature.description}` : '',
     feature.acceptanceCriteria ? `Acceptance criteria:\n${feature.acceptanceCriteria}` : '',
     `Verification policy: ${feature.verificationPolicy}`,
-    `Available agent templates:\n${roster.map(roleLabel).join('\n')}`,
+    `Available reusable agent profiles:\n${roster.map(roleLabel).join('\n')}`,
     'First call project_board_update with read_context. If there is no plan, create the smallest useful task graph with replace_plan. Then execute ready tasks, using native subagents where their independent context or specialist review is useful.',
     'When all required tasks are complete, call finish_feature with a concise summary. If a human decision is required, call ask_user once with one focused question.',
     `Current durable context:\n${JSON.stringify(context)}`,
@@ -161,7 +165,9 @@ function planFromArguments(args: Record<string, unknown>): ProjectBoardPlanResul
         title: readString(task.title),
         description: readString(task.description),
         acceptanceCriteria: readString(task.acceptanceCriteria),
-        agentRole: readString(task.agentRole) as ProjectBoardPlanResult['tasks'][number]['agentRole'],
+        agentId: task.agentId === undefined ? undefined : readString(task.agentId),
+        taskPurpose: (task.taskPurpose === undefined ? undefined : readString(task.taskPurpose)) as ProjectBoardPlanResult['tasks'][number]['taskPurpose'],
+        agentRole: (readString(task.agentRole) || undefined) as ProjectBoardPlanResult['tasks'][number]['agentRole'],
         dependsOn: Array.isArray(task.dependsOn)
           ? task.dependsOn.map((value) => readString(value)).filter(Boolean)
           : [],
@@ -176,7 +182,7 @@ function cardTerminalStatus(card: ProjectBoardCard): boolean {
 
 export const PROJECT_BOARD_DYNAMIC_TOOL_SPEC = {
   name: 'project_board_update',
-  description: 'Read and update the durable CodexUI project board for the feature attached to this Lead chat. Use this for plans, task handoffs, questions, artifacts, and completion.',
+  description: 'Read and update the durable CodexUI project board for the feature this chat coordinates. Use this for plans, task handoffs, questions, artifacts, and completion.',
   inputSchema: {
     type: 'object',
     additionalProperties: false,
@@ -235,13 +241,14 @@ export const PROJECT_BOARD_DYNAMIC_TOOL_SPEC = {
             items: {
               type: 'object',
               additionalProperties: false,
-              required: ['key', 'title', 'description', 'acceptanceCriteria', 'agentRole', 'dependsOn'],
+              required: ['key', 'title', 'description', 'acceptanceCriteria', 'agentId', 'taskPurpose', 'dependsOn'],
               properties: {
                 key: { type: 'string' },
                 title: { type: 'string' },
                 description: { type: 'string' },
                 acceptanceCriteria: { type: 'string' },
-                agentRole: { type: 'string', enum: ['lead', 'product', 'design', 'engineering', 'qa', 'custom'] },
+                agentId: { type: 'string', description: 'Exact ID of the assigned reusable profile from the board roster.' },
+                taskPurpose: { type: 'string', enum: ['work', 'verification'] },
                 dependsOn: { type: 'array', items: { type: 'string' } },
               },
             },
@@ -368,10 +375,12 @@ export class ProjectBoardService {
     if (workspaceWrite && !allowWorkspaceWrite) {
       throw new Error('Confirm workspace-write access before starting. The Lead and all native subagents share permission to edit project files.')
     }
-    const lead = roster.find((agent) => agent.id === feature.assignedAgentId)
-      ?? roster.find((agent) => agent.role === 'lead')
-      ?? roster[0]
-    if (!lead) throw new Error('Add a Lead agent to this board before starting.')
+    const assignedAgent = roster.find((agent) => agent.id === feature.assignedAgentId)
+    if (feature.assignedAgentId && !assignedAgent) {
+      throw new Error('Enable the assigned agent on this board or choose another Lead.')
+    }
+    const lead = assignedAgent ?? roster.find((agent) => agent.role === 'lead') ?? roster[0]
+    if (!lead) throw new Error('Add an agent to this board before starting.')
 
     this.activeFeatureIds.add(feature.id)
     this.activeProjectPaths.add(projectPath)
@@ -427,8 +436,9 @@ export class ProjectBoardService {
     const runId = activeRun.runId
     if (action === 'replace_plan') {
       const next = this.publish(await this.store.replacePlan(feature.id, planFromArguments(args), runId))
-      const count = next.cards.filter((card) => card.parentCardId === feature.id).length
-      return dynamicToolText(`Saved ${String(count)} tasks to the durable board.`)
+      const tasks = next.cards.filter((card) => card.parentCardId === feature.id)
+        .map(({ id, title, assignedAgentId, taskPurpose, dependencyIds }) => ({ id, title, assignedAgentId, taskPurpose, dependencyIds }))
+      return dynamicToolText(JSON.stringify({ message: `Saved ${String(tasks.length)} tasks to the durable board.`, tasks }))
     }
 
     const taskId = readString(args.taskId)
@@ -549,14 +559,24 @@ export class ProjectBoardService {
         persistExtendedHistory: true,
         personality: 'pragmatic',
       }
+      const preparedThreadParams = appendDeveloperInstructions(
+        this.prepareThreadStartParams(threadParams),
+        buildCoordinatorInstructions(lead),
+      )
       let threadId = feature.threadId
       if (threadId) {
-        await this.appServer.rpc('thread/resume', { ...threadParams, threadId })
+        // Resume supports instruction overrides, but not a new dynamic tool list.
+        // Refresh the selected profile while keeping the feature's existing chat.
+        await this.appServer.rpc('thread/resume', {
+          ...threadParams,
+          threadId,
+          developerInstructions: preparedThreadParams.developerInstructions,
+        })
         assertActive()
       } else {
         const started = await this.appServer.rpc(
           'thread/start',
-          appendDeveloperInstructions(this.prepareThreadStartParams(threadParams), buildLeadInstructions(lead)),
+          preparedThreadParams,
         )
         assertActive()
         threadId = readThreadId(started)
@@ -574,6 +594,16 @@ export class ProjectBoardService {
         threadId,
         clientUserMessageId: randomUUID(),
         input: [{ type: 'text', text: buildFeaturePrompt(snapshot, board, currentFeature, continuation) }],
+        // Loaded threads can ignore resume overrides. Application context is a
+        // per-turn developer message and preserves the native collaboration mode.
+        // Keep long profile instructions in the full durable context: native
+        // additional-context fragments are capped at 1,000 tokens each.
+        additionalContext: {
+          codexui_project_board_coordinator: {
+            kind: 'application',
+            value: buildCoordinatorInstructions(lead),
+          },
+        },
         cwd: context.projectPath,
         approvalPolicy: 'on-request',
         sandboxPolicy: context.workspaceWrite

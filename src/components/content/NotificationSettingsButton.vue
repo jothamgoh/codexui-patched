@@ -3,20 +3,20 @@
     <PopoverTrigger as-child>
       <button
         class="notification-trigger"
-        :data-has-activity="runningThreads.length > 0 || unreadAttentionCount > 0"
+        :data-has-activity="runningThreads.length > 0 || totalAttentionCount > 0"
         type="button"
         :aria-label="triggerLabel"
         :title="`${triggerLabel} (⌘J)`"
       >
         <Bell class="notification-trigger-icon" />
-        <span v-if="runningThreads.length > 0 || unreadAttentionCount > 0" class="notification-trigger-statuses" aria-hidden="true">
+        <span v-if="runningThreads.length > 0 || totalAttentionCount > 0" class="notification-trigger-statuses" aria-hidden="true">
           <span v-if="runningThreads.length > 0" class="notification-trigger-count is-running">
             <LoaderCircle />
             {{ compactCount(runningThreads.length) }}
           </span>
-          <span v-if="unreadAttentionCount > 0" class="notification-trigger-count is-unread">
+          <span v-if="totalAttentionCount > 0" class="notification-trigger-count is-unread">
             <Circle />
-            {{ compactCount(unreadAttentionCount) }}
+            {{ compactCount(totalAttentionCount) }}
           </span>
         </span>
       </button>
@@ -90,13 +90,39 @@
             @click="activityFilter = 'unread'"
           >
             Unread
-            <span class="notification-filter-count">{{ compactCount(unreadAttentionCount) }}</span>
+            <span class="notification-filter-count">{{ compactCount(totalAttentionCount) }}</span>
           </button>
         </div>
       </div>
 
       <div v-if="activeView === 'activity'" class="notification-activity" role="tabpanel">
         <div v-if="hasVisibleActivity" class="notification-sections">
+          <section v-if="boardAttention.length > 0" class="notification-section">
+            <div class="notification-section-header">
+              <span>Needs you</span>
+              <span class="notification-section-count">{{ boardAttention.length }}</span>
+            </div>
+            <button
+              v-for="item in boardAttention"
+              :key="`board:${item.questionId}`"
+              class="notification-row"
+              type="button"
+              @click="openBoardQuestion(item)"
+            >
+              <span class="notification-row-icon is-failed"><CircleAlert /></span>
+              <span class="notification-row-copy">
+                <span class="notification-row-title-line">
+                  <span class="notification-row-title">{{ item.title }}</span>
+                  <span class="notification-unread-pill">Needs you</span>
+                </span>
+                <span class="notification-row-meta">
+                  <span>Project board</span><span aria-hidden="true">·</span><span>{{ formatRelative(item.createdAtIso) }}</span>
+                </span>
+                <span v-if="item.prompt" class="notification-row-preview">{{ item.prompt }}</span>
+              </span>
+            </button>
+          </section>
+
           <template v-if="activityFilter === 'all'">
             <section v-if="runningThreads.length > 0" class="notification-section">
               <div class="notification-section-header">
@@ -433,10 +459,19 @@ const relativeTimeNow = useRelativeTimeClock()
 const props = defineProps<{
   threads: UiThread[]
   activeThreadId: string
+  boardAttention: Array<{
+    questionId: string
+    boardId: string
+    featureId: string
+    title: string
+    prompt: string
+    createdAtIso: string
+  }>
 }>()
 
 const emit = defineEmits<{
   (event: 'selectThread', threadId: string): void
+  (event: 'selectBoardQuestion', payload: { boardId: string; featureId: string; questionId: string }): void
 }>()
 
 const isOpen = ref(false)
@@ -592,6 +627,7 @@ const canToggleRecentLimit = computed(() =>
   activityFilter.value === 'all' && allRecentHistory.value.length > DEFAULT_RECENT_LIMIT,
 )
 const unreadAttentionCount = computed(() => unreadActivity.value.length)
+const totalAttentionCount = computed(() => unreadAttentionCount.value + props.boardAttention.length)
 const hasUnreadActivity = computed(() => unreadActivity.value.length > 0)
 const hasActivity = computed(() =>
   runningThreads.value.length > 0 ||
@@ -599,13 +635,14 @@ const hasActivity = computed(() =>
   recentHistory.value.length > 0,
 )
 const hasVisibleActivity = computed(() =>
-  activityFilter.value === 'unread' ? hasUnreadActivity.value : hasActivity.value,
+  props.boardAttention.length > 0 || (activityFilter.value === 'unread' ? hasUnreadActivity.value : hasActivity.value),
 )
 const activitySummary = computed(() => {
   const parts: string[] = []
   if (runningThreads.value.length > 0) {
     parts.push(`${runningThreads.value.length.toString()} running`)
   }
+  if (props.boardAttention.length > 0) parts.push(`${props.boardAttention.length.toString()} need you`)
   if (unreadAttentionCount.value > 0) parts.push(`${unreadAttentionCount.value.toString()} unread`)
   return parts.length > 0 ? parts.join(' · ') : 'No chats need attention'
 })
@@ -804,6 +841,11 @@ function openThread(threadId: string): void {
   void markThreadHistoryRead(threadId)
   emit('selectThread', threadId)
   isOpen.value = false
+}
+
+function openBoardQuestion(item: { boardId: string; featureId: string; questionId: string }): void {
+  isOpen.value = false
+  emit('selectBoardQuestion', item)
 }
 
 function openRecentItem(item: RecentActivityItem): void {

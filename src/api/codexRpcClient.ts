@@ -298,7 +298,8 @@ export function subscribeRpcNotifications(
   }
 
   const connectTransport = () => {
-    if (typeof WebSocket !== 'undefined') {
+    // Vite mounts the HTTP bridge; only the production server upgrades WebSockets.
+    if (!import.meta.env.DEV && typeof WebSocket !== 'undefined') {
       connectWebSocket()
       return
     }

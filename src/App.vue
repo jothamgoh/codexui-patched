@@ -16,6 +16,18 @@
             <IconTablerFilePencil class="sidebar-primary-link-icon" />
             <span>New chat</span>
           </button>
+          <button
+            class="sidebar-primary-link"
+            :class="{ 'is-active': isBoardsRoute }"
+            type="button"
+            @click="openBoardsHub"
+          >
+            <SquareKanban class="sidebar-primary-link-icon" />
+            <span>Project boards</span>
+            <span v-if="projectBoardNeedsInputCount" class="sidebar-primary-count is-attention">
+              {{ projectBoardNeedsInputCount }}
+            </span>
+          </button>
         </nav>
 
         <SidebarThreadTree :groups="projectGroups" :project-display-name-by-id="projectDisplayNameById"
@@ -135,7 +147,13 @@
     </template>
 
     <template #content>
-      <section class="content-root" :class="{ 'has-workspace-review': workspaceReviewOpen }">
+      <section
+        class="content-root"
+        :class="{
+          'has-workspace-review': workspaceReviewOpen,
+          'has-board-detail': isBoardsRoute && Boolean(activeProjectBoardFeature),
+        }"
+      >
         <ContentHeader :title="contentTitle">
           <template #leading>
             <SidebarThreadControls
@@ -147,10 +165,10 @@
               @start-new-thread="onStartNewThreadFromToolbar"
             />
           </template>
-          <template v-if="selectedThreadProjectLabel" #meta>
-            <span class="content-project-label" :title="selectedThread?.cwd || selectedThreadProjectLabel">
+          <template v-if="contentProjectLabel" #meta>
+            <span class="content-project-label" :title="contentProjectPath || contentProjectLabel">
               <IconTablerFolder class="content-project-label-icon" />
-              <span class="content-project-label-text">{{ selectedThreadProjectLabel }}</span>
+              <span class="content-project-label-text">{{ contentProjectLabel }}</span>
             </span>
           </template>
           <template #actions>
@@ -166,13 +184,39 @@
               ref="notificationSettingsRef"
               :threads="notificationThreads"
               :active-thread-id="selectedThreadId"
+              :board-attention="projectBoardAttention"
               @select-thread="onSelectThread"
+              @select-board-question="openProjectBoardQuestion"
             />
           </template>
         </ContentHeader>
 
         <section class="content-body">
-          <template v-if="isScheduledRoute">
+          <template v-if="isBoardsRoute">
+            <ProjectBoardsHub
+              :snapshot="projectBoardSnapshot"
+              :is-loading="isLoadingProjectBoards"
+              :is-mutating="isMutatingProjectBoards"
+              :error="projectBoardError"
+              :projects="projectBoardProjectOptions"
+              :initial-board-id="routeBoardId"
+              :initial-feature-id="routeFeatureId"
+              :initial-question-id="routeQuestionId"
+              :initial-project-path="routeBoardProjectPath"
+              @select-project="openProjectBoardProject"
+              @select-board="openProjectBoard"
+              @select-feature="setProjectBoardFeature"
+              :actions="{
+                ensureBoard: onEnsureProjectBoard, createBoard: onCreateProjectBoard,
+                updateBoard: updateProjectBoard, createAgent: createProjectBoardAgent,
+                createCard: onCreateProjectBoardCard, updateCard: updateProjectBoardCard,
+                deleteCard: deleteProjectBoardCard, addComment: onAddProjectBoardComment,
+                answerQuestion: onAnswerProjectBoardQuestion, startFeature: onStartProjectBoardFeature,
+              }"
+              @select-thread="onSelectThread"
+            />
+          </template>
+          <template v-else-if="isScheduledRoute">
             <ScheduledTasksHub
               :tasks="automationSnapshot.tasks"
               :runs="automationSnapshot.runs"
@@ -294,7 +338,7 @@
 
 <script setup lang="ts">
 import { computed, nextTick, onMounted, onUnmounted, ref, watch } from 'vue'
-import { Blocks, CalendarClock } from '@lucide/vue'
+import { Blocks, CalendarClock, SquareKanban } from '@lucide/vue'
 import { useRoute, useRouter } from 'vue-router'
 import DesktopLayout from './components/layout/DesktopLayout.vue'
 import SidebarThreadTree from './components/sidebar/SidebarThreadTree.vue'
@@ -307,6 +351,7 @@ import SkillsHub from './components/content/SkillsHub.vue'
 import McpHub from './components/content/McpHub.vue'
 import PluginsHub from './components/content/PluginsHub.vue'
 import ScheduledTasksHub from './components/content/ScheduledTasksHub.vue'
+import ProjectBoardsHub from './components/content/ProjectBoardsHub.vue'
 import ChatSearchDialog from './components/content/ChatSearchDialog.vue'
 import RateLimitsSummary from './components/content/RateLimitsSummary.vue'
 import ThemeToggleButton from './components/content/ThemeToggleButton.vue'
@@ -325,6 +370,7 @@ import { useDesktopState } from './composables/useDesktopState'
 import { useMobile } from './composables/useMobile'
 import { usePinnedThreads } from './composables/usePinnedThreads'
 import { useAutomations } from './composables/useAutomations'
+import { useProjectBoards } from './composables/useProjectBoards'
 import { useTheme } from './composables/useTheme'
 import { useUiFontSize } from './composables/useUiFontSize'
 import {
@@ -336,6 +382,7 @@ import {
 } from './api/codexGateway'
 import type { ReasoningEffort, ResponseTextAnnotation, ThreadScrollState, UiMessage, UiThread } from './types/codex'
 import type { AutomationDraft } from './types/automations'
+import type { ProjectBoardCardCreateInput, ProjectBoardCreateInput } from './types/projectBoards'
 
 const SIDEBAR_COLLAPSED_STORAGE_KEY = 'codex-web-local.sidebar-collapsed.v1'
 const SIDEBAR_TOOLS_OPEN_STORAGE_KEY = 'codex-web-local.sidebar-tools-open.v1'
@@ -436,6 +483,26 @@ const {
   resolveProposal: resolveAutomationProposal,
   updateRun: updateAutomationRun,
 } = useAutomations()
+const {
+  snapshot: projectBoardSnapshot,
+  isLoading: isLoadingProjectBoards,
+  isMutating: isMutatingProjectBoards,
+  error: projectBoardError,
+  needsInputCount: projectBoardNeedsInputCount,
+  load: refreshProjectBoards,
+  start: startProjectBoards,
+  stop: stopProjectBoards,
+  ensureDefaultBoard: ensureProjectBoard,
+  createBoard: createProjectBoard,
+  updateBoard: updateProjectBoard,
+  createAgent: createProjectBoardAgent,
+  createCard: createProjectBoardCard,
+  updateCard: updateProjectBoardCard,
+  deleteCard: deleteProjectBoardCard,
+  addComment: addProjectBoardComment,
+  answerQuestion: answerProjectBoardQuestion,
+  startFeature: startProjectBoardFeature,
+} = useProjectBoards({ showBrowserNotifications: true })
 const isRouteSyncInProgress = ref(false)
 const hasInitialized = ref(false)
 const newThreadCwd = ref(loadNewThreadCwd())
@@ -464,6 +531,13 @@ const routeThreadId = computed(() => {
   const rawThreadId = route.params.threadId
   return typeof rawThreadId === 'string' ? rawThreadId : ''
 })
+const routeBoardId = computed(() => {
+  const rawBoardId = route.params.boardId
+  return typeof rawBoardId === 'string' ? rawBoardId : ''
+})
+const routeFeatureId = computed(() => typeof route.query.feature === 'string' ? route.query.feature : '')
+const routeQuestionId = computed(() => typeof route.query.question === 'string' ? route.query.question : '')
+const routeBoardProjectPath = computed(() => typeof route.query.project === 'string' ? route.query.project : '')
 
 const knownThreadIdSet = computed(() => {
   const ids = new Set<string>(pinnedThreadIds.value)
@@ -520,6 +594,7 @@ const shortcutThreadIds = computed(() => {
 
 const isHomeRoute = computed(() => route.name === 'home')
 const isScheduledRoute = computed(() => route.name === 'scheduled')
+const isBoardsRoute = computed(() => route.name === 'boards' || route.name === 'board')
 const isSkillsRoute = computed(() => route.name === 'skills')
 const isMcpRoute = computed(() => route.name === 'mcps')
 const isPluginsRoute = computed(() => route.name === 'plugins')
@@ -535,14 +610,19 @@ watch(
 )
 
 const selectedThreadProjectLabel = computed(() => {
-  if (isHomeRoute.value || isScheduledRoute.value || isSkillsRoute.value || isMcpRoute.value || isPluginsRoute.value) return ''
+  if (isHomeRoute.value || isScheduledRoute.value || isBoardsRoute.value || isSkillsRoute.value || isMcpRoute.value || isPluginsRoute.value) return ''
   const thread = selectedThread.value
   if (!thread) return ''
   return projectDisplayNameById.value[thread.projectName] ?? thread.projectName
 })
+const activeProjectBoard = computed(() => projectBoardSnapshot.value.boards.find((board) => board.id === routeBoardId.value) ?? null)
+const activeProjectBoardFeature = computed(() => projectBoardSnapshot.value.cards.find((card) => card.id === routeFeatureId.value && card.boardId === activeProjectBoard.value?.id && !card.parentCardId))
+const contentProjectLabel = computed(() => activeProjectBoard.value?.projectName || selectedThreadProjectLabel.value)
+const contentProjectPath = computed(() => activeProjectBoard.value?.projectPath || selectedThread.value?.cwd || '')
 const themeToggleLabel = computed(() => (isDarkTheme.value ? 'Switch to light mode' : 'Switch to dark mode'))
 const contentTitle = computed(() => {
   if (isScheduledRoute.value) return 'Scheduled tasks'
+  if (isBoardsRoute.value) return activeProjectBoard.value?.name ?? 'Project boards'
   if (isSkillsRoute.value) return 'Skills'
   if (isMcpRoute.value) return 'MCPs'
   if (isPluginsRoute.value) return 'Plugins'
@@ -571,6 +651,7 @@ const workspaceReviewOpen = ref(false)
 const showWorkspaceSummary = computed(() => Boolean(
   !isHomeRoute.value
   && !isScheduledRoute.value
+  && !isBoardsRoute.value
   && !isSkillsRoute.value
   && !isMcpRoute.value
   && !isPluginsRoute.value
@@ -617,6 +698,22 @@ const selectedAutomationProposals = computed(() =>
 const automationUnreadRunCount = computed(() =>
   automationSnapshot.value.runs.filter((run) => run.unread && !run.archived).length,
 )
+const projectBoardAttention = computed(() => projectBoardSnapshot.value.questions
+  .filter((question) => question.status === 'open')
+  .map((question) => {
+    const card = projectBoardSnapshot.value.cards.find((entry) => entry.id === question.cardId)
+    const feature = card?.type === 'feature' || card?.type === 'qa_batch'
+      ? card
+      : projectBoardSnapshot.value.cards.find((entry) => entry.id === card?.parentCardId)
+    return {
+      questionId: question.id,
+      boardId: question.boardId,
+      featureId: feature?.id ?? question.cardId,
+      title: feature?.title ?? card?.title ?? 'Feature needs your input',
+      prompt: question.prompt,
+      createdAtIso: question.createdAtIso,
+    }
+  }))
 const isSelectedThreadInProgress = computed(() => !isHomeRoute.value && selectedThread.value?.inProgress === true)
 const newThreadFolderOptions = computed(() => {
   const options: Array<{ value: string; label: string }> = []
@@ -642,6 +739,10 @@ const newThreadFolderOptions = computed(() => {
 
   return options
 })
+const projectBoardProjectOptions = computed(() => newThreadFolderOptions.value.map((option) => ({
+  path: option.value,
+  name: option.label,
+})))
 onMounted(() => {
   window.addEventListener('keydown', onWindowKeyDown)
   window.addEventListener('keyup', onWindowKeyUp)
@@ -650,6 +751,7 @@ onMounted(() => {
   document.addEventListener('visibilitychange', onAppResume)
   void initialize()
   startAutomations()
+  startProjectBoards()
   void loadHomeDirectory()
   void refreshDefaultProjectName()
 })
@@ -662,6 +764,7 @@ onUnmounted(() => {
   document.removeEventListener('visibilitychange', onAppResume)
   disposePinnedThreads()
   stopAutomations()
+  stopProjectBoards()
   stopPolling()
 })
 
@@ -674,6 +777,7 @@ function onAppResume(): void {
   void refreshFastModePreference()
   void refreshPinnedThreads()
   void refreshAutomations()
+  void refreshProjectBoards()
 }
 
 function onSkillsChanged(): void {
@@ -714,6 +818,78 @@ function openScheduledHub(): void {
   setSidebarToolsOpen(true)
   void router.push({ name: 'scheduled' })
   if (isMobile.value) setSidebarCollapsed(true)
+}
+
+function openBoardsHub(): void {
+  const currentProjectPath = selectedThread.value?.cwd?.trim() || newThreadCwd.value.trim()
+  const projectBoards = projectBoardSnapshot.value.boards.filter((board) => board.projectPath === currentProjectPath)
+  const board = projectBoards.find((entry) => entry.isDefault) ?? projectBoards[0]
+  void router.push(board ? { name: 'board', params: { boardId: board.id } } : { name: 'boards' })
+  if (isMobile.value) setSidebarCollapsed(true)
+}
+
+function openProjectBoardProject(projectPath: string): void {
+  const boards = projectBoardSnapshot.value.boards.filter((board) => board.projectPath === projectPath)
+  const board = boards.find((entry) => entry.isDefault) ?? boards[0]
+  void router.push(board ? { name: 'board', params: { boardId: board.id } } : { name: 'boards', query: { project: projectPath } })
+}
+
+function openProjectBoard(boardId: string): void {
+  if (!boardId) return
+  void router.push({ name: 'board', params: { boardId } })
+  if (isMobile.value) setSidebarCollapsed(true)
+}
+
+function setProjectBoardFeature(featureId: string, boardId = routeBoardId.value, questionId = ''): void {
+  if (!boardId) return
+  void router.replace({
+    name: 'board',
+    params: { boardId },
+    query: featureId ? { feature: featureId, ...(questionId ? { question: questionId } : {}) } : {},
+  })
+}
+
+function openProjectBoardQuestion(payload: { boardId: string; featureId: string; questionId: string }): void {
+  void router.push({
+    name: 'board',
+    params: { boardId: payload.boardId },
+    query: { feature: payload.featureId, question: payload.questionId },
+  })
+  if (isMobile.value) setSidebarCollapsed(true)
+}
+
+async function onEnsureProjectBoard(input: ProjectBoardCreateInput): Promise<void> {
+  const next = await ensureProjectBoard(input)
+  const board = next.boards.find((entry) => entry.projectPath === input.projectPath && entry.isDefault)
+    ?? next.boards.find((entry) => entry.projectPath === input.projectPath)
+  if (board) openProjectBoard(board.id)
+}
+
+async function onCreateProjectBoard(input: ProjectBoardCreateInput): Promise<void> {
+  const previousIds = new Set(projectBoardSnapshot.value.boards.map((board) => board.id))
+  const next = await createProjectBoard(input)
+  const created = next.boards.find((board) => !previousIds.has(board.id))
+  if (created) openProjectBoard(created.id)
+}
+
+async function onCreateProjectBoardCard(input: ProjectBoardCardCreateInput): Promise<void> {
+  const previousIds = new Set(projectBoardSnapshot.value.cards.map((card) => card.id))
+  const next = await createProjectBoardCard(input)
+  const created = next.cards.find((card) => !previousIds.has(card.id))
+  if (created) setProjectBoardFeature(created.id, created.boardId)
+}
+
+async function onAddProjectBoardComment(cardId: string, text: string): Promise<void> {
+  await addProjectBoardComment(cardId, { text })
+}
+
+async function onAnswerProjectBoardQuestion(questionId: string, answer: string): Promise<void> {
+  await answerProjectBoardQuestion(questionId, { answer })
+}
+
+async function onStartProjectBoardFeature(featureId: string, allowWorkspaceWrite: boolean): Promise<void> {
+  requestBrowserTurnNotificationsPermission()
+  await startProjectBoardFeature(featureId, allowWorkspaceWrite)
 }
 
 function openMcpHub(): void {
@@ -1212,13 +1388,14 @@ function findRecoveredConnectionFailureIds(items: UiMessage[]): Set<string> {
 }
 
 async function initialize(): Promise<void> {
+  // Board updates and approval requests must not wait for chat/account hydration.
+  startPolling()
   await Promise.all([
     refreshAll(),
     refreshPinnedThreads(),
   ])
   hasInitialized.value = true
   await syncThreadSelectionWithRoute()
-  startPolling()
 }
 
 async function syncThreadSelectionWithRoute(): Promise<void> {
@@ -1226,7 +1403,15 @@ async function syncThreadSelectionWithRoute(): Promise<void> {
   isRouteSyncInProgress.value = true
 
   try {
-    if (route.name === 'home' || route.name === 'skills' || route.name === 'mcps' || route.name === 'plugins') {
+    if (
+      route.name === 'home'
+      || route.name === 'scheduled'
+      || route.name === 'boards'
+      || route.name === 'board'
+      || route.name === 'skills'
+      || route.name === 'mcps'
+      || route.name === 'plugins'
+    ) {
       if (selectedThreadId.value !== '') {
         await selectThread('')
       }
@@ -1273,7 +1458,7 @@ watch(
   async (threadId) => {
     if (!hasInitialized.value) return
     if (isRouteSyncInProgress.value) return
-    if (isHomeRoute.value || isScheduledRoute.value || isSkillsRoute.value || isMcpRoute.value || isPluginsRoute.value) return
+    if (isHomeRoute.value || isScheduledRoute.value || isBoardsRoute.value || isSkillsRoute.value || isMcpRoute.value || isPluginsRoute.value) return
 
     if (!threadId) {
       if (route.name !== 'home') {
@@ -1373,6 +1558,10 @@ async function submitFirstMessageForNewThread(
   .content-root.has-workspace-review {
     padding-right: min(64rem, max(34rem, 46vw));
   }
+
+  .content-root.has-board-detail {
+    padding-right: min(42rem, 44vw);
+  }
 }
 
 .sidebar-thread-controls-host {
@@ -1405,6 +1594,10 @@ async function submitFirstMessageForNewThread(
   @apply ml-auto min-w-5 rounded-full px-1.5 py-0.5 text-center text-[10px] font-semibold leading-none;
   background: var(--accent-blue-soft, #dbeafe);
   color: var(--accent-blue, #2563eb);
+}
+
+.sidebar-primary-count.is-attention {
+  @apply bg-amber-100 text-amber-800;
 }
 
 .sidebar-bottom-stack {

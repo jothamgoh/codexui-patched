@@ -10,7 +10,7 @@ import type {
 
 export type ProjectBoardUpdateInput = Partial<Pick<
   ProjectBoard,
-  'name' | 'isDefault' | 'agentIds' | 'autoDispatch' | 'maxConcurrentRuns'
+  'name' | 'isDefault' | 'agentIds' | 'autoDispatch'
 >>
 
 export type ProjectBoardAgentUpdateInput = Partial<Pick<
@@ -28,9 +28,6 @@ export type ProjectBoardCardUpdateInput = Partial<Pick<
   | 'verificationPolicy'
   | 'assignedAgentId'
   | 'autoRun'
-  | 'threadId'
-  | 'summary'
-  | 'progressNote'
 >>
 
 export type ProjectBoardCommentInput = {
@@ -203,9 +200,9 @@ export function answerProjectBoardQuestion(
   )
 }
 
-export function startProjectBoardFeature(featureId: string): Promise<ProjectBoardSnapshot> {
+export function startProjectBoardFeature(featureId: string, allowWorkspaceWrite = false): Promise<ProjectBoardSnapshot> {
   return requestProjectBoardSnapshot(
     projectBoardPath(`project-board-cards/${encodeURIComponent(featureId)}/start`),
-    { method: 'POST' },
+    jsonRequest('POST', { allowWorkspaceWrite }),
   )
 }

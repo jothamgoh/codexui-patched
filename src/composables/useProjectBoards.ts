@@ -28,15 +28,14 @@ import type {
   ProjectBoardCreateInput,
   ProjectBoardSnapshot,
 } from '../types/projectBoards'
+import {
+  markProjectBoardAttentionSeen,
+  projectBoardNeedsInputDeepLink,
+  showProjectBoardNeedsInputNotification,
+  type ProjectBoardNeedsInput,
+} from '../utils/projectBoardNotifications'
 
-export type ProjectBoardNeedsInput = {
-  boardId: string
-  featureId: string
-  cardId: string
-  questionId: string
-  title: string
-  message: string
-}
+export type { ProjectBoardNeedsInput } from '../utils/projectBoardNotifications'
 
 export type ProjectBoardNeedsInputHandler = (
   attention: ProjectBoardNeedsInput,
@@ -88,50 +87,6 @@ function toNeedsInput(value: unknown): ProjectBoardNeedsInput | null {
   }
 }
 
-export function projectBoardNeedsInputDeepLink(attention: ProjectBoardNeedsInput): string {
-  const params = new URLSearchParams({
-    feature: attention.featureId,
-    question: attention.questionId,
-  })
-  return `#/board/${encodeURIComponent(attention.boardId)}?${params.toString()}`
-}
-
-export function openProjectBoardDeepLink(deepLink: string): void {
-  if (typeof window === 'undefined') return
-  window.focus()
-  window.location.hash = deepLink.startsWith('#') ? deepLink.slice(1) : deepLink
-}
-
-export function showProjectBoardNeedsInputNotification(
-  attention: ProjectBoardNeedsInput,
-  deepLink: string,
-  notifyWhenFocused: boolean,
-): Notification | null {
-  if (typeof window === 'undefined' || typeof Notification === 'undefined') return null
-  if (Notification.permission !== 'granted') return null
-  if (!notifyWhenFocused && document.visibilityState === 'visible' && document.hasFocus()) return null
-
-  try {
-    const notification = new Notification('CodexUI needs your input', {
-      body: 'Open the project board to answer a question.',
-      tag: `project-board-question:${attention.questionId}`,
-      data: {
-        url: deepLink,
-        boardId: attention.boardId,
-        featureId: attention.featureId,
-        questionId: attention.questionId,
-      },
-    })
-    notification.onclick = () => {
-      notification.close()
-      openProjectBoardDeepLink(deepLink)
-    }
-    return notification
-  } catch {
-    return null
-  }
-}
-
 export function useProjectBoards(options: UseProjectBoardsOptions = {}) {
   const snapshot = ref<ProjectBoardSnapshot>(emptySnapshot())
   const isLoading = ref(false)
@@ -164,8 +119,7 @@ export function useProjectBoards(options: UseProjectBoardsOptions = {}) {
 
   function handleNeedsInput(value: unknown): void {
     const attention = toNeedsInput(value)
-    if (!attention || seenAttentionIds.has(attention.questionId)) return
-    seenAttentionIds.add(attention.questionId)
+    if (!attention || !markProjectBoardAttentionSeen(seenAttentionIds, attention.questionId)) return
     const deepLink = projectBoardNeedsInputDeepLink(attention)
 
     try {
@@ -251,7 +205,7 @@ export function useProjectBoards(options: UseProjectBoardsOptions = {}) {
       mutate(() => addProjectBoardComment(cardId, input)),
     answerQuestion: (questionId: string, input: ProjectBoardQuestionAnswerInput) =>
       mutate(() => answerProjectBoardQuestion(questionId, input)),
-    startFeature: (featureId: string) =>
-      mutate(() => startProjectBoardFeature(featureId)),
+    startFeature: (featureId: string, allowWorkspaceWrite = false) =>
+      mutate(() => startProjectBoardFeature(featureId, allowWorkspaceWrite)),
   }
 }

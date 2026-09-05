@@ -28,6 +28,16 @@ const router = createRouter({
       component: EmptyRouteView,
     },
     {
+      path: '/boards',
+      name: 'boards',
+      component: EmptyRouteView,
+    },
+    {
+      path: '/board/:boardId',
+      name: 'board',
+      component: EmptyRouteView,
+    },
+    {
       path: '/mcps',
       name: 'mcps',
       component: EmptyRouteView,

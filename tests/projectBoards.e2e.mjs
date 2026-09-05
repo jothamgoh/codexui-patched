@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict'
 import { spawn } from 'node:child_process'
-import { mkdtemp, mkdir, rm, writeFile } from 'node:fs/promises'
+import { mkdtemp, mkdir, readFile, rm, writeFile } from 'node:fs/promises'
 import { join, resolve } from 'node:path'
 import { tmpdir } from 'node:os'
 import { fileURLToPath } from 'node:url'
@@ -92,6 +92,8 @@ snapshot.boards.push({ ...snapshot.boards[0], id: 'board-2', projectPath: second
 snapshot.questions.push({ ...snapshot.questions[0], id: 'question-2', prompt: 'Which feature should ship first?' })
 
 await writeFile(join(fixtureHome, 'codexui-project-boards.json'), `${JSON.stringify(snapshot, null, 2)}\n`, { mode: 0o600 })
+const fixtureEnvFile = join(fixtureHome, 'empty.env')
+await writeFile(fixtureEnvFile, '', { mode: 0o600 })
 await mkdir(outputDirectory, { recursive: true })
 
 const server = spawn('npm', ['run', 'dev', '--', '--host', '127.0.0.1', '--port', String(port), '--strictPort'], {
@@ -99,6 +101,20 @@ const server = spawn('npm', ['run', 'dev', '--', '--host', '127.0.0.1', '--port'
   env: {
     ...process.env,
     CODEX_HOME: fixtureHome,
+    CODEXUI_ENV_FILE: fixtureEnvFile,
+    CODEXUI_WEB_PUSH_STATE_FILE: join(fixtureHome, 'push-state.json'),
+    CODEXUI_WEB_PUSH_PUBLIC_KEY: '',
+    CODEXUI_WEB_PUSH_PRIVATE_KEY: '',
+    CODEXUI_TELEGRAM_NOTIFICATIONS: 'false',
+    CODEXUI_TELEGRAM_BOT_TOKEN: '',
+    CODEXUI_TELEGRAM_CHAT_ID: '',
+    TELEGRAM_BOT_TOKEN: '',
+    TELEGRAM_CHAT_ID: '',
+    MY_TELEGRAM_CHAT_ID: '',
+    CODEXUI_PUBLIC_BASE_URL: origin,
+    CODEXUI_BASE_URL: origin,
+    PUBLIC_BASE_URL: origin,
+    PUBLIC_URL: origin,
     VITE_WORKTREE_NAME: 'board-e2e',
   },
   stdio: ['ignore', 'pipe', 'pipe'],
@@ -135,6 +151,10 @@ let mobileBrowser
 let mobilePage
 try {
   await waitForServer()
+  const isolatedPushState = JSON.parse(await readFile(join(fixtureHome, 'push-state.json'), 'utf8'))
+  assert.equal(isolatedPushState.subscriptions.length, 0, 'Browser fixture must not load real push subscribers')
+  const isolatedTelegram = await (await fetch(`${origin}/codex-api/telegram/config`)).json()
+  assert.equal(isolatedTelegram.data.available, false, 'Browser fixture must not load Telegram credentials')
   browser = await chromium.launch({ headless: true })
   page = await browser.newPage({ viewport: { width: 1600, height: 1000 }, deviceScaleFactor: 1 })
   await page.route('**/codex-api/project-board-models', (route) => route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ data: { defaultModel: 'build-model', defaultReasoningEffort: 'high', models: [

@@ -2620,7 +2620,7 @@ export function useDesktopState() {
     const index = current.findIndex((row) => row.id === request.id)
     const nextRows = [...current]
     if (index >= 0) {
-      nextRows.splice(index, 1, request)
+      nextRows.splice(index, 1, { ...current[index], ...request })
     } else {
       nextRows.push(request)
     }
@@ -4857,6 +4857,9 @@ export function useDesktopState() {
   }
 
   async function respondToPendingServerRequest(reply: UiServerRequestReply): Promise<void> {
+    const pending = Object.values(pendingServerRequestsByThreadId.value).flat().find((request) => request.id === reply.id)
+    if (pending?.replyState === 'sending') return
+    if (pending) upsertPendingServerRequest({ ...pending, replyState: 'sending', replyError: undefined })
     try {
       await replyToServerRequest(reply.id, {
         result: reply.result,
@@ -4864,7 +4867,11 @@ export function useDesktopState() {
       })
       removePendingServerRequestById(reply.id)
     } catch (unknownError) {
-      error.value = unknownError instanceof Error ? unknownError.message : 'Failed to reply to server request'
+      const message = unknownError instanceof Error ? unknownError.message : 'Failed to reply to server request'
+      error.value = message
+      // Another client may have resolved the request while this reply was in flight.
+      const current = Object.values(pendingServerRequestsByThreadId.value).flat().find((request) => request.id === reply.id)
+      if (current) upsertPendingServerRequest({ ...current, replyState: 'failed', replyError: message })
     }
   }
 

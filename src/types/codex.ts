@@ -300,6 +300,8 @@ export type UiServerRequest = {
   itemId: string
   receivedAtIso: string
   params: unknown
+  replyState?: 'sending' | 'failed'
+  replyError?: string
 }
 
 export type UiServerRequestReply = {

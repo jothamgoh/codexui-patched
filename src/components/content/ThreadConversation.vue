@@ -22,7 +22,7 @@
       </li>
 
       <li
-        v-for="request in pendingRequests"
+        v-for="request in otherPendingRequests"
         :key="`server-request:${request.id}`"
         class="conversation-item conversation-item-request"
       >
@@ -46,38 +46,6 @@
                 <button type="button" class="request-button" @click="onRespondApproval(request.id, 'acceptForSession')">Accept for Session</button>
                 <button type="button" class="request-button" @click="onRespondApproval(request.id, 'decline')">Decline</button>
                 <button type="button" class="request-button" @click="onRespondApproval(request.id, 'cancel')">Cancel</button>
-              </section>
-
-              <section v-else-if="request.method === 'item/tool/requestUserInput'" class="request-user-input">
-                <div
-                  v-for="question in readToolQuestions(request)"
-                  :key="`${request.id}:${question.id}`"
-                  class="request-question"
-                >
-                  <p class="request-question-title">{{ question.header || question.question }}</p>
-                  <p v-if="question.header && question.question" class="request-question-text">{{ question.question }}</p>
-                  <select
-                    class="request-select"
-                    :value="readQuestionAnswer(request.id, question.id, question.options[0] || '')"
-                    @change="onQuestionAnswerChange(request.id, question.id, $event)"
-                  >
-                    <option v-for="option in question.options" :key="`${request.id}:${question.id}:${option}`" :value="option">
-                      {{ option }}
-                    </option>
-                  </select>
-                  <input
-                    v-if="question.isOther"
-                    class="request-input"
-                    type="text"
-                    :value="readQuestionOtherAnswer(request.id, question.id)"
-                    placeholder="Other answer"
-                    @input="onQuestionOtherAnswerInput(request.id, question.id, $event)"
-                  />
-                </div>
-
-                <button type="button" class="request-button request-button-primary" @click="onRespondToolRequestUserInput(request)">
-                  Submit Answers
-                </button>
               </section>
 
               <section v-else-if="request.method === 'item/tool/call'" class="request-actions">
@@ -346,7 +314,7 @@
           </div>
         </div>
       </li>
-      <li v-if="liveOverlay" class="conversation-item conversation-item-overlay" data-role="assistant">
+      <li v-if="liveOverlay && userInputRequests.length === 0" class="conversation-item conversation-item-overlay" data-role="assistant">
         <div class="message-row" data-role="assistant">
           <div class="message-stack" data-role="assistant">
             <article class="live-overlay-inline" aria-live="polite">
@@ -374,6 +342,11 @@
             </article>
           </div>
         </div>
+      </li>
+      <li v-for="request in userInputRequests" :key="`question:${request.threadId}:${request.id}`" class="conversation-item conversation-item-request">
+        <div class="message-row"><div class="message-stack">
+          <RequestUserInputCard :request="request" :draft="questionDraftFor(request)" @respond="emit('respondServerRequest', $event)" />
+        </div></div>
       </li>
       <li ref="bottomAnchorRef" class="conversation-bottom-anchor" />
     </ul>
@@ -665,6 +638,8 @@ import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import markdownit from 'markdown-it'
 import ConversationItem from './ConversationItem.vue'
 import SubAgentActivityCard from './SubAgentActivityCard.vue'
+import RequestUserInputCard from './RequestUserInputCard.vue'
+import type { RequestQuestionDraft } from '../../api/requestUserInput'
 import { MessageSquare, MessageSquarePlus, MessageSquareQuote } from '@lucide/vue'
 import { RouterLink } from 'vue-router'
 import {
@@ -965,8 +940,18 @@ const conversationListRef = ref<HTMLElement | null>(null)
 const bottomAnchorRef = ref<HTMLElement | null>(null)
 const modalImageUrl = ref('')
 const showScrollToBottom = ref(false)
-const toolQuestionAnswers = ref<Record<string, string>>({})
-const toolQuestionOtherAnswers = ref<Record<string, string>>({})
+const userInputRequests = computed(() => props.pendingRequests.filter((request) => request.method === 'item/tool/requestUserInput'))
+const otherPendingRequests = computed(() => props.pendingRequests.filter((request) => request.method !== 'item/tool/requestUserInput'))
+// Keep unfinished answers across chat navigation, with a bounded in-memory cache.
+const questionDrafts = ref(new Map<string, RequestQuestionDraft>())
+function questionDraftFor(request: UiServerRequest): RequestQuestionDraft {
+  const key = JSON.stringify([request.threadId, request.id, request.itemId])
+  if (!questionDrafts.value.has(key)) {
+    if (questionDrafts.value.size >= 20) questionDrafts.value.delete(questionDrafts.value.keys().next().value!)
+    questionDrafts.value.set(key, { index: 0, answers: new Map() })
+  }
+  return questionDrafts.value.get(key)!
+}
 const capturedResponseSelection = ref<CapturedResponseSelection | null>(null)
 const responseAnnotationEditor = ref<CapturedResponseSelection | null>(null)
 const responseAnnotationDraft = ref('')
@@ -1564,14 +1549,6 @@ function syncCoarsePointerPreference(event?: MediaQueryListEvent): void {
   hasCoarsePointer.value = event?.matches ?? coarsePointerMediaQuery?.matches ?? false
 }
 
-type ParsedToolQuestion = {
-  id: string
-  header: string
-  question: string
-  isOther: boolean
-  options: string[]
-}
-
 function toRenderableImageUrl(value: string): string {
   const normalized = value.trim()
   if (!normalized) return ''
@@ -1616,93 +1593,10 @@ function readRequestReason(request: UiServerRequest): string {
   return typeof reason === 'string' ? reason.trim() : ''
 }
 
-function toolQuestionKey(requestId: number, questionId: string): string {
-  return `${String(requestId)}:${questionId}`
-}
-
-function readToolQuestions(request: UiServerRequest): ParsedToolQuestion[] {
-  const params = asRecord(request.params)
-  const questions = Array.isArray(params?.questions) ? params.questions : []
-  const parsed: ParsedToolQuestion[] = []
-
-  for (const row of questions) {
-    const question = asRecord(row)
-    if (!question) continue
-    const id = typeof question.id === 'string' ? question.id : ''
-    if (!id) continue
-
-    const options = Array.isArray(question.options)
-      ? question.options
-        .map((option) => asRecord(option))
-        .map((option) => option?.label)
-        .filter((option): option is string => typeof option === 'string' && option.length > 0)
-      : []
-
-    parsed.push({
-      id,
-      header: typeof question.header === 'string' ? question.header : '',
-      question: typeof question.question === 'string' ? question.question : '',
-      isOther: question.isOther === true,
-      options,
-    })
-  }
-
-  return parsed
-}
-
-function readQuestionAnswer(requestId: number, questionId: string, fallback: string): string {
-  const key = toolQuestionKey(requestId, questionId)
-  const saved = toolQuestionAnswers.value[key]
-  if (typeof saved === 'string' && saved.length > 0) return saved
-  return fallback
-}
-
-function readQuestionOtherAnswer(requestId: number, questionId: string): string {
-  const key = toolQuestionKey(requestId, questionId)
-  return toolQuestionOtherAnswers.value[key] ?? ''
-}
-
-function onQuestionAnswerChange(requestId: number, questionId: string, event: Event): void {
-  const target = event.target
-  if (!(target instanceof HTMLSelectElement)) return
-  const key = toolQuestionKey(requestId, questionId)
-  toolQuestionAnswers.value = {
-    ...toolQuestionAnswers.value,
-    [key]: target.value,
-  }
-}
-
-function onQuestionOtherAnswerInput(requestId: number, questionId: string, event: Event): void {
-  const target = event.target
-  if (!(target instanceof HTMLInputElement)) return
-  const key = toolQuestionKey(requestId, questionId)
-  toolQuestionOtherAnswers.value = {
-    ...toolQuestionOtherAnswers.value,
-    [key]: target.value,
-  }
-}
-
 function onRespondApproval(requestId: number, decision: 'accept' | 'acceptForSession' | 'decline' | 'cancel'): void {
   emit('respondServerRequest', {
     id: requestId,
     result: { decision },
-  })
-}
-
-function onRespondToolRequestUserInput(request: UiServerRequest): void {
-  const questions = readToolQuestions(request)
-  const answers: Record<string, { answers: string[] }> = {}
-
-  for (const question of questions) {
-    const selected = readQuestionAnswer(request.id, question.id, question.options[0] || '')
-    const other = readQuestionOtherAnswer(request.id, question.id).trim()
-    const values = [selected, other].map((value) => value.trim()).filter((value) => value.length > 0)
-    answers[question.id] = { answers: values }
-  }
-
-  emit('respondServerRequest', {
-    id: request.id,
-    result: { answers },
   })
 }
 
@@ -2312,29 +2206,7 @@ onBeforeUnmount(() => {
   @apply border-amber-500 bg-amber-500 text-white hover:bg-amber-600;
 }
 
-.request-user-input {
-  @apply flex flex-col gap-3;
-}
 
-.request-question {
-  @apply flex flex-col gap-1;
-}
-
-.request-question-title {
-  @apply m-0 text-sm leading-5 font-medium text-amber-900;
-}
-
-.request-question-text {
-  @apply m-0 text-xs leading-4 text-amber-800;
-}
-
-.request-select {
-  @apply h-8 rounded-md border border-amber-300 bg-white px-2 text-sm text-amber-900;
-}
-
-.request-input {
-  @apply h-8 rounded-md border border-amber-300 bg-white px-2 text-sm text-amber-900 placeholder:text-amber-500;
-}
 
 .live-overlay-inline {
   @apply w-full px-0 py-0 flex flex-col gap-1;

@@ -580,7 +580,9 @@ export class ProjectBoardService {
     if (!lead) throw new Error('Add an agent to this board before starting.')
 
     const settings = await this.resolveExecutionSettings({ model: feature.model || lead.model, reasoningEffort: feature.reasoningEffort || lead.reasoningEffort })
-    if (queue && queue.status !== 'running') throw new Error('The queue was paused before this feature started.')
+    if (queue && (queue.status !== 'running' || this.queues.get(queue.boardId) !== queue || queue.currentFeatureId !== featureId)) {
+      throw new Error('The queue was paused or replaced before this feature started.')
+    }
     if (generation !== this.processGeneration) throw new Error('Codex app-server exited. Select Start to retry.')
     if (this.activeFeatureIds.has(featureId) || this.activeProjectPaths.has(projectPath)) throw new Error('Another feature is running in this project.')
     this.activeFeatureIds.add(feature.id)
@@ -917,13 +919,20 @@ export class ProjectBoardService {
   private queueContinuation(featureId: string): void {
     // Consent belongs to this service session. Answers and restarts cannot grant it.
     const generation = this.processGeneration
+    const queue = [...this.queues.values()].find((entry) => entry.status === 'running' && entry.currentFeatureId === featureId)
+    const queueIsCurrent = () => !queue || (this.queues.get(queue.boardId) === queue && queue.status === 'running' && queue.currentFeatureId === featureId)
     const timer = setTimeout(() => {
-      if (generation !== this.processGeneration || !this.workspaceWriteByFeatureId.has(featureId) || this.activeFeatureIds.has(featureId)) return
-      void this.startFeatureRun(featureId, true, this.workspaceWriteByFeatureId.get(featureId) === true).catch(async (error) => {
-        if (this.activeFeatureIds.has(featureId)) return
+      if (generation !== this.processGeneration || !queueIsCurrent() || !this.workspaceWriteByFeatureId.has(featureId) || this.activeFeatureIds.has(featureId)) return
+      void this.startFeatureRun(featureId, true, this.workspaceWriteByFeatureId.get(featureId) === true, 'execute', queue).catch(async (error) => {
+        // A paused/replaced queue cannot authorize a pending continuation, and
+        // its late rejection must not block a replacement queue's feature.
+        if (generation !== this.processGeneration || !queueIsCurrent() || this.activeFeatureIds.has(featureId)) return
+        const reason = error instanceof Error ? error.message : 'Feature could not continue.'
+        if (queue) this.pauseQueue(queue.boardId, reason)
+        this.workspaceWriteByFeatureId.delete(featureId)
         this.publish(await this.store.updateFeatureRuntime(featureId, {
           status: 'blocked',
-          progressNote: error instanceof Error ? error.message : 'Feature could not continue.',
+          progressNote: reason,
         }))
       })
     }, 25)

@@ -657,3 +657,60 @@ test('runs only the approved ready queue and pauses at questions without answer-
   await assert.rejects(pendingFeature, /feature changed while starting/u)
   assert.equal((await store.read()).runs.filter((run) => run.status === 'running').length, 0)
 })
+
+
+test('pending automatic continuations respect queue pause, failure, and replacement', async (t) => {
+  for (const scenario of ['pause', 'failure', 'replacement']) {
+    const { appServer, board, feature, store } = await createHarness(t)
+    const pending = new Map()
+    let lookups = 0
+    const service = new ProjectBoardService({ store, appServer, resolveExecutionSettings: async (settings) => {
+      const lookup = ++lookups
+      if (lookup === 2 || (scenario === 'replacement' && lookup === 3)) {
+        return new Promise((resolve, reject) => pending.set(lookup, { resolve: () => resolve(settings), reject }))
+      }
+      return settings
+    } })
+    await service.startBoardQueue(board.id, { featureIds: [feature.id], allowWorkspaceWrite: true })
+    await waitFor(() => appServer.calls.find((call) => call.method === 'turn/start'), 'First queue turn did not start')
+    await service.handleDynamicToolCall(toolCall('lead-thread', 'replace_plan', { plan: { summary: 'Work remains.', tasks: [
+      { key: 'work', title: 'Remaining work', description: 'Continue the implementation.', acceptanceCriteria: 'Work checked.', agentId: 'builtin-engineer', taskPurpose: 'work', dependsOn: [] },
+    ] } }))
+    await service.handleNotification({ method: 'turn/completed', params: { threadId: 'lead-thread', turn: { id: 'lead-turn-1', status: 'completed' } } })
+    await waitFor(() => pending.has(2), 'Automatic continuation did not reach model lookup')
+    if (scenario === 'failure') {
+      pending.get(2).reject(new Error('Selected model became unavailable.'))
+      await waitFor(() => appServer.notifications.some((notification) => notification.method === 'codexui/projectBoards/updated'
+        && notification.params.cards.some((card) => card.id === feature.id && card.status === 'blocked')), 'Continuation failure was not recorded')
+      const state = await service.read()
+      assert.equal(state.queues[0].status, 'paused')
+      assert.match(state.queues[0].reason, /model became unavailable/u)
+      assert.equal(state.runs.filter((run) => run.status === 'running').length, 0)
+    } else {
+      await service.stopBoardQueue(board.id)
+      if (scenario === 'pause') {
+        pending.get(2).resolve()
+        await delay(60)
+        const state = await service.read()
+        assert.equal(appServer.calls.filter((call) => call.method === 'turn/start').length, 1)
+        assert.equal(state.queues[0].status, 'paused')
+        assert.equal(state.runs.filter((run) => run.status === 'running').length, 0)
+      } else {
+        const replacement = service.startBoardQueue(board.id, { featureIds: [feature.id], allowWorkspaceWrite: true })
+        await waitFor(() => pending.has(3), 'Replacement queue did not reach model lookup')
+        pending.get(2).reject(new Error('Stale continuation failed after replacement.'))
+        await delay(60)
+        let state = await service.read()
+        assert.equal(state.queues[0].status, 'running')
+        assert.equal(state.cards.find((card) => card.id === feature.id).status, 'backlog')
+        pending.get(3).resolve()
+        await replacement
+        await waitFor(() => appServer.calls.filter((call) => call.method === 'turn/start')[1], 'Replacement queue was stranded')
+        state = await service.read()
+        assert.equal(state.queues[0].status, 'running')
+        assert.equal(state.runs[0].status, 'running')
+      }
+    }
+    await service.handleNotification({ method: 'codexui/appServer/exited', params: {} })
+  }
+})

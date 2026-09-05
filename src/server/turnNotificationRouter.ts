@@ -5,6 +5,9 @@ import {
   resolveCodexThreadAudience,
   type CodexThreadAudience,
 } from '../utils/codexThreadSource.js'
+import type { ProjectBoardSnapshot } from '../types/projectBoards'
+import type { ProjectBoardNotification } from '../utils/projectBoardNotifications'
+import { collectProjectBoardNotifications, projectBoardThreadIds } from './projectBoardNotificationEvents.js'
 
 type BridgeNotification = {
   method: string
@@ -16,14 +19,18 @@ type NotificationBridge = {
   listThreads: (params: Record<string, unknown>) => Promise<unknown>
   readThread: (threadId: string) => Promise<unknown>
   subscribeNotifications: (listener: (notification: BridgeNotification) => void) => () => void
+  readProjectBoards?: () => Promise<ProjectBoardSnapshot>
+  publishLocalNotification?: (method: string, params: unknown) => void
 }
 
 type TurnNotificationSink = {
   handleNotification: (notification: BridgeNotification) => void
+  handleProjectBoardNotification?: (event: ProjectBoardNotification) => void | Promise<unknown>
 }
 
 type WebPushNotificationSink = TurnNotificationSink & {
   removeThreadHistory: (threadIds: Iterable<string>) => Promise<void>
+  resolveProjectBoardQuestions?: (questionIds: string[], atIso: string) => Promise<void>
 }
 
 export type TurnNotificationRouter = {
@@ -67,6 +74,9 @@ export function createTurnNotificationRouter(
   const threadLookupTimeoutMs = options.threadLookupTimeoutMs ?? DEFAULT_THREAD_LOOKUP_TIMEOUT_MS
   const backfillRequestTimeoutMs = options.backfillRequestTimeoutMs ?? DEFAULT_BACKFILL_REQUEST_TIMEOUT_MS
   let disposed = false
+  let boardSnapshot: ProjectBoardSnapshot | null = null
+  let boardThreadIds = new Set<string>()
+  let boardDeliveryQueue = Promise.resolve()
 
   const removeInternalHistory = (threadIds: Iterable<string>): void => {
     void options.webPushTurnNotifier.removeThreadHistory(threadIds).catch((error: unknown) => {
@@ -97,15 +107,65 @@ export function createTurnNotificationRouter(
     return lookup
   }
 
+  const observeBoardSnapshot = (snapshot: ProjectBoardSnapshot): void => {
+    if (disposed || (boardSnapshot && snapshot.version <= boardSnapshot.version)) return
+    const events = boardSnapshot ? collectProjectBoardNotifications(boardSnapshot, snapshot) : []
+    const openQuestionIds = new Set(snapshot.questions.filter((question) => question.status === 'open').map((question) => question.id))
+    const resolvedQuestionIds = (boardSnapshot?.questions ?? [])
+      .filter((question) => question.status === 'open' && !openQuestionIds.has(question.id))
+      .map((question) => question.id)
+    boardSnapshot = snapshot
+    const nextBoardThreadIds = projectBoardThreadIds(snapshot)
+    const addedThreadIds = [...nextBoardThreadIds].filter((id) => !boardThreadIds.has(id))
+    boardThreadIds = nextBoardThreadIds
+    if (addedThreadIds.length) removeInternalHistory(addedThreadIds)
+    if (resolvedQuestionIds.length) {
+      boardDeliveryQueue = boardDeliveryQueue.then(async () => {
+        if (disposed) return
+        await options.webPushTurnNotifier.resolveProjectBoardQuestions?.(resolvedQuestionIds, snapshot.updatedAtIso)
+        options.bridge.publishLocalNotification?.('codexui/projectBoards/historyUpdated', {})
+      }).catch((error: unknown) => {
+        const message = error instanceof Error ? error.message : String(error)
+        console.warn(`[project-boards] Could not resolve question notification: ${message}`)
+      })
+    }
+    for (const event of events) {
+      boardDeliveryQueue = boardDeliveryQueue.then(async () => {
+        if (disposed) return
+        // The existing push history is also the durable inbox and dedupe source.
+        const recorded = await options.webPushTurnNotifier.handleProjectBoardNotification?.(event)
+        if (recorded === false) return
+        options.bridge.publishLocalNotification?.('codexui/projectBoards/notification', event)
+        await options.telegramTurnNotifier.handleProjectBoardNotification?.(event)
+      }).catch((error: unknown) => {
+        const message = error instanceof Error ? error.message : String(error)
+        console.warn(`[project-boards] Could not deliver board notification: ${message}`)
+      })
+    }
+  }
+
+  // Establish a baseline on startup; reopening the app must not replay old work.
+  let boardSnapshotQueue = options.bridge.readProjectBoards
+    ? withTimeout(options.bridge.readProjectBoards(), backfillRequestTimeoutMs, 'project board notification baseline')
+      .then(observeBoardSnapshot)
+      .catch((error: unknown) => {
+        const message = error instanceof Error ? error.message : String(error)
+        console.warn(`[project-boards] Could not load notification baseline: ${message}`)
+      })
+    : Promise.resolve()
+
   const deliverCompletion = async (notification: BridgeNotification): Promise<void> => {
     const threadId = readCodexNotificationThreadId(notification)
     if (!threadId) return
+    await boardSnapshotQueue
+    if (disposed || boardThreadIds.has(threadId)) return
 
     const resolvedAudience = await resolveAudience(threadId)
     const audience = resolvedAudience === 'unknown'
       ? tracker.getAudience(threadId)
       : resolvedAudience
     if (disposed) return
+    if (boardThreadIds.has(threadId)) return
     if (audience === 'internalSubagent') {
       removeInternalHistory([threadId])
       return
@@ -118,6 +178,13 @@ export function createTurnNotificationRouter(
   }
 
   const unsubscribe = options.bridge.subscribeNotifications((notification) => {
+    if (notification.method === 'codexui/projectBoards/updated') {
+      const snapshot = notification.params as ProjectBoardSnapshot
+      if (Array.isArray(snapshot?.cards) && Array.isArray(snapshot?.runs) && Array.isArray(snapshot?.questions)) {
+        boardSnapshotQueue = boardSnapshotQueue.then(() => observeBoardSnapshot(snapshot))
+      }
+      return
+    }
     const observedAudience = tracker.observeNotification(notification)
     const observedThreadId = readCodexNotificationThreadId(notification)
     if (observedAudience === 'internalSubagent' && observedThreadId) {

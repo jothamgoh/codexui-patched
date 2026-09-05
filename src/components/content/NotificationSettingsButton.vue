@@ -188,7 +188,7 @@
 
           <section v-if="visibleRecentHistory.length > 0" class="notification-section">
             <div class="notification-section-header">
-              <span>{{ activityFilter === 'unread' ? 'Unread' : 'Recently completed' }}</span>
+              <span>{{ activityFilter === 'unread' ? 'Unread' : 'Recent activity' }}</span>
               <span v-if="activityFilter === 'unread'" class="notification-section-count">
                 {{ unreadAttentionCount }}
               </span>
@@ -221,7 +221,7 @@
                     <span v-if="item.isUnread" class="notification-unread-pill">Unread</span>
                   </span>
                   <span class="notification-row-meta">
-                    <span>{{ item.status === 'failed' ? 'Failed' : 'Completed' }}</span>
+                    <span>{{ activityStatusLabel(item) }}</span>
                     <span aria-hidden="true">·</span>
                     <span>{{ formatRelative(item.completedAt) }}</span>
                     <kbd v-if="shortcutNumber(item.threadId)" class="notification-shortcut">
@@ -290,7 +290,7 @@
           <p>
             {{ activityFilter === 'unread'
               ? 'Switch to All to see recent activity.'
-              : 'Running and recently completed chats will appear here.' }}
+              : 'Chat and project board activity will appear here.' }}
           </p>
         </div>
 
@@ -314,7 +314,7 @@
 
           <template v-else-if="status !== 'unsupported'">
             <label class="notification-mode-field">
-              <span class="notification-mode-label">Turn completion</span>
+              <span class="notification-mode-label">Chat and board alerts</span>
               <select
                 class="notification-mode-select"
                 :value="mode"
@@ -420,6 +420,7 @@ import {
   type WebPushHistoryItem,
 } from '../../api/webPush'
 import { updateSharedThreadReadState } from '../../api/codexGateway'
+import { subscribeInPageRpcNotifications } from '../../api/codexRpcClient'
 import {
   getTelegramNotificationConfig,
   setTelegramNotificationsEnabled,
@@ -433,6 +434,7 @@ import { useRelativeTimeClock } from '../../composables/useRelativeTimeClock'
 import type { UiThread } from '../../types/codex'
 import { compactNotificationText } from '../../utils/notificationText'
 import { formatCompactRelativeTime } from '../../utils/relativeTime'
+import { openProjectBoardDeepLink, projectBoardNotificationDeepLink, type ProjectBoardNotification } from '../../utils/projectBoardNotifications'
 
 type RecentActivityItem = {
   id: string
@@ -443,6 +445,7 @@ type RecentActivityItem = {
   body: string
   completedAt: string
   isUnread: boolean
+  projectBoard?: ProjectBoardNotification
 }
 
 type ManualThreadUnreadOverride = {
@@ -459,6 +462,8 @@ const relativeTimeNow = useRelativeTimeClock()
 const props = defineProps<{
   threads: UiThread[]
   activeThreadId: string
+  boardThreadIds?: string[]
+  boardActivityTitles?: Record<string, string>
   boardAttention: Array<{
     questionId: string
     boardId: string
@@ -510,10 +515,18 @@ const {
   testWebPushNotification,
 } = useWebPushNotifications()
 
-const runningThreads = computed(() => props.threads.filter((thread) => thread.inProgress))
+const activityThreads = computed(() => {
+  const excluded = new Set(props.boardThreadIds ?? [])
+  return props.threads.filter((thread) => !excluded.has(thread.id))
+})
+const runningThreads = computed(() => activityThreads.value.filter((thread) => thread.inProgress))
 const unreadThreads = computed(() =>
-  props.threads.filter((thread) => isThreadUnread(thread) && !thread.inProgress),
+  activityThreads.value.filter((thread) => isThreadUnread(thread) && !thread.inProgress),
 )
+const visibleHistory = computed(() => history.value.filter((item) =>
+  !(props.boardThreadIds ?? []).includes(item.threadId) &&
+  !props.boardAttention.some((attention) => attention.questionId === item.projectBoard?.questionId),
+))
 const currentActivityThreadIds = computed(() =>
   new Set([
     ...runningThreads.value.map((thread) => thread.id),
@@ -522,7 +535,7 @@ const currentActivityThreadIds = computed(() =>
 )
 const allRecentHistory = computed<RecentActivityItem[]>(() => {
   const candidates: RecentActivityItem[] = []
-  for (const item of history.value) {
+  for (const item of visibleHistory.value) {
     if (currentActivityThreadIds.value.has(item.threadId)) continue
     const thread = props.threads.find((candidate) => candidate.id === item.threadId)
     candidates.push({
@@ -530,13 +543,14 @@ const allRecentHistory = computed<RecentActivityItem[]>(() => {
       threadId: item.threadId,
       source: 'history',
       status: item.status,
-      title: thread ? threadTitle(thread) : (normalizeLabel(item.title) || `Chat ${item.threadId.slice(0, 8)}`),
+      title: historyItemTitle(item, thread),
       body: compactNotificationText(item.body, '', 220),
       completedAt: item.completedAt,
       isUnread: item.readAt === null || Boolean(thread && isThreadUnread(thread)),
+      projectBoard: item.projectBoard,
     })
   }
-  for (const thread of props.threads) {
+  for (const thread of activityThreads.value) {
     if (currentActivityThreadIds.value.has(thread.id)) continue
     candidates.push({
       id: `thread:${thread.id}`,
@@ -565,7 +579,7 @@ const allRecentHistory = computed<RecentActivityItem[]>(() => {
 })
 const unreadActivity = computed<RecentActivityItem[]>(() => {
   const candidates: RecentActivityItem[] = []
-  for (const item of history.value) {
+  for (const item of visibleHistory.value) {
     if (item.readAt !== null) continue
     if (dismissedActivityByThreadId.value[item.threadId] === item.completedAt) continue
     const thread = props.threads.find((candidate) => candidate.id === item.threadId)
@@ -574,13 +588,14 @@ const unreadActivity = computed<RecentActivityItem[]>(() => {
       threadId: item.threadId,
       source: 'history',
       status: item.status,
-      title: thread ? threadTitle(thread) : (normalizeLabel(item.title) || `Chat ${item.threadId.slice(0, 8)}`),
+      title: historyItemTitle(item, thread),
       body: compactNotificationText(item.body, '', 220),
       completedAt: item.completedAt,
       isUnread: true,
+      projectBoard: item.projectBoard,
     })
   }
-  for (const thread of props.threads) {
+  for (const thread of activityThreads.value) {
     if (!isThreadUnread(thread) || thread.inProgress) continue
     candidates.push({
       id: `thread:${thread.id}`,
@@ -644,7 +659,7 @@ const activitySummary = computed(() => {
   }
   if (props.boardAttention.length > 0) parts.push(`${props.boardAttention.length.toString()} need you`)
   if (unreadAttentionCount.value > 0) parts.push(`${unreadAttentionCount.value.toString()} unread`)
-  return parts.length > 0 ? parts.join(' · ') : 'No chats need attention'
+  return parts.length > 0 ? parts.join(' · ') : 'No work needs attention'
 })
 const triggerLabel = computed(() => `Notifications: ${activitySummary.value}`)
 
@@ -666,7 +681,7 @@ const statusLabel = computed(() => {
 
 const statusDescription = computed(() => {
   if (status.value === 'enabled') {
-    return 'CodexUI can alert you when a turn finishes, even while this app is closed.'
+    return 'Get chat completions and board questions, stopped runs, and finished features, even while this app is closed.'
   }
   if (status.value === 'needs-install') {
     return 'iPhone only allows Web Push from a Home Screen web app.'
@@ -680,7 +695,7 @@ const statusDescription = computed(() => {
   if (status.value === 'error') {
     return 'CodexUI could not finish notification setup.'
   }
-  return 'Enable alerts for completed Codex turns on this iPhone or Mac.'
+  return 'Enable chat and project board alerts on this device.'
 })
 
 const telegramStatusLabel = computed(() => {
@@ -688,7 +703,7 @@ const telegramStatusLabel = computed(() => {
   if (!telegramConfig.value) return 'Checking Telegram setup…'
   if (!telegramConfig.value.available) return 'No Telegram bot is configured on this server.'
   return telegramConfig.value.enabled
-    ? 'On — turn completions are also sent to Telegram.'
+    ? 'On — chat and board alerts are also sent to Telegram.'
     : 'Off — the bot setup is kept and can be re-enabled here.'
 })
 
@@ -728,8 +743,13 @@ watch(
 )
 
 onBeforeUnmount(() => {
+  unsubscribeBoardNotifications()
   if (refreshTimer) clearTimeout(refreshTimer)
   clearRecentLongPress()
+})
+
+const unsubscribeBoardNotifications = subscribeInPageRpcNotifications((notification) => {
+  if (notification.method === 'codexui/projectBoards/notification' || notification.method === 'codexui/projectBoards/historyUpdated') void refreshHistory()
 })
 
 void refreshHistory()
@@ -844,13 +864,36 @@ function openThread(threadId: string): void {
 }
 
 function openBoardQuestion(item: { boardId: string; featureId: string; questionId: string }): void {
+  void markWebPushHistoryRead({ ids: [`project-board-question:${item.questionId}`] }).then(applyHistoryResult).catch(() => {})
   isOpen.value = false
   emit('selectBoardQuestion', item)
 }
 
 function openRecentItem(item: RecentActivityItem): void {
   if (Date.now() < suppressRecentClickUntil) return
+  if (item.projectBoard) {
+    void markThreadHistoryRead(item.threadId)
+    isOpen.value = false
+    openProjectBoardDeepLink(projectBoardNotificationDeepLink(item.projectBoard))
+    return
+  }
   openThread(item.threadId)
+}
+
+function activityStatusLabel(item: RecentActivityItem): string {
+  if (item.status === 'failed') return 'Needs attention'
+  if (item.status === 'question') return 'Question'
+  if (item.status === 'answered') return 'Answered'
+  if (item.status === 'plan_ready') return 'Plan ready'
+  return item.projectBoard ? 'Feature complete' : 'Completed'
+}
+
+function historyItemTitle(item: WebPushHistoryItem, thread?: UiThread): string {
+  if (item.projectBoard) {
+    const targetId = item.projectBoard.featureId || item.projectBoard.boardId
+    return normalizeLabel(props.boardActivityTitles?.[targetId] || item.title)
+  }
+  return thread ? threadTitle(thread) : (normalizeLabel(item.title) || `Chat ${item.threadId.slice(0, 8)}`)
 }
 
 function shortcutNumber(threadId: string): number {
@@ -872,7 +915,9 @@ function selectActivityShortcut(index: number): boolean {
   if (!isOpen.value) return false
   const threadId = shortcutThreadIds.value[index]
   if (!threadId) return false
-  openThread(threadId)
+  const item = visibleRecentHistory.value.find((candidate) => candidate.threadId === threadId)
+  if (item) openRecentItem(item)
+  else openThread(threadId)
   return true
 }
 
@@ -921,12 +966,12 @@ async function setRecentActivityUnread(
       unread
         ? markWebPushHistoryUnread(item.threadId, item.completedAt)
         : markWebPushHistoryRead({ threadId: item.threadId }),
-      updateSharedThreadReadState(
+      !item.projectBoard ? updateSharedThreadReadState(
         item.threadId,
         unread
           ? { unread: true }
           : { unread: false, readAtIso: activityAt },
-      ),
+      ) : Promise.resolve(),
     ])
     applyHistoryResult(historyResult)
   } catch (error) {

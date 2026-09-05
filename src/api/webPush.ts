@@ -1,3 +1,5 @@
+import type { ProjectBoardNotification } from '../utils/projectBoardNotifications'
+
 export type WebPushMode = 'unfocused' | 'always'
 
 export type WebPushConfig = {
@@ -14,6 +16,7 @@ export type WebPushHistoryItem = {
   body: string
   completedAt: string
   readAt: string | null
+  projectBoard?: ProjectBoardNotification
 }
 
 export type WebPushHistory = {

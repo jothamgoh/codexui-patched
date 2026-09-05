@@ -6,6 +6,12 @@ import type { IncomingMessage, ServerResponse } from 'node:http'
 import webPush from 'web-push'
 import type { PushSubscription, WebPushError } from 'web-push'
 import { compactNotificationText } from '../utils/notificationText'
+import {
+  projectBoardNotificationCopy,
+  projectBoardNotificationDeepLink,
+  projectBoardNotificationScope,
+  type ProjectBoardNotification,
+} from '../utils/projectBoardNotifications'
 
 type BridgeNotification = {
   method: string
@@ -33,6 +39,7 @@ type StoredNotificationHistoryItem = {
   body: string
   completedAt: string
   readAt: string | null
+  projectBoard?: ProjectBoardNotification
 }
 
 type StoredNotificationDismissal = {
@@ -69,6 +76,7 @@ type CompletedTurn = {
   threadTitle: string
   body: string
   completedAt: string
+  projectBoard?: ProjectBoardNotification
 }
 
 type PushSendResult =
@@ -80,6 +88,8 @@ export type WebPushTurnNotifier = {
   enabled: boolean
   statusMessage: string
   handleNotification: (notification: BridgeNotification) => void
+  handleProjectBoardNotification: (event: ProjectBoardNotification) => Promise<boolean>
+  resolveProjectBoardQuestions: (questionIds: string[], atIso: string) => Promise<void>
   handleRequest: (req: IncomingMessage, res: ServerResponse, next: () => void) => void
   removeThreadHistory: (threadIds: Iterable<string>) => Promise<void>
 }
@@ -154,6 +164,19 @@ function normalizeHistoryItem(value: unknown): StoredNotificationHistoryItem | n
   const turnId = readString(record.turnId)
   const completedAt = readString(record.completedAt)
   if (!threadId || !turnId || !completedAt) return null
+  const board = asRecord(record.projectBoard)
+  const projectBoard = board && ['question', 'failed', 'completed', 'plan_ready'].includes(readString(board.kind)) &&
+    readString(board.id) && readString(board.boardId) && readString(board.occurredAt)
+    ? {
+      id: readString(board.id),
+      kind: board.kind as ProjectBoardNotification['kind'],
+      boardId: readString(board.boardId),
+      featureId: readString(board.featureId),
+      cardId: readString(board.cardId),
+      ...(readString(board.questionId) ? { questionId: readString(board.questionId) } : {}),
+      occurredAt: readString(board.occurredAt),
+    }
+    : undefined
 
   return {
     id: readString(record.id) || `${threadId}:${turnId}`,
@@ -168,6 +191,7 @@ function normalizeHistoryItem(value: unknown): StoredNotificationHistoryItem | n
     ),
     completedAt,
     readAt: readString(record.readAt) || null,
+    ...(projectBoard ? { projectBoard } : {}),
   }
 }
 
@@ -339,6 +363,7 @@ function readCompletedTurn(notification: BridgeNotification): CompletedTurn | nu
 }
 
 function buildCompletedTurnTitle(turn: CompletedTurn): string {
+  if (turn.projectBoard) return projectBoardNotificationCopy(turn.projectBoard).title
   return turn.status === 'failed'
     ? (turn.threadTitle ? `${turn.threadTitle} failed` : 'Turn failed')
     : (turn.threadTitle || 'CodexUI')
@@ -348,8 +373,8 @@ function buildPayload(turn: CompletedTurn, mode: NotificationMode): PushPayload 
   return {
     title: buildCompletedTurnTitle(turn),
     body: turn.body,
-    url: `/#/thread/${encodeURIComponent(turn.threadId)}`,
-    tag: `${turn.threadId}:${turn.turnId}`,
+    url: turn.projectBoard ? `/${projectBoardNotificationDeepLink(turn.projectBoard)}` : `/#/thread/${encodeURIComponent(turn.threadId)}`,
+    tag: turn.projectBoard?.id ?? `${turn.threadId}:${turn.turnId}`,
     mode,
     icon: '/icons/codexui-192.png',
     badge: '/icons/codexui-192.png',
@@ -476,10 +501,11 @@ export function createWebPushTurnNotifier(): WebPushTurnNotifier {
     await removeSubscriptions(expiredEndpoints)
   }
 
-  const recordCompletedTurn = async (turn: CompletedTurn): Promise<void> => {
-    await mutateState((state) => {
-      const id = `${turn.threadId}:${turn.turnId}`
+  const recordCompletedTurn = async (turn: CompletedTurn): Promise<boolean> => {
+    return mutateState((state) => {
+      const id = turn.projectBoard?.id ?? `${turn.threadId}:${turn.turnId}`
       const previous = state.history.find((item) => item.id === id)
+      if (turn.projectBoard && previous) return false
       const item: StoredNotificationHistoryItem = {
         id,
         threadId: turn.threadId,
@@ -489,6 +515,7 @@ export function createWebPushTurnNotifier(): WebPushTurnNotifier {
         body: turn.body,
         completedAt: turn.completedAt,
         readAt: previous?.readAt ?? null,
+        ...(turn.projectBoard ? { projectBoard: turn.projectBoard } : {}),
       }
       state.history = [
         item,
@@ -497,6 +524,41 @@ export function createWebPushTurnNotifier(): WebPushTurnNotifier {
       state.dismissals = state.dismissals.filter(
         (dismissal) => dismissal.threadId !== turn.threadId,
       )
+      return true
+    })
+  }
+
+  const handleProjectBoardNotification = async (event: ProjectBoardNotification): Promise<boolean> => {
+    const copy = projectBoardNotificationCopy(event)
+    const turn: CompletedTurn = {
+      threadId: projectBoardNotificationScope(event),
+      turnId: event.id,
+      status: event.kind,
+      threadTitle: copy.title,
+      body: copy.body,
+      completedAt: event.occurredAt,
+      projectBoard: event,
+    }
+    const recorded = await recordCompletedTurn(turn)
+    if (!recorded) return false
+    // Record first so Activity works without any enrolled delivery device.
+    void sendCompletedTurn(turn).catch((error: unknown) => {
+      const message = error instanceof Error ? error.message : String(error)
+      console.warn(`[web-push] Failed to send board notification: ${message}`)
+    })
+    return true
+  }
+
+  const resolveProjectBoardQuestions = async (questionIds: string[], atIso: string): Promise<void> => {
+    const resolved = new Set(questionIds)
+    await mutateState((state) => {
+      for (const item of state.history) {
+        if (item.projectBoard?.questionId && resolved.has(item.projectBoard.questionId)) {
+          item.readAt = item.readAt || atIso
+          item.status = 'answered'
+          item.body = 'This board question has been resolved.'
+        }
+      }
     })
   }
 
@@ -767,6 +829,8 @@ export function createWebPushTurnNotifier(): WebPushTurnNotifier {
     enabled: true,
     statusMessage: `Web Push initializing (state ${stateFile}).`,
     handleNotification,
+    handleProjectBoardNotification,
+    resolveProjectBoardQuestions,
     handleRequest,
     removeThreadHistory,
   }

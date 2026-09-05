@@ -28,9 +28,13 @@ const compiledThreadSource = ts.transpileModule(threadSource, {
   },
 }).outputText
 const threadSourceModuleUrl = `data:text/javascript;base64,${Buffer.from(compiledThreadSource).toString('base64')}`
+const boardEventSource = await readFile(new URL('../src/server/projectBoardNotificationEvents.ts', import.meta.url), 'utf8')
+const boardEventModuleUrl = `data:text/javascript;base64,${Buffer.from(ts.transpileModule(boardEventSource, {
+  compilerOptions: { module: ts.ModuleKind.ES2022, target: ts.ScriptTarget.ES2022 },
+}).outputText).toString('base64')}`
 const { createTurnNotificationRouter } = await importTypeScriptModule(
   '../src/server/turnNotificationRouter.ts',
-  [['../utils/codexThreadSource.js', threadSourceModuleUrl]],
+  [['../utils/codexThreadSource.js', threadSourceModuleUrl], ['./projectBoardNotificationEvents.js', boardEventModuleUrl]],
 )
 
 const delay = (milliseconds) => new Promise((resolve) => setTimeout(resolve, milliseconds))
@@ -40,14 +44,20 @@ function createHarness({
   listThreads = async () => ({ data: [], nextCursor: null }),
   threadLookupTimeoutMs = 40,
   backfillRequestTimeoutMs = 40,
+  readProjectBoards,
 }) {
   let listener = null
   const telegram = []
   const webPush = []
   const removedHistory = []
+  const boardPush = []
+  const boardTelegram = []
+  const boardPublished = []
   const bridge = {
     listThreads,
     readThread,
+    readProjectBoards,
+    publishLocalNotification(method, params) { boardPublished.push({ method, params }) },
     subscribeNotifications(nextListener) {
       listener = nextListener
       return () => { listener = null }
@@ -57,9 +67,11 @@ function createHarness({
     bridge,
     telegramTurnNotifier: {
       handleNotification(notification) { telegram.push(notification) },
+      handleProjectBoardNotification(event) { boardTelegram.push(event) },
     },
     webPushTurnNotifier: {
       handleNotification(notification) { webPush.push(notification) },
+      async handleProjectBoardNotification(event) { boardPush.push(event); return true },
       async removeThreadHistory(threadIds) {
         removedHistory.push([...threadIds])
       },
@@ -74,6 +86,9 @@ function createHarness({
     router,
     telegram,
     webPush,
+    boardPush,
+    boardTelegram,
+    boardPublished,
   }
 }
 
@@ -159,4 +174,30 @@ test('production and Vite dev servers share the notification router', async () =
   assert.match(httpServerSource, /createTurnNotificationRouter\(\{/u)
   assert.match(viteConfigSource, /createTurnNotificationRouter\(\{/u)
   assert.doesNotMatch(viteConfigSource, /webPushTurnNotifier\.handleNotification\(notification\)/u)
+})
+
+test('routes committed board outcomes once and suppresses Lead and planner turn spam', async () => {
+  const baseline = {
+    version: 1,
+    boards: [{ id: 'board', planningThreadId: 'planner' }],
+    cards: [{ id: 'feature', type: 'feature', boardId: 'board', status: 'working', threadId: 'lead' }],
+    runs: [], questions: [], updatedAtIso: '2026-09-06T01:00:00Z',
+  }
+  const harness = createHarness({
+    readThread: async (id) => ({ thread: { id, source: 'appServer' } }),
+    readProjectBoards: async () => baseline,
+  })
+  harness.emit(completedNotification('lead'))
+  harness.emit(completedNotification('planner'))
+  const next = { ...baseline, version: 2, questions: [{ id: 'q', cardId: 'feature', boardId: 'board', status: 'open', createdAtIso: baseline.updatedAtIso }] }
+  harness.emit({ method: 'codexui/projectBoards/updated', params: next })
+  harness.emit({ method: 'codexui/projectBoards/updated', params: next })
+  await delay(15)
+  assert.equal(harness.telegram.length, 0)
+  assert.equal(harness.webPush.length, 0)
+  assert.equal(harness.boardPush.length, 1)
+  assert.equal(harness.boardTelegram.length, 1)
+  assert.equal(harness.boardPublished[0].method, 'codexui/projectBoards/notification')
+  assert.equal(harness.boardPublished[0].params.questionId, 'q')
+  harness.router.dispose()
 })

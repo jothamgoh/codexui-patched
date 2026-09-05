@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict'
-import { mkdir, mkdtemp, realpath, rm } from 'node:fs/promises'
+import { mkdir, mkdtemp, readFile, realpath, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { fileURLToPath, pathToFileURL } from 'node:url'
@@ -29,6 +29,9 @@ try {
     const label = mobile ? 'mobile' : 'desktop'
     const project = join(temporary, label)
     await mkdir(project)
+    const workspaceFile = join(project, 'existing-work.txt')
+    const workspaceText = 'Keep the user’s existing project work.\n'
+    await writeFile(workspaceFile, workspaceText)
     const store = new ProjectBoardStore({ stateFilePath: join(temporary, `${label}.json`) })
     let snapshot = await store.createBoard({ projectPath: project, projectName: 'Chat workflow', name: 'Product fixes', isDefault: true })
     const board = snapshot.boards[0]
@@ -54,6 +57,7 @@ try {
     let failReply = true
     let holdReply = false
     let releaseReply
+    let failStop = true
     let listedLead = false
     const notify = (method, params) => page.evaluate(({ method, params }) => {
       for (const stream of window.fixtureStreams) stream.onmessage?.({ data: JSON.stringify({ method, params }) })
@@ -96,6 +100,23 @@ try {
         if (path === `/codex-api/project-board-cards/${featureId}` && request.method() === 'PATCH') {
           mutations.push({ kind: 'rename', input })
           snapshot = await store.updateCard(featureId, input)
+          return json({ data: snapshot })
+        }
+        if (path === `/codex-api/project-board-cards/${featureId}/stop`) {
+          mutations.push({ kind: 'stop', input })
+          const run = (await store.read()).runs.find((item) => item.cardId === featureId && item.status === 'running')
+          assert.equal(input.expectedRunId, run.id, 'Stop targets the displayed run rather than a later replacement')
+          if (failStop) { failStop = false; return json({ error: 'The stop request could not reach the server. Try again.' }, 503) }
+          snapshot = await store.failRun(run.id, 'Stopped by you. Review partial work before continuing.', 'interrupted')
+          const cancelled = pending.filter((item) => item.params.threadId === run.threadId)
+          pending = pending.filter((item) => item.params.threadId !== run.threadId)
+          for (const request of cancelled) await notify('server/request/resolved', { id: request.id, method: request.method, threadId: run.threadId, mode: 'cancelled', resolvedAtIso: new Date().toISOString() })
+          await notify('turn/completed', { threadId: run.threadId, turn: { id: `${run.threadId}-turn`, status: 'interrupted', items: [] } })
+          return json({ data: snapshot })
+        }
+        if (path === `/codex-api/project-board-cards/${featureId}` && request.method() === 'DELETE') {
+          mutations.push({ kind: 'delete' })
+          snapshot = await store.deleteCard(featureId)
           return json({ data: snapshot })
         }
         if (path === `/codex-api/project-board-threads/${leadId}/messages`) {
@@ -194,6 +215,7 @@ try {
       await page.getByLabel('Lead reply mode', { exact: true }).selectOption('plan')
       const composer = page.locator('textarea.thread-composer-input')
       await composer.fill('Include a check for the phone keyboard too.')
+      if (mobile) assert.equal(await tracked.locator('details').getAttribute('open'), null, 'Focusing the phone composer makes room without changing reply settings')
       await page.getByRole('button', { name: 'Send message', exact: true }).click()
       await page.locator('.thread-composer-dictation-status[role="alert"]').filter({ hasText: 'Connection interrupted. Your draft is safe.' }).waitFor()
       assert.equal(await composer.inputValue(), 'Include a check for the phone keyboard too.')
@@ -286,6 +308,34 @@ try {
       await page.waitForURL(`**/#/thread/second-lead-${label}`)
       assert.equal(mutations.filter((item) => item.kind === 'create').length, 2, 'Starting again from the same source must create a separate feature')
       assert.equal((await store.read()).cards.filter((item) => item.type === 'feature').length, 2)
+
+      pending = [{ id: 812, method: 'item/commandExecution/requestApproval', params: { threadId: `second-lead-${label}`, turnId: `second-lead-${label}-turn`, itemId: 'second-approval', command: 'npm test', cwd: project, reason: 'Verify the feature before continuing.' } }]
+      await notify('server/request', pending[0])
+      await tracked.getByRole('button', { name: 'View board', exact: true }).click()
+      await page.locator('.board-card-main').filter({ hasText: 'Add a compact status summary' }).click()
+      const detail = page.getByTestId('feature-detail')
+      await detail.getByRole('region', { name: 'Lead request', exact: true }).getByText('Approval needed', { exact: true }).waitFor()
+      await detail.getByText('The Lead is waiting for you. Open its chat to review the request, or stop this run.', { exact: true }).waitFor()
+      await detail.getByText('Stop the run before deleting. Your code files are kept.', { exact: true }).waitFor()
+      assert.equal(await detail.getByRole('button', { name: 'Delete feature', exact: true }).isDisabled(), true, 'Active work must stop before its record can be deleted')
+      await detail.getByRole('button', { name: 'Stop run', exact: true }).click()
+      await detail.getByRole('alert').filter({ hasText: 'The stop request could not reach the server. Try again.' }).waitFor()
+      assert.equal(await detail.getByRole('button', { name: 'Delete feature', exact: true }).isDisabled(), true, 'A rejected stop must keep the active feature protected')
+      await detail.getByRole('button', { name: 'Stop run', exact: true }).click()
+      await detail.getByRole('button', { name: 'Stop run', exact: true }).waitFor({ state: 'hidden' })
+      await detail.getByRole('region', { name: 'Lead request', exact: true }).waitFor({ state: 'hidden' })
+      assert.equal(await detail.getByRole('button', { name: 'Delete feature', exact: true }).isEnabled(), true)
+      assert.equal((await store.read()).runs.find((item) => item.cardId === featureId).status, 'interrupted')
+      await page.screenshot({ path: join(output, `stopped-feature-${label}.png`), fullPage: true })
+      page.once('dialog', (confirmation) => confirmation.accept())
+      await detail.getByRole('button', { name: 'Delete feature', exact: true }).click()
+      await detail.waitFor({ state: 'hidden' })
+      assert.equal((await store.read()).cards.some((item) => item.id === featureId), false)
+      assert.equal(await readFile(workspaceFile, 'utf8'), workspaceText, 'Deleting a board card must preserve project files')
+      assert.equal(mutations.filter((item) => item.kind === 'stop').length, 2)
+      assert.equal(mutations.filter((item) => item.kind === 'delete').length, 1)
+      await page.locator('button[aria-label^="Notifications:"]').click()
+      assert.equal(await activity.getByText('Approval needed', { exact: true }).count(), 0, 'The stopped turn must not leave a phantom approval notification')
     } catch (error) {
       await page.screenshot({ path: join(output, `failure-${label}.png`), fullPage: true })
       console.error(JSON.stringify({ label, url: page.url(), mutations, errors }, null, 2))
@@ -293,5 +343,5 @@ try {
     } finally { await context.close() }
   }
   assert.deepEqual(errors, [])
-  console.log('Board/chat flow passed on desktop and touch mobile: voice/brief-only tracking, read-only Lead start, linked navigation, Activity, native approvals, reply retry and result navigation. Model and audio output are synthetic.')
+  console.log('Board/chat flow passed on desktop and touch mobile: voice/brief-only tracking, read-only Lead start, linked navigation, Activity, native approvals, reply retry, result navigation and stop-before-delete preserving workspace files. Model and audio output are synthetic.')
 } finally { await browser.close(); await server.close(); await rm(temporary, { recursive: true, force: true }) }

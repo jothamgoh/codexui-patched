@@ -79,6 +79,8 @@ export type ProjectBoardCard = {
   /** Dynamic tool schema installed when the persistent chat was created. */
   toolSchemaVersion: number
   threadId: string
+  /** Original conversation referenced by a feature created from chat; never its Lead runtime. */
+  sourceThreadId?: string
   lastRunId: string
   summary: string
   progressNote: string
@@ -155,6 +157,7 @@ export type ProjectBoardCardCreateInput = {
   taskPurpose?: ProjectBoardTaskPurpose
   title?: string
   description?: string
+  sourceThreadId?: string
   acceptanceCriteria?: string
   status?: ProjectBoardStatus
   priority?: ProjectBoardPriority

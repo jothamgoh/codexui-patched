@@ -120,6 +120,26 @@ test('agent feature plans apply the same optional-title rule atomically', async 
   assert.equal(snapshot.runs.find((entry) => entry.id === run.id).createdCardIds.length, 2)
 })
 
+test('chat-created features preserve a source reference without borrowing its Lead runtime', async (t) => {
+  const { store, reopen } = await createFixture(t)
+  const { board, feature } = await createBoardAndFeature(store)
+  assert.equal((await reopen().read()).cards.find((card) => card.id === feature.id).sourceThreadId, '')
+  let snapshot = await store.createCard({ boardId: board.id, description: 'Fix the bug discussed in chat.', sourceThreadId: 'original-chat' })
+  const linked = snapshot.cards[0]
+  assert.equal(linked.sourceThreadId, 'original-chat')
+  assert.equal(linked.threadId, '')
+  const { run } = await store.startRun(linked.id, 'builtin-lead', 'execute')
+  await store.setRunThread(run.id, 'new-lead-chat')
+  snapshot = await reopen().read()
+  assert.equal(snapshot.cards.find((card) => card.id === linked.id).sourceThreadId, 'original-chat')
+  assert.equal(snapshot.cards.find((card) => card.id === linked.id).threadId, 'new-lead-chat')
+  await assert.rejects(store.updateCard(linked.id, { sourceThreadId: 'replacement' }), /cannot be changed/u)
+  for (const sourceThreadId of [42, {}, 'x'.repeat(201), 'chat\nother', 'chat\u0000other']) {
+    await assert.rejects(store.createCard({ boardId: board.id, title: 'Invalid source', sourceThreadId }), /source chat ID/u)
+  }
+  await assert.rejects(store.createCard({ boardId: board.id, parentCardId: feature.id, type: 'task', title: 'Invalid task source', sourceThreadId: 'original-chat' }), /Only a feature/u)
+})
+
 test('refreshes maintained starter prompts on reload without replacing custom instructions', async (t) => {
   const fixture = await createFixture(t)
   const { board } = await createBoardAndFeature(fixture.store)

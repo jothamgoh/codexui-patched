@@ -259,6 +259,7 @@ function normalizeCard(value: unknown, agents: ProjectBoardAgent[]): ProjectBoar
     planStatus: record.planStatus === 'ready' ? 'ready' : 'none',
     toolSchemaVersion: record.toolSchemaVersion === 2 ? 2 : 1,
     threadId: readString(record.threadId, 200),
+    sourceThreadId: type === 'feature' ? readString(record.sourceThreadId, 200) : '',
     lastRunId: readString(record.lastRunId, 200),
     summary: readString(record.summary),
     progressNote: readString(record.progressNote, 1_000),
@@ -899,6 +900,14 @@ export class ProjectBoardStore {
       if ('taskPurpose' in record && !TASK_PURPOSES.has(record.taskPurpose as ProjectBoardTaskPurpose)) throw new Error('Unknown task purpose.')
       const description = readString(record.description)
       const title = readString(record.title, 240) || projectBoardTitleFromBrief(description)
+      if (record.sourceThreadId !== undefined && (typeof record.sourceThreadId !== 'string'
+        || record.sourceThreadId.trim().length > 200 || /[\s\u0000-\u001f\u007f]/u.test(record.sourceThreadId.trim()))) {
+        throw new Error('The source chat ID must be a string of at most 200 characters without spaces or control characters.')
+      }
+      const sourceThreadId = readString(record.sourceThreadId, 200)
+      if (sourceThreadId && record.type !== undefined && record.type !== 'feature') {
+        throw new Error('Only a feature can reference a source chat.')
+      }
       const input: ProjectBoardCardCreateInput = {
         boardId: readString(record.boardId, 200),
         parentCardId: readString(record.parentCardId, 200),
@@ -949,6 +958,7 @@ export class ProjectBoardStore {
         autoRun: input.autoRun === true,
         model: input.model ?? '', reasoningEffort: input.reasoningEffort ?? '', planSummary: '', planStatus: 'none', toolSchemaVersion: 1,
         threadId: '',
+        sourceThreadId,
         lastRunId: '',
         summary: '',
         progressNote: '',
@@ -1581,7 +1591,7 @@ export class ProjectBoardStore {
 
   private assertPublicCardFields(record: Record<string, unknown>, updating = false): void {
     const allowed = new Set(['title', 'description', 'acceptanceCriteria', 'status', 'priority', 'verificationPolicy', 'assignedAgentId', 'taskPurpose', 'autoRun', 'model', 'reasoningEffort', 'dependencyIds'])
-    if (!updating) for (const field of ['boardId', 'parentCardId', 'type', 'dependencyIds']) allowed.add(field)
+    if (!updating) for (const field of ['boardId', 'parentCardId', 'type', 'dependencyIds', 'sourceThreadId']) allowed.add(field)
     const unknown = Object.keys(record).find((field) => !allowed.has(field))
     if (unknown) throw new Error(`Card field "${unknown}" is server-owned or cannot be changed here.`)
   }

@@ -69,6 +69,12 @@ Final local command: `npm run check:project-boards` — PASS.
   non-fatal.
 - GitHub [source CI](https://github.com/jothamgoh/codexui-patched/actions/runs/33962659852)
   passed for `92f10ba`: secret scan, clean dependency install, audit, tests, build.
+- The documentation commit's CI exposed an existing Git fixture helper race:
+  writing stdin after Git exited raised an unhandled EPIPE. The follow-up test
+  helper uses ignored stdin for commands without input and reports Git's exit
+  status for early pipe closure. This does not change application behavior or
+  add tests. `npm test` (179 passed) and `npm run build` passed again after the
+  helper fix; inspect the latest commit's CI for the final release result.
 
 The smoke tests real browser/server persistence and development events. Service
 orchestration uses a fake adapter. This does **not** prove that a real Codex
@@ -80,8 +86,9 @@ Lead/subagent session has completed; do not describe it as real-agent E2E.
 - `dec3972`: durable store, workflow guards, and focused store tests.
 - `8c5721a`: bounded Lead execution, lifecycle handling, and service tests.
 - `92f10ba`: integrated board UI, notifications, development transport, and smoke.
-- The following documentation commit records the simplified scope and evidence;
-  it does not change the verified implementation.
+- `5a1e44e`: simplified requirements, delivery/test plans, and handoff evidence.
+- The following test-helper commit fixes the CI stdin race described above;
+  it does not change application behavior.
 
 ## Native app comparison
 

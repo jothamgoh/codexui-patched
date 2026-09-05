@@ -31,7 +31,7 @@ async function run(command, args, options = {}) {
   return await new Promise((resolve, reject) => {
     const child = spawn(command, args, {
       cwd: options.cwd,
-      stdio: ['pipe', 'pipe', 'pipe'],
+      stdio: [options.input === undefined ? 'ignore' : 'pipe', 'pipe', 'pipe'],
     })
     let stdout = ''
     let stderr = ''
@@ -45,7 +45,11 @@ async function run(command, args, options = {}) {
         reject(new Error(`${command} ${args.join(' ')} failed: ${stderr || stdout}`))
       }
     })
-    child.stdin.end(options.input ?? '')
+    if (child.stdin) {
+      // Git may reject input and exit before the write finishes; report its exit status.
+      child.stdin.on('error', (error) => { if (error.code !== 'EPIPE') reject(error) })
+      child.stdin.end(options.input)
+    }
   })
 }
 

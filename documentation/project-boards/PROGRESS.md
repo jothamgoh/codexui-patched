@@ -2,9 +2,12 @@
 
 Updated: 2026-09-05
 
-Status: implementation is complete. Full tests, build, integrated browser checks,
-and the final phone layout correction passed. Push/CI and the authorized
-production restart/health check remain before release.
+Status: released. Source through 9523339 was pushed to main and
+[GitHub CI passed](https://github.com/jothamgoh/codexui-patched/actions/runs/33974933982).
+The authorized independent-Terminal restart completed. After reconnecting,
+the bridge and board/model APIs returned valid HTTP 200 responses, and public
+access still redirected to the authenticated gateway. The checkout is ready
+for real-work dogfooding.
 
 ## Goal and decisions
 
@@ -134,10 +137,10 @@ not evidence that this implementation has identical capabilities.
 
 ## Exact next step
 
-1. Commit the remaining UI and documentation changes.
-2. Push main and verify GitHub Actions.
-3. Use the authorized one-shot separate-Terminal restart, then verify bridge,
-   board/model API, and authenticated public access after reconnecting.
-4. Next dogfood: a small real repository change with shared groundwork and a
-   dependent feature, including one review/fix. Preserve the read-only scope of
-   the automated native evidence above; do not claim production writing was tested.
+1. Refresh the UI on the user's phone. Start with a chat plan or Plan features,
+   dictate the brief, review the cards, and select a small real build with shared
+   groundwork and one dependent feature, including a review/fix.
+2. Record actual friction before expanding the framework. Preserve the read-only
+   scope of automated native evidence; production writing was not tested.
+3. Check Safari on a working WebKit host or physical phone. Its current test-engine
+   crash is an environment limitation, not a passed compatibility check.

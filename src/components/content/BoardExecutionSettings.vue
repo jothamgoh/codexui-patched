@@ -70,4 +70,5 @@ select { @apply h-10 w-full min-w-0 rounded-md border px-2 text-sm; color: var(-
 p { @apply mt-2 mb-0 text-xs leading-5; color: var(--text-tertiary); }
 .execution-error { color: var(--color-red-500, #ef4444); }
 button { @apply underline; }
+@media (pointer: coarse), (max-width: 700px) { select { min-height: 44px; font-size: 16px; } }
 </style>

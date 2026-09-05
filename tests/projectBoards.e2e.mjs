@@ -4,7 +4,7 @@ import { mkdtemp, mkdir, rm, writeFile } from 'node:fs/promises'
 import { join, resolve } from 'node:path'
 import { tmpdir } from 'node:os'
 import { fileURLToPath } from 'node:url'
-import { chromium } from 'playwright'
+import { chromium, webkit, devices } from 'playwright'
 
 const repositoryRoot = resolve(fileURLToPath(new URL('..', import.meta.url)))
 const fixtureHome = await mkdtemp(join(tmpdir(), 'codexui-project-board-e2e-'))
@@ -85,7 +85,7 @@ const snapshot = {
   }],
   comments: [],
   artifacts: [{ id: 'artifact-1', cardId: 'feature-working', runId: 'run-1', label: 'Product specification', path: 'documentation/project-boards/PRD.md', createdAtIso: now }],
-  runs: [{ id: 'run-1', boardId: 'board-1', cardId: 'feature-working', agentId: 'builtin-lead', kind: 'execute', status: 'running', threadId: '', startedAtIso: now, finishedAtIso: '', summary: '', error: '' }],
+  runs: [{ id: 'run-1', boardId: 'board-1', cardId: 'feature-working', agentId: 'builtin-lead', kind: 'execute', status: 'running', threadId: '', requestedModel: 'build-model', requestedReasoningEffort: 'high', startedAtIso: now, finishedAtIso: '', summary: '', error: '' }],
 }
 
 snapshot.boards.push({ ...snapshot.boards[0], id: 'board-2', projectPath: secondProject, projectName: 'Second smoke project', name: 'Another board' })
@@ -131,6 +131,8 @@ const pageErrors = []
 const streamMethods = new Set()
 const streamConnections = []
 const navigations = []
+let mobileBrowser
+let mobilePage
 try {
   await waitForServer()
   browser = await chromium.launch({ headless: true })
@@ -150,6 +152,12 @@ try {
   await page.addInitScript((path) => {
     localStorage.setItem('codex-web-local.new-thread-cwd.v1', path)
     localStorage.setItem('codex-web-local.theme.v1', 'light')
+    Object.defineProperty(navigator, 'mediaDevices', { value: { getUserMedia: async () => ({ getTracks: () => [{ stop() {} }] }) } })
+    window.MediaRecorder = class {
+      state = 'inactive'; mimeType = 'audio/webm'
+      start() { this.state = 'recording' }
+      stop() { this.state = 'inactive'; setTimeout(() => { this.ondataavailable?.({ data: new Blob(['audio'], { type: 'audio/webm' }) }); this.onstop?.() }, 0) }
+    }
   }, emptyProject)
   const visitBoard = async (query = '') => {
     await page.goto(`${origin}/#/board/board-1${query}`, { waitUntil: 'domcontentloaded' })
@@ -198,6 +206,9 @@ try {
   await detail.waitFor()
   await visitBoard()
   assert.equal(await detail.count(), 0)
+  await page.getByLabel('Find a feature', { exact: true }).fill('Persistent board')
+  assert.equal(await page.locator('[data-feature-id]').count(), 1)
+  await page.getByLabel('Find a feature', { exact: true }).fill('')
   await page.screenshot({ path: join(outputDirectory, 'project-board-overview.png'), fullPage: true })
 
   // A custom prompt can be saved, edited, and selected to coordinate a feature.
@@ -330,6 +341,27 @@ try {
   await planning.getByLabel('Goal or plan', { exact: true }).fill('Build shared groundwork once, then two related features. Keep completed work.')
   await planning.getByLabel('Coordinator model', { exact: true }).selectOption('build-model')
   await planning.getByLabel('Coordinator reasoning', { exact: true }).selectOption('high')
+  let finishPlanTranscript
+  await page.route('**/codex-api/transcribe', async (route) => {
+    await new Promise((resolveTranscript) => { finishPlanTranscript = resolveTranscript })
+    await route.fulfill({ json: { text: 'shared groundwork once, then two related features. Keep completed work.' } })
+  })
+  await planning.getByLabel('Goal or plan', { exact: true }).fill('Build ')
+  await planning.getByRole('button', { name: 'Dictate Goal or plan', exact: true }).click()
+  assert.equal(await planning.getByRole('button', { name: 'Create feature plan' }).isDisabled(), true)
+  await planning.getByRole('button', { name: 'Stop dictating Goal or plan', exact: true }).click()
+  await planning.getByText('Transcribing…', { exact: true }).waitFor()
+  await page.locator('.plan-overlay').click({ position: { x: 5, y: 5 } })
+  assert.equal(await planning.isVisible(), true, 'Outside press must not discard pending dictation')
+  await page.waitForFunction(() => document.querySelector('.dictation-field[data-dictation-busy]') !== null)
+  // Wait for the intercepted request, not an actual speech service.
+  const transcriptDeadline = Date.now() + 5_000
+  while (!finishPlanTranscript && Date.now() < transcriptDeadline) await new Promise((resolveWait) => setTimeout(resolveWait, 10))
+  assert.ok(finishPlanTranscript, 'The microphone must submit audio for transcription')
+  finishPlanTranscript()
+  await planning.getByText('Ready — review your words before saving.', { exact: true }).waitFor()
+  assert.match(await planning.getByLabel('Goal or plan', { exact: true }).inputValue(), /Build shared groundwork/)
+  assert.equal(planRequest, undefined, 'Stopping dictation must not start planning')
   await page.screenshot({ path: join(outputDirectory, 'project-board-plan.png'), fullPage: true })
   await planning.getByRole('button', { name: 'Create feature plan' }).click()
   await planning.getByRole('alert').getByText('Planning request kept for review.').waitFor()
@@ -360,6 +392,7 @@ try {
 
   // Dark surfaces use the same theme token for cards, detail, forms, and selects.
   await visitBoard('?feature=feature-working')
+  await detail.getByText('Requested: build-model · high reasoning', { exact: true }).waitFor()
   await page.evaluate(() => { document.documentElement.dataset.theme = 'dark'; document.documentElement.style.colorScheme = 'dark' })
   await page.waitForFunction(() => [...document.querySelectorAll('.board-card, .board-detail-panel, .detail-status-select select')].every((element) => getComputedStyle(element).backgroundColor === 'rgb(37, 38, 51)'))
   const darkSurfaces = await page.locator('.board-card, .board-detail-panel, .detail-status-select select').evaluateAll((elements) => elements.map((element) => getComputedStyle(element).backgroundColor))
@@ -403,20 +436,28 @@ try {
   const sourcePlan = 'Create shared foundations, then build two related features with one final review.'
   const sourceThread = { id: 'planning-source-chat', cwd: emptyProject, preview: 'Planning a new project', createdAt: Date.now() / 1000, updatedAt: Date.now() / 1000, status: { type: 'idle' }, turns: [{ id: 'source-turn', status: 'completed', items: [
     { id: 'source-user', type: 'userMessage', content: [{ type: 'text', text: 'Please make a project plan.' }] },
+    { id: 'source-child-start', type: 'subAgentActivity', kind: 'started', agentThreadId: 'unlisted-child', agentPath: '/root/design_review' },
     { id: 'source-plan', type: 'agentMessage', text: sourcePlan, phase: 'final_answer' },
   ] }] }
+  const childThread = { ...sourceThread, id: 'unlisted-child', preview: 'Design review', turns: [{ id: 'child-turn', status: 'completed', items: [{ id: 'child-result', type: 'agentMessage', text: 'The mobile design review is ready.', phase: 'final_answer' }] }] }
   await page.route('**/codex-api/rpc', async (route) => {
     const { method, params } = route.request().postDataJSON()
     let result
     if (method === 'thread/list') result = { data: [sourceThread], nextCursor: null }
     else if ((method === 'thread/read' || method === 'thread/resume') && params.threadId === sourceThread.id) result = { thread: sourceThread, model: 'build-model', reasoningEffort: 'high', cwd: emptyProject }
+    else if (method === 'thread/read' && params.threadId === childThread.id) result = { thread: childThread }
     else if (method === 'thread/goal/get') result = { goal: null }
     else return route.fallback()
     return route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ result }) })
   })
   await page.route('**/codex-api/thread-resume-lite', (route) => route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ result: { thread: sourceThread, model: 'build-model', reasoningEffort: 'high' } }) }))
-  await page.route('**/codex-api/thread-page', (route) => route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ result: { thread: sourceThread, page: { startTurnIndex: 0, endTurnIndex: 1, totalTurns: 1, hasEarlier: false } } }) }))
+  await page.route('**/codex-api/thread-page', (route) => route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ result: { thread: route.request().postDataJSON().threadId === childThread.id ? childThread : sourceThread, page: { startTurnIndex: 0, endTurnIndex: 1, totalTurns: 1, hasEarlier: false } } }) }))
   await page.goto(`${origin}/?chat-import-smoke=1#/thread/${sourceThread.id}`, { waitUntil: 'domcontentloaded' })
+  await page.getByText(sourcePlan, { exact: true }).waitFor()
+  await page.getByRole('link', { name: 'Open Design review subagent', exact: true }).click()
+  await page.waitForURL('**#/thread/unlisted-child')
+  await page.getByText('The mobile design review is ready.', { exact: true }).waitFor()
+  await page.goBack()
   await page.getByText(sourcePlan, { exact: true }).waitFor()
   await page.getByRole('button', { name: 'Turn this chat into a board', exact: true }).click()
   const chatPlan = page.getByRole('dialog', { name: 'Turn this chat into a board', exact: true })
@@ -451,14 +492,72 @@ try {
   await page.waitForURL('**/#/board/board-1?feature=feature-done')
   await detail.waitFor()
 
+  // Phone pass with actual touch media queries, not just a narrow desktop window.
+  // Opt into WebKit where the installed engine works. Speech/model output is stubbed.
+  const mobileEngine = process.env.CODEXUI_MOBILE_BROWSER === 'webkit' ? webkit : chromium
+  const mobileEngineName = mobileEngine.name()
+  mobileBrowser = await mobileEngine.launch({ headless: true })
+  mobilePage = await mobileBrowser.newPage({ ...devices['iPhone 13'], deviceScaleFactor: 1 })
+  mobilePage.on('pageerror', (error) => pageErrors.push(error.message))
+  await mobilePage.addInitScript(() => {
+    localStorage.setItem('codex-web-local.theme.v1', 'dark')
+    Object.defineProperty(navigator, 'mediaDevices', { value: { getUserMedia: async () => ({ getTracks: () => [{ stop() {} }] }) } })
+    window.MediaRecorder = class {
+      state = 'inactive'; mimeType = 'audio/webm'
+      start() { this.state = 'recording' }
+      stop() { this.state = 'inactive'; setTimeout(() => { this.ondataavailable?.({ data: new Blob(['audio'], { type: 'audio/webm' }) }); this.onstop?.() }, 0) }
+    }
+  })
+  await mobilePage.route('**/codex-api/project-board-models', (route) => route.fulfill({ json: { data: { defaultModel: 'build-model', defaultReasoningEffort: 'high', models: [{ id: 'build-model', label: 'Build model', reasoningEfforts: ['high'], defaultReasoningEffort: 'high' }] } } }))
+  await mobilePage.route('**/codex-api/transcribe', (route) => route.fulfill({ json: { text: 'A feature created by voice on mobile.' } }))
+  await mobilePage.goto(`${origin}/#/board/board-1`, { waitUntil: 'domcontentloaded' })
+  await mobilePage.getByTestId('project-board').waitFor()
+  assert.equal(await mobilePage.evaluate(() => matchMedia('(pointer: coarse)').matches), true)
+  assert.equal(await mobilePage.evaluate(() => document.documentElement.scrollWidth <= innerWidth), true)
+  assert.equal(await mobilePage.locator('.boards-header-actions').first().getByRole('button').evaluateAll((buttons) => buttons.every((button) => button.scrollWidth <= button.clientWidth)), true, 'Phone toolbar labels must fit inside their buttons')
+  await mobilePage.screenshot({ path: join(outputDirectory, `project-board-${mobileEngineName}-touch.png`), fullPage: true })
+  const touchCard = mobilePage.locator('.board-card-main').first()
+  await touchCard.scrollIntoViewIfNeeded()
+  await mobilePage.screenshot({ path: join(outputDirectory, `project-board-${mobileEngineName}-touch-cards.png`), fullPage: true })
+  await touchCard.tap()
+  await mobilePage.getByTestId('feature-detail').waitFor()
+  await mobilePage.getByRole('button', { name: 'Close feature', exact: true }).tap()
+  await mobilePage.getByRole('button', { name: 'New feature', exact: true }).first().tap()
+  const touchForm = mobilePage.getByTestId('new-feature-form')
+  const titleMic = touchForm.getByRole('button', { name: 'Dictate Title', exact: true })
+  const micBounds = await titleMic.boundingBox()
+  assert.ok(micBounds.width >= 44 && micBounds.height >= 44, 'Phone voice controls must be comfortable touch targets')
+  await titleMic.tap()
+  await touchForm.getByRole('button', { name: 'Stop dictating Title', exact: true }).tap()
+  await touchForm.getByText('Ready — review your words before saving.', { exact: true }).waitFor()
+  assert.equal(await touchForm.getByLabel('Title', { exact: true }).inputValue(), 'A feature created by voice on mobile.')
+  await touchForm.getByLabel('Brief', { exact: true }).fill('Verify the complete phone workflow, including form scrolling and manual save.')
+  await touchForm.getByRole('button', { name: 'Create feature', exact: true }).scrollIntoViewIfNeeded()
+  await mobilePage.screenshot({ path: join(outputDirectory, `project-board-${mobileEngineName}-touch-form.png`), fullPage: true })
+  const closeBounds = await mobilePage.getByRole('button', { name: 'Close', exact: true }).boundingBox()
+  assert.ok(closeBounds.y >= 0 && closeBounds.y + closeBounds.height <= mobilePage.viewportSize().height, 'Close stays visible while the form scrolls')
+  await touchForm.getByRole('button', { name: 'Create feature', exact: true }).tap()
+  await mobilePage.getByTestId('feature-detail').waitFor()
+  assert.equal(await mobilePage.getByTestId('feature-detail').getAttribute('aria-modal'), 'true')
+  await mobilePage.getByRole('button', { name: 'Close feature', exact: true }).tap()
+  await mobilePage.getByRole('button', { name: 'Plan features', exact: true }).tap()
+  const touchPlan = mobilePage.getByRole('dialog', { name: 'Plan project features', exact: true })
+  await touchPlan.getByLabel('Goal or plan', { exact: true }).fill('Build one small feature, then a dependent improvement.')
+  await touchPlan.getByRole('button', { name: 'Create feature plan', exact: true }).scrollIntoViewIfNeeded()
+  await mobilePage.screenshot({ path: join(outputDirectory, `project-board-${mobileEngineName}-touch-plan.png`), fullPage: true })
+  assert.equal(await touchPlan.evaluate((element) => element.scrollWidth <= element.clientWidth), true)
+  await touchPlan.getByRole('button', { name: 'Close planning', exact: true }).tap()
+
   assert.deepEqual(pageErrors, [])
-  console.log('Project board smoke passed: questions, draft/retry preservation, model settings, Plan first, queue consent, chat-to-board entry, Activity deep links, dark dialogs, mobile layout, and ordinary chat navigation. Model execution is verified separately by the native runtime probe.')
+  console.log(`Project board smoke passed: questions, draft/retry preservation, model settings, Plan first, queue consent, chat-to-board entry, Activity and unlisted-child links, voice/manual save, dark dialogs, ${mobileEngineName} touch/mobile layout, and ordinary chat navigation. Model execution is verified separately by the native runtime probe.`)
 } catch (error) {
+  await mobilePage?.screenshot({ path: join(outputDirectory, 'project-board-mobile-failure.png'), fullPage: true }).catch(() => undefined)
   await page?.screenshot({ path: join(outputDirectory, 'project-board-failure.png'), fullPage: true }).catch(() => undefined)
   const renderedCards = await page?.locator('.board-card-main > strong').allTextContents().catch(() => [])
   console.error(JSON.stringify({ pageErrors, navigations, streamConnections, streamMethods: [...streamMethods], renderedCards }, null, 2))
   throw error
 } finally {
+  await mobileBrowser?.close().catch(() => undefined)
   await browser?.close().catch(() => undefined)
   try { process.kill(-server.pid, 'SIGTERM') } catch (error) { if (error.code !== 'ESRCH') throw error }
   await new Promise((resolveWait) => {

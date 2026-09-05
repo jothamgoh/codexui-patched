@@ -3,7 +3,7 @@
     <header class="boards-header">
       <div class="boards-heading-copy">
         <h2>Project board</h2>
-        <p>Track larger builds across chats. Choose an agent to lead each feature, bring in other agents, and ask for decisions when needed.</p>
+        <p>Plan the work, choose your agents, and follow each feature to completion.</p>
       </div>
       <div class="boards-header-actions">
         <Button v-if="activeBoard" type="button" variant="outline" :disabled="boardPlanningActive || isMutating" @click="$emit('plan-board', activeBoard.id)"><Sparkles aria-hidden="true" /> Plan features</Button>
@@ -40,7 +40,7 @@
         <input
           type="checkbox"
           :checked="activeBoard.autoDispatch"
-          :disabled="isMutating"
+          :disabled="isDictating || isMutating"
           @change="toggleAutoDispatch"
         />
         <span class="boards-live-dot" aria-hidden="true" />
@@ -57,12 +57,21 @@
       <div class="boards-header-actions">
         <Button v-if="activeBoard.sourceThreadId" type="button" size="sm" variant="ghost" @click="$emit('select-thread', activeBoard.sourceThreadId)">Planning chat</Button>
         <Button v-if="activeBoard.planningThreadId" type="button" size="sm" variant="ghost" @click="$emit('select-thread', activeBoard.planningThreadId)">Coordinator chat</Button>
-        <Button v-if="activeQueue?.status === 'running'" type="button" size="sm" variant="outline" :disabled="isMutating" @click="pauseQueue">Pause delivery</Button>
+        <Button v-if="activeQueue?.status === 'running'" type="button" size="sm" variant="outline" :disabled="isDictating || isMutating" @click="pauseQueue">Pause delivery</Button>
         <Button v-else type="button" size="sm" :disabled="queueCandidates.length === 0 || boardPlanningActive || isMutating" @click="openQueue">{{ activeQueue ? 'Resume selected features' : 'Run selected features' }}</Button>
       </div>
       <details v-if="activeBoard.plan" class="board-plan-summary"><summary>Project plan</summary><p>{{ activeBoard.plan }}</p></details>
       <p v-if="latestBoardPlanRun?.status === 'failed' || latestBoardPlanRun?.status === 'interrupted'" class="boards-alert" role="alert">{{ latestBoardPlanRun.error || 'Planning stopped. Open the coordinator chat or plan again.' }}</p>
     </section>
+
+    <div v-if="activeBoard && featureCards.length" class="board-overview" aria-label="Board overview">
+      <div class="board-score">
+        <span><span class="lane-status-dot" data-tone="blue" />{{ workingFeatureCount }} in progress</span>
+        <button type="button" :disabled="!attentionFeatures.length" @click="attentionFeatures[0] && selectCard(attentionFeatures[0])"><span class="lane-status-dot" data-tone="amber" />{{ attentionFeatures.length }} need you</button>
+        <span><span class="lane-status-dot" data-tone="green" />{{ completedFeatureCount }} done</span>
+      </div>
+      <DictationField v-model="featureSearch" label="Find a feature" v-bind="voiceField('feature-search')" aria-label="Find a feature" placeholder="Find a feature…" class="feature-search" />
+    </div>
 
     <p v-if="error" class="boards-alert" role="alert">{{ error }}</p>
     <div v-if="isLoading && snapshot.boards.length === 0" class="boards-empty">Loading project boards…</div>
@@ -100,6 +109,7 @@
             <h3>{{ column.label }}</h3>
             <span>{{ cardsForColumn(column.statuses).length }}</span>
           </header>
+          <p class="lane-hint">{{ column.hint }}</p>
 
           <div class="board-lane-list">
             <article
@@ -123,7 +133,7 @@
                 <div class="board-card-meta">
                   <span><ListChecks aria-hidden="true" /> {{ taskProgress(card) }}</span>
                   <span v-if="agentFor(card.assignedAgentId)">
-                    <Bot aria-hidden="true" /> {{ agentFor(card.assignedAgentId)?.name }}
+                    <span class="agent-avatar" aria-hidden="true">{{ agentFor(card.assignedAgentId)?.name.slice(0, 1).toUpperCase() }}</span> {{ agentFor(card.assignedAgentId)?.name }}
                   </span>
                 </div>
               </button>
@@ -197,8 +207,8 @@
               <label v-if="selectedQuestions.length > 1" class="question-picker"><span>Open question</span><select :value="selectedOpenQuestion.id" @change="selectQuestion"><option v-for="question in selectedQuestions" :key="question.id" :value="question.id">{{ question.prompt }}</option></select></label>
               <p>{{ selectedOpenQuestion.prompt }}</p>
               <form @submit.prevent="answerSelectedQuestion">
-                <Textarea v-model="questionAnswer" required rows="3" placeholder="Give the Lead the decision it needs" />
-                <Button type="submit" size="sm" :disabled="isMutating || !questionAnswer.trim()">Answer & continue</Button>
+                <DictationField :key="selectedOpenQuestion.id" v-model="questionAnswer" label="Your answer" v-bind="voiceField('question')" multiline required rows="3" placeholder="Give the Lead the decision it needs" />
+                <Button type="submit" size="sm" :disabled="isDictating || isMutating || !questionAnswer.trim()">Answer & continue</Button>
               </form>
             </section>
 
@@ -249,7 +259,7 @@
               <ul v-else class="run-list">
                 <li v-for="run in selectedRuns" :key="run.id">
                   <span class="run-dot" :data-status="run.status" />
-                  <div><strong>{{ agentFor(run.agentId)?.name ?? 'Agent' }} · {{ runStatusLabel(run.status) }}</strong><p>{{ run.error || run.summary || formatTime(run.startedAtIso) }}</p></div>
+                  <div><strong>{{ agentFor(run.agentId)?.name ?? 'Agent' }} · {{ runStatusLabel(run.status) }}</strong><p>{{ run.error || run.summary || formatTime(run.startedAtIso) }}</p><small v-if="run.requestedModel !== undefined || run.requestedReasoningEffort">Requested: {{ run.requestedModel || 'App default model' }}<template v-if="run.requestedReasoningEffort"> · {{ run.requestedReasoningEffort }} reasoning</template></small></div>
                 </li>
               </ul>
             </section>
@@ -260,8 +270,8 @@
                 <li v-for="comment in selectedComments" :key="comment.id"><strong>{{ comment.author }}</strong><p>{{ comment.text }}</p></li>
               </ul>
               <form class="comment-form" @submit.prevent="addSelectedComment">
-                <Input v-model="commentText" placeholder="Add context for the Lead" />
-                <Button type="submit" size="sm" variant="outline" :disabled="isMutating || !commentText.trim()">Add</Button>
+                <DictationField :key="selectedCard.id" v-model="commentText" label="Comment" v-bind="voiceField('comment')" placeholder="Add context for the Lead" />
+                <Button type="submit" size="sm" variant="outline" :disabled="isDictating || isMutating || !commentText.trim()">Add</Button>
               </form>
             </section>
           </div>
@@ -278,13 +288,13 @@
     <DialogRoot v-model:open="featureDialogOpen">
       <DialogPortal>
         <DialogOverlay class="board-dialog-backdrop" />
-        <DialogContent aria-modal="true" class="board-dialog" :aria-describedby="undefined" @open-auto-focus="rememberFocus('feature')" @close-auto-focus="restoreFocus('feature', $event)">
+        <DialogContent @interact-outside="isDictating && $event.preventDefault()" aria-modal="true" class="board-dialog" :aria-describedby="undefined" @open-auto-focus="rememberFocus('feature')" @close-auto-focus="restoreFocus('feature', $event)">
           <header><div><DialogTitle>{{ editingCardId ? 'Edit feature' : 'New feature' }}</DialogTitle><p>Give the Lead a clear brief. It will make the task plan.</p></div><Button type="button" variant="ghost" size="icon-sm" aria-label="Close" @click="featureDialogOpen = false"><X /></Button></header>
           <form class="board-form" data-testid="new-feature-form" @submit.prevent="createFeature">
             <p v-if="error" class="boards-alert" role="alert">{{ error }}</p>
-            <label><span>Title</span><Input v-model="featureDraft.title" required placeholder="Add project progress board" /></label>
-            <label><span>Brief</span><Textarea v-model="featureDraft.description" rows="4" placeholder="What should be built, and why?" /></label>
-            <label><span>Done when</span><Textarea v-model="featureDraft.acceptanceCriteria" rows="3" placeholder="The result you expect" /></label>
+            <label><span>Title</span><DictationField v-model="featureDraft.title" label="Title" v-bind="voiceField('feature-title')" required placeholder="Add project progress board" /></label>
+            <label><span>Brief</span><DictationField v-model="featureDraft.description" label="Brief" v-bind="voiceField('feature-brief')" multiline rows="4" placeholder="What should be built, and why?" /></label>
+            <label><span>Done when</span><DictationField v-model="featureDraft.acceptanceCriteria" label="Done when" v-bind="voiceField('feature-acceptance')" multiline rows="3" placeholder="The result you expect" /></label>
             <div class="board-form-grid">
               <label><span>Priority</span><select v-model="featureDraft.priority"><option value="low">Low</option><option value="normal">Normal</option><option value="high">High</option><option value="urgent">Urgent</option></select></label>
               <label><span>Verification</span><select v-model="featureDraft.verificationPolicy"><option value="none">None</option><option value="self">Self-check</option><option value="independent">Independent verification</option><option value="batch">Review later</option></select></label>
@@ -294,7 +304,7 @@
             <fieldset v-if="dependencyCandidates.length" class="dependency-picker"><legend>Depends on</legend><p class="detail-muted">Shared groundwork belongs in one feature. Select anything this feature needs first.</p><label v-for="feature in dependencyCandidates" :key="feature.id" class="checkbox-row"><input v-model="featureDraft.dependencyIds" type="checkbox" :value="feature.id" /><span>{{ feature.title }} · {{ statusLabel(feature.status) }}</span></label></fieldset>
             <p v-if="draftLeadUnavailable" class="boards-alert">Choose another Lead or enable the assigned agent in the Agent library.</p>
             <p class="verification-help">{{ verificationHelp[featureDraft.verificationPolicy] }}</p>
-            <footer><Button type="button" variant="ghost" @click="featureDialogOpen = false">Cancel</Button><Button type="submit" :disabled="isMutating || !featureDraft.title.trim()">{{ editingCardId ? 'Save feature' : 'Create feature' }}</Button></footer>
+            <footer><Button type="button" variant="ghost" @click="featureDialogOpen = false">Cancel</Button><Button type="submit" :disabled="isDictating || isMutating || !featureDraft.title.trim()">{{ editingCardId ? 'Save feature' : 'Create feature' }}</Button></footer>
           </form>
         </DialogContent>
       </DialogPortal>
@@ -303,13 +313,13 @@
     <DialogRoot v-model:open="boardDialogOpen">
       <DialogPortal>
         <DialogOverlay class="board-dialog-backdrop" />
-        <DialogContent aria-modal="true" class="board-dialog board-dialog-small" :aria-describedby="undefined" @open-auto-focus="rememberFocus('board')" @close-auto-focus="restoreFocus('board', $event)">
+        <DialogContent @interact-outside="isDictating && $event.preventDefault()" aria-modal="true" class="board-dialog board-dialog-small" :aria-describedby="undefined" @open-auto-focus="rememberFocus('board')" @close-auto-focus="restoreFocus('board', $event)">
           <header><div><DialogTitle>New board</DialogTitle><p>Use another board for a release, experiment, or separate workstream.</p></div><Button type="button" variant="ghost" size="icon-sm" aria-label="Close" @click="boardDialogOpen = false"><X /></Button></header>
           <form class="board-form" @submit.prevent="createBoard">
             <p v-if="error" class="boards-alert" role="alert">{{ error }}</p>
-            <label><span>Name</span><Input v-model="boardName" required placeholder="Project board" /></label>
+            <label><span>Name</span><DictationField v-model="boardName" label="Name" v-bind="voiceField('board-name')" required placeholder="Project board" /></label>
             <label class="checkbox-row"><input v-model="boardIsDefault" type="checkbox" /><span>Make this the default board for the project</span></label>
-            <footer><Button type="button" variant="ghost" @click="boardDialogOpen = false">Cancel</Button><Button type="submit" :disabled="isMutating">Create board</Button></footer>
+            <footer><Button type="button" variant="ghost" @click="boardDialogOpen = false">Cancel</Button><Button type="submit" :disabled="isDictating || isMutating">Create board</Button></footer>
           </form>
         </DialogContent>
       </DialogPortal>
@@ -318,7 +328,7 @@
     <DialogRoot v-model:open="agentDialogOpen">
       <DialogPortal>
         <DialogOverlay class="board-dialog-backdrop" />
-        <DialogContent aria-modal="true" class="board-dialog agent-dialog" :aria-describedby="undefined" @open-auto-focus="rememberFocus('agents')" @close-auto-focus="restoreFocus('agents', $event)">
+        <DialogContent @interact-outside="isDictating && $event.preventDefault()" aria-modal="true" class="board-dialog agent-dialog" :aria-describedby="undefined" @open-auto-focus="rememberFocus('agents')" @close-auto-focus="restoreFocus('agents', $event)">
           <header><div><DialogTitle>Agent library</DialogTitle><p>Reusable agent profiles. Any agent can lead a feature or work on its tasks.</p></div><Button type="button" variant="ghost" size="icon-sm" aria-label="Close" @click="agentDialogOpen = false"><X /></Button></header>
           <p v-if="error" class="boards-alert" role="alert">{{ error }}</p>
           <p class="agent-access-note">Access is shared by the Lead and its subagents. If any selected agent can edit, read-only role instructions are guidance, not separate sandbox restrictions.</p>
@@ -326,52 +336,52 @@
             <section>
               <h3>Available agents <span class="agent-help">· {{ boardAgents.length }} on this board</span></h3>
               <p class="agent-help">Checked agents are available on this board. Membership saves immediately.</p>
-              <Input v-model="agentSearch" aria-label="Find an agent" placeholder="Find an agent" class="agent-search" />
+              <DictationField v-model="agentSearch" label="Find an agent" v-bind="voiceField('agent-search')" aria-label="Find an agent" placeholder="Find an agent" class="agent-search" />
               <p v-if="filteredAgents.length === 0" class="agent-help">No agents match your search.</p>
               <div v-for="agent in filteredAgents" :key="agent.id" class="agent-row" :class="{ 'is-editing': editingAgentId === agent.id }">
-                <input :id="`board-agent-${agent.id}`" :checked="activeBoard?.agentIds.includes(agent.id)" type="checkbox" :disabled="isMutating || !activeBoard || (activeBoard.agentIds.length === 1 && activeBoard.agentIds.includes(agent.id))" @change="toggleBoardAgent(agent.id, $event)" />
+                <input :id="`board-agent-${agent.id}`" :checked="activeBoard?.agentIds.includes(agent.id)" type="checkbox" :disabled="isDictating || isMutating || !activeBoard || (activeBoard.agentIds.length === 1 && activeBoard.agentIds.includes(agent.id))" @change="toggleBoardAgent(agent.id, $event)" />
                 <span class="agent-avatar">{{ agent.name.slice(0, 1).toUpperCase() }}</span>
                 <label :for="`board-agent-${agent.id}`"><strong>{{ agent.name }}</strong><small>{{ agent.role }} · {{ agent.sandbox === 'workspace-write' ? 'requests project edits' : 'read-only instructions' }}</small><p>{{ agent.description }}</p></label>
-                <Button type="button" variant="ghost" size="sm" :disabled="isMutating || agentDraftIsDirty" :aria-label="`${agent.builtIn ? 'Customize' : 'Edit'} ${agent.name}`" @click="editAgent(agent)">{{ agent.builtIn ? 'Customize' : 'Edit' }}</Button>
+                <Button type="button" variant="ghost" size="sm" :disabled="isDictating || isMutating || agentDraftIsDirty" :aria-label="`${agent.builtIn ? 'Customize' : 'Edit'} ${agent.name}`" @click="editAgent(agent)">{{ agent.builtIn ? 'Customize' : 'Edit' }}</Button>
               </div>
             </section>
             <form ref="agentEditor" class="new-agent-form" @submit.prevent="createAgent">
               <h3>{{ editingAgentId ? 'Edit agent' : copyingAgentName ? `Customize ${copyingAgentName}` : 'Add your own agent' }}</h3>
               <p v-if="agentFeedback" role="status" class="agent-help">{{ agentFeedback }}</p>
-              <label><span>Name</span><Input v-model="agentDraft.name" maxlength="120" required placeholder="Accessibility reviewer" /></label>
+              <label><span>Name</span><DictationField v-model="agentDraft.name" label="Name" v-bind="voiceField('agent-name')" maxlength="120" required placeholder="Accessibility reviewer" /></label>
               <div class="board-form-grid"><label><span>Specialty</span><select v-model="agentDraft.role" aria-label="Specialty"><option value="custom">Custom</option><option value="product">Product</option><option value="design">Design</option><option value="engineering">Engineering</option><option value="qa">QA</option><option value="lead">Coordination</option></select></label><label><span>Access</span><select v-model="agentDraft.sandbox" aria-label="Access" :disabled="editingAgentAccessLocked"><option value="read-only">Read only</option><option value="workspace-write">Can edit project</option></select></label></div>
               <p v-if="editingAgentAccessLocked" class="agent-help">This agent has assigned work. Make a copy to change its access.</p>
-              <label><span>Description</span><Input v-model="agentDraft.description" maxlength="500" placeholder="What this specialist is for" /></label>
+              <label><span>Description</span><DictationField v-model="agentDraft.description" label="Description" v-bind="voiceField('agent-description')" maxlength="500" placeholder="What this specialist is for" /></label>
               <BoardExecutionSettings :model="agentDraft.model" :reasoning-effort="agentDraft.reasoningEffort" inherit-label="Use app default" label="Agent" :show-specialist-note="false" :allow-inherited-effort="false" @update:model="agentDraft.model = $event" @update:reasoning-effort="agentDraft.reasoningEffort = $event || agentDraft.reasoningEffort" />
-              <label><span>Instructions</span><Textarea v-model="agentDraft.instructions" class="agent-instructions" maxlength="20000" required rows="9" placeholder="Describe the agent’s expertise, how it should work, and when it should ask for help." /></label>
+              <label><span>Instructions</span><DictationField v-model="agentDraft.instructions" label="Instructions" v-bind="voiceField('agent-instructions')" multiline class="agent-instructions" maxlength="20000" required rows="9" placeholder="Describe the agent’s expertise, how it should work, and when it should ask for help." /></label>
               <p class="agent-help">This is the agent’s prompt. Saved changes apply when a feature starts or continues. New agents are added to this board.</p>
               <p v-if="agentDraftIsDirty" class="agent-draft-note">Unsaved changes. Save or cancel before choosing another agent.</p>
-              <div class="boards-header-actions"><Button type="submit" size="sm" :disabled="isMutating || !agentDraftIsDirty || !agentDraft.name.trim() || !agentDraft.instructions.trim()">{{ editingAgentId ? 'Save agent' : copyingAgentName ? 'Create copy' : 'Add agent' }}</Button><Button v-if="editingAgentId || agentDraftIsDirty" type="button" variant="ghost" size="sm" :disabled="isMutating" @click="resetAgentEditor">Cancel</Button><Button v-if="editingAgentId && !agentDraftIsDirty" type="button" variant="ghost" size="sm" :disabled="isMutating" @click="copyEditingAgent">Make a copy</Button></div>
+              <div class="boards-header-actions"><Button type="submit" size="sm" :disabled="isDictating || isMutating || !agentDraftIsDirty || !agentDraft.name.trim() || !agentDraft.instructions.trim()">{{ editingAgentId ? 'Save agent' : copyingAgentName ? 'Create copy' : 'Add agent' }}</Button><Button v-if="editingAgentId || agentDraftIsDirty" type="button" variant="ghost" size="sm" :disabled="isDictating || isMutating" @click="resetAgentEditor">Cancel</Button><Button v-if="editingAgentId && !agentDraftIsDirty" type="button" variant="ghost" size="sm" :disabled="isDictating || isMutating" @click="copyEditingAgent">Make a copy</Button></div>
             </form>
           </div>
         </DialogContent>
       </DialogPortal>
     </DialogRoot>
-    <DialogRoot v-model:open="queueDialogOpen"><DialogPortal><DialogOverlay class="board-dialog-backdrop" /><DialogContent class="board-dialog" aria-describedby="queue-description" @open-auto-focus="rememberFocus('queue')" @close-auto-focus="restoreFocus('queue', $event)">
+    <DialogRoot v-model:open="queueDialogOpen"><DialogPortal><DialogOverlay class="board-dialog-backdrop" /><DialogContent @interact-outside="isDictating && $event.preventDefault()" class="board-dialog" aria-describedby="queue-description" @open-auto-focus="rememberFocus('queue')" @close-auto-focus="restoreFocus('queue', $event)">
       <header><div><DialogTitle>Run selected features</DialogTitle><p id="queue-description">The coordinator runs these features one at a time, following dependencies and each feature’s model and verification settings.</p></div><Button type="button" variant="ghost" size="icon-sm" aria-label="Close queue" @click="queueDialogOpen = false"><X /></Button></header>
       <form class="board-form" @submit.prevent="runQueue">
         <p v-if="error" class="boards-alert" role="alert">{{ error }}</p>
         <div class="queue-list"><label v-for="feature in queueCandidates" :key="feature.id" class="queue-feature"><input v-model="queueFeatureIds" type="checkbox" :value="feature.id" /><span><strong>{{ feature.title }}</strong><small>{{ dependencyLabel(feature) || 'Ready when the project is free' }}</small></span></label></div>
         <p class="detail-muted">Pauses for a question, failure, or review. New features are not added to this selection automatically. After a restart, select the remaining features again.</p>
         <label v-if="boardAgents.some(agent => agent.sandbox === 'workspace-write')" class="checkbox-row"><input v-model="queueAllowEdits" type="checkbox" /><span>Allow project edits for these selected features and their agents.</span></label>
-        <footer><Button type="button" variant="ghost" @click="queueDialogOpen = false">Cancel</Button><Button type="submit" :disabled="isMutating || !queueFeatureIds.length || (boardAgents.some(agent => agent.sandbox === 'workspace-write') && !queueAllowEdits)">Start selected features</Button></footer>
+        <footer><Button type="button" variant="ghost" @click="queueDialogOpen = false">Cancel</Button><Button type="submit" :disabled="isDictating || isMutating || !queueFeatureIds.length || (boardAgents.some(agent => agent.sandbox === 'workspace-write') && !queueAllowEdits)">Start selected features</Button></footer>
       </form>
     </DialogContent></DialogPortal></DialogRoot>
 
     <DialogRoot v-model:open="startDialogOpen">
       <DialogPortal>
         <DialogOverlay class="board-dialog-backdrop" />
-        <DialogContent aria-modal="true" class="board-dialog board-dialog-small" aria-describedby="board-start-description" @open-auto-focus="rememberFocus('start')" @close-auto-focus="restoreFocus('start', $event)">
+        <DialogContent @interact-outside="isDictating && $event.preventDefault()" aria-modal="true" class="board-dialog board-dialog-small" aria-describedby="board-start-description" @open-auto-focus="rememberFocus('start')" @close-auto-focus="restoreFocus('start', $event)">
           <header><DialogTitle>Allow project edits?</DialogTitle></header>
           <div class="board-form">
             <p id="board-start-description" class="detail-prewrap">Starting this feature gives the Lead and all its native subagents shared access to edit files in this project. Read-only role instructions do not restrict individual agents. Automatic handoffs keep this access until the run ends.</p>
             <p v-if="error" class="boards-alert" role="alert">{{ error }}</p>
-            <footer><Button type="button" variant="ghost" @click="startDialogOpen = false">Cancel</Button><Button type="button" :disabled="isMutating" @click="confirmStart">Allow edits &amp; start</Button></footer>
+            <footer><Button type="button" variant="ghost" @click="startDialogOpen = false">Cancel</Button><Button type="button" :disabled="isDictating || isMutating" @click="confirmStart">Allow edits &amp; start</Button></footer>
           </div>
         </DialogContent>
       </DialogPortal>
@@ -384,7 +394,6 @@ import { computed, nextTick, reactive, ref, watch } from 'vue'
 import { useMediaQuery } from '@vueuse/core'
 import { DialogRoot, DialogPortal, DialogOverlay, DialogContent, DialogTitle } from 'reka-ui'
 import {
-  Bot,
   Check,
   ChevronDown,
   CircleHelp,
@@ -403,8 +412,7 @@ import {
 } from '@lucide/vue'
 import type { ProjectBoardUpdateInput, ProjectBoardCardUpdateInput, ProjectBoardAgentUpdateInput } from '../../api/projectBoards'
 import Button from '../ui/button/Button.vue'
-import Input from '../ui/input/Input.vue'
-import Textarea from '../ui/textarea/Textarea.vue'
+import DictationField from './DictationField.vue'
 import BoardExecutionSettings from './BoardExecutionSettings.vue'
 import type { ReasoningEffort } from '../../types/codex'
 import type {
@@ -459,12 +467,12 @@ const emit = defineEmits<{
   'plan-board': [boardId: string]
 }>()
 
-const columns: Array<{ key: string; label: string; statuses: ProjectBoardStatus[]; moveStatus: ProjectBoardStatus; tone: string }> = [
-  { key: 'backlog', label: 'Backlog', statuses: ['backlog'], moveStatus: 'backlog', tone: 'muted' },
-  { key: 'working', label: 'In progress', statuses: ['working'], moveStatus: 'working', tone: 'blue' },
-  { key: 'needs-you', label: 'Needs you', statuses: ['needs_input', 'blocked'], moveStatus: 'blocked', tone: 'amber' },
-  { key: 'review', label: 'Review', statuses: ['review'], moveStatus: 'review', tone: 'violet' },
-  { key: 'done', label: 'Done', statuses: ['done'], moveStatus: 'done', tone: 'green' },
+const columns: Array<{ key: string; label: string; hint: string; statuses: ProjectBoardStatus[]; moveStatus: ProjectBoardStatus; tone: string }> = [
+  { key: 'backlog', label: 'Backlog', hint: 'Review a plan or choose what starts next', statuses: ['backlog'], moveStatus: 'backlog', tone: 'muted' },
+  { key: 'working', label: 'In progress', hint: 'Your agents are working on these', statuses: ['working'], moveStatus: 'working', tone: 'blue' },
+  { key: 'needs-you', label: 'Needs you', hint: 'A decision or next step needs attention', statuses: ['needs_input', 'blocked'], moveStatus: 'blocked', tone: 'amber' },
+  { key: 'review', label: 'Review', hint: 'Built and waiting for its final check', statuses: ['review'], moveStatus: 'review', tone: 'violet' },
+  { key: 'done', label: 'Done', hint: 'Completed with a recorded result', statuses: ['done'], moveStatus: 'done', tone: 'green' },
 ]
 
 const moveStatuses: Array<{ value: ProjectBoardStatus; label: string }> = [
@@ -494,6 +502,12 @@ const startDialogOpen = ref(false)
 const queueDialogOpen = ref(false)
 const queueFeatureIds = ref<string[]>([])
 const queueAllowEdits = ref(false)
+const featureSearch = ref('')
+const busyVoiceFields = reactive(new Set<string>())
+const isDictating = computed(() => busyVoiceFields.size > 0)
+function voiceField(key: string) {
+  return { dictationDisabled: isDictating.value && !busyVoiceFields.has(key), onBusyChange: (busy: boolean) => { if (busy) busyVoiceFields.add(key); else busyVoiceFields.delete(key) } }
+}
 watch([featureDialogOpen, boardDialogOpen, agentDialogOpen, startDialogOpen, queueDialogOpen], (open, previous) => {
   if (open.some((value, index) => value && !previous[index])) props.actions.clearError()
 })
@@ -564,6 +578,9 @@ const activeBoard = computed<ProjectBoard | null>(() => {
 })
 const boardAgents = computed(() => props.snapshot.agents.filter((agent) => activeBoard.value?.agentIds.includes(agent.id)))
 const featureCards = computed(() => props.snapshot.cards.filter((card) => card.boardId === activeBoard.value?.id && !card.parentCardId))
+const attentionFeatures = computed(() => featureCards.value.filter((card) => card.status === 'needs_input' || card.status === 'blocked'))
+const workingFeatureCount = computed(() => featureCards.value.filter((card) => card.status === 'working').length)
+const completedFeatureCount = computed(() => featureCards.value.filter((card) => card.status === 'done').length)
 const dependencyCandidates = computed(() => featureCards.value.filter((card) => card.type === 'feature' && card.id !== editingCardId.value))
 const activeQueue = computed(() => props.snapshot.queues?.find((queue) => queue.boardId === activeBoard.value?.id))
 const queueCandidates = computed(() => featureCards.value.filter((card) => card.type === 'feature' && card.status !== 'done' && card.status !== 'review' && !cardIsLocked(card)))
@@ -586,6 +603,7 @@ watch([() => activeBoard.value?.id, () => props.initialFeatureId, selectedProjec
   featureDialogOpen.value = false
   startDialogOpen.value = false
   queueDialogOpen.value = false
+  featureSearch.value = ''
 })
 watch(() => selectedOpenQuestion.value?.id, () => { questionAnswer.value = '' })
 
@@ -597,7 +615,8 @@ watch(activeBoard, (board) => {
 })
 
 function cardsForColumn(statuses: ProjectBoardStatus[]): ProjectBoardCard[] {
-  return featureCards.value.filter((card) => statuses.includes(card.status)).sort((a, b) => b.updatedAtIso.localeCompare(a.updatedAtIso))
+  const query = featureSearch.value.trim().toLowerCase()
+  return featureCards.value.filter((card) => statuses.includes(card.status) && (!query || `${card.title} ${card.description} ${agentFor(card.assignedAgentId)?.name || ''}`.toLowerCase().includes(query))).sort((a, b) => b.updatedAtIso.localeCompare(a.updatedAtIso))
 }
 
 function selectBoardFromEvent(event: Event): void {
@@ -810,7 +829,7 @@ function deleteSelectedCard(): void {
 }
 
 async function submitMutation(operation: () => Promise<unknown>, onSuccess?: () => void): Promise<void> {
-  if (props.isMutating) return
+  if (props.isMutating || isDictating.value) return
   try { await operation(); onSuccess?.() } catch { /* The shared error is shown alongside the preserved form. */ }
 }
 
@@ -822,7 +841,7 @@ function selectQuestion(event: Event): void {
   if (selectedCard.value) emit('select-feature', selectedCard.value.id, selectedCard.value.boardId, (event.target as HTMLSelectElement).value)
 }
 
-function keepDockedDetailOpen(event: Event): void { if (isDockedDetail.value) event.preventDefault() }
+function keepDockedDetailOpen(event: Event): void { if (isDockedDetail.value || isDictating.value) event.preventDefault() }
 function rememberFocus(dialog: string): void {
   if (document.activeElement instanceof HTMLElement) focusBeforeDialog.set(dialog, document.activeElement)
 }
@@ -878,13 +897,20 @@ function formatTime(value: string): string { const date = new Date(value); retur
 .queue-feature strong { @apply text-sm font-medium; color: var(--text-primary); }
 .queue-feature small { @apply text-xs font-normal; color: var(--text-tertiary); }
 .boards-alert { @apply m-0 rounded-lg border px-3 py-2 text-sm; color: var(--text-primary); background: color-mix(in srgb, var(--surface-elevated) 90%, #e11d48); border-color: color-mix(in srgb, var(--border-strong) 60%, #e11d48); }
+.board-overview { @apply mb-3 flex flex-wrap items-center justify-between gap-3; }
+.board-score { @apply flex flex-wrap items-center gap-x-4 gap-y-2 text-xs; color: var(--text-secondary); }
+.board-score > span, .board-score > button { @apply inline-flex items-center gap-1.5; }
+.board-score > button { @apply rounded-md px-1 py-2 hover:underline disabled:cursor-default disabled:no-underline; }
+.board-overview > .dictation-field { @apply max-w-64; }
+.agent-avatar { @apply h-5 w-5 justify-center rounded-md text-[10px] font-semibold; background: var(--surface-muted); color: var(--text-secondary); }
+.lane-hint { @apply mt-0 mb-3 px-3 text-[11px] leading-4; color: var(--text-tertiary); }
 .boards-empty { @apply m-auto flex max-w-lg flex-col items-center justify-center gap-2 px-6 py-12 text-center; color: var(--text-secondary); }
 .boards-empty svg { @apply h-8 w-8; color: var(--text-muted); }
 .boards-empty strong { @apply text-base; color: var(--text-primary); }
 .boards-empty span { @apply text-sm leading-5; }
 .boards-empty-compact { @apply my-8; }
 .boards-lanes { @apply flex min-h-0 min-w-0 flex-1 overscroll-contain gap-3 overflow-x-auto overflow-y-hidden pb-4; scrollbar-width: thin; }
-.board-lane { @apply flex min-h-0 shrink-0 flex-col rounded-xl border; width: clamp(15.5rem, calc((100vw - 23rem) / 5), 19rem); border-color: var(--border-soft); background: var(--surface-muted); }
+.board-lane { @apply flex min-h-0 shrink-0 flex-col rounded-xl border border-transparent; width: clamp(15.5rem, calc((100vw - 23rem) / 5), 19rem); }
 .board-lane > header { @apply flex h-11 shrink-0 items-center gap-2 px-3; }
 .board-lane > header h3 { @apply m-0 text-sm font-medium; }
 .board-lane > header > span:last-child { @apply ml-auto text-xs; color: var(--text-muted); }
@@ -979,7 +1005,7 @@ function formatTime(value: string): string { const date = new Date(value); retur
 .agent-row p { @apply mt-1 mb-0 text-xs; color: var(--text-secondary); }
 .agent-row.is-editing { border-color: var(--text-muted); background: var(--surface-muted); }
 .agent-help { @apply my-2 text-xs leading-5; color: var(--text-muted); }
-.agent-instructions { min-height: 14rem; field-sizing: fixed; }
+:deep(.agent-instructions) { min-height: 14rem; field-sizing: fixed; }
 .agent-draft-note { @apply text-xs; color: var(--text-secondary); }
 .new-agent-form { scroll-margin-top: 8rem; background: var(--surface-muted); @apply space-y-3 rounded-xl p-4; }
 
@@ -996,20 +1022,24 @@ select:disabled { cursor: not-allowed; opacity: 0.65; }
 }
 
 @media (max-width: 700px) {
-  .boards-hub { @apply px-2; }
+  .boards-hub { @apply overflow-y-auto px-2; }
+  .boards-hub > * { flex-shrink: 0; }
   .boards-header { @apply py-2; }
   .boards-heading-copy p { @apply hidden; }
   .boards-header-actions { @apply w-full; }
   .boards-header-actions button { @apply flex-1; }
+  .boards-header > .boards-header-actions { @apply grid grid-cols-2; }
   .boards-toolbar { @apply items-stretch; }
   .boards-toolbar label { @apply min-w-0 flex-1; }
   .boards-toolbar select { @apply w-full; }
+  .boards-hub select, .board-detail-panel select, .board-dialog select { font-size: 16px; }
   .boards-hub :deep(button), .boards-hub select, .board-detail-panel :deep(button), .board-detail-panel select, .board-dialog :deep(button), .board-dialog select { min-height: 44px; }
   .boards-hub :deep(button), .board-detail-panel :deep(button), .board-dialog :deep(button) { min-width: 44px; }
   .board-card-main { @apply pb-14; }
   .board-card-move select { @apply text-xs; }
   .boards-toolbar .boards-auto-toggle { @apply ml-0 min-h-11 w-full flex-none pb-0; }
   .board-lane { @apply w-[85vw]; }
+  .boards-lanes { flex: none; height: max(24rem, 60dvh); }
   .board-detail-panel { @apply max-w-none; }
   .board-form-grid, .agent-dialog-body { @apply grid-cols-1; }
   .board-dialog { @apply top-auto bottom-0 left-0 max-h-[94dvh] w-full translate-x-0 translate-y-0 rounded-b-none; }

@@ -2,10 +2,12 @@
 
 Updated: 2026-09-06
 
-Status: source through 1196862 is implemented and locally validated. All 209
-unit/regression tests, the production build, board browser flow, and targeted
-chat checks passed. Publication/CI and the authorized restart/health verification
-remain before this follow-up is a completed release.
+Status: released. Source through 458e7b3 was pushed to main and
+[GitHub CI passed](https://github.com/jothamgoh/codexui-patched/actions/runs/33982089492).
+The authorized independent-Terminal restart completed once. After reconnecting,
+the new service returned valid HTTP 200 bridge/board/model responses, served the
+built frontend and updated starter prompts, and unauthenticated public root/API
+requests redirected to the authenticated gateway.
 
 ## Goal and decisions
 
@@ -141,11 +143,11 @@ References and adopted choices remain in PRD.md and ../UX_BACKLOG.md.
 
 ## Exact next steps
 
-1. Finish publication: push main and verify CI, then use the authorized
-   machine-local independent-Terminal restart exactly once. Verify health after
-   reconnecting and record the release evidence here. Source and local checks
-   are complete; a docs-only evidence update does not require another restart.
-2. Refresh the UI and dogfood a real user project. Check physical iPhone Safari
-   when available; its compatibility is still unverified.
+1. Refresh the UI to load the new frontend. Dogfood a real build from a chat or
+   board, dictate a brief, review feature cards, and run a small dependent queue
+   with one review/fix. The source, checks, publication, restart, and health
+   verification are complete; no further service restart is needed.
+2. Check physical iPhone Safari when available. Android and Chromium evidence
+   do not establish Safari compatibility.
 3. Add only regressions that explain observed friction. Keep feature boundaries,
    compact handoffs, and the current native runtime; do not expand the framework.

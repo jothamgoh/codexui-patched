@@ -393,6 +393,7 @@ import {
   getHomeDirectory,
   getProjectRootSuggestion,
   openProjectRoot,
+  getThreadSummary,
   type PluginMentionParam,
   type ThreadMentionParam,
 } from './api/codexGateway'
@@ -1478,6 +1479,7 @@ async function initialize(): Promise<void> {
 async function syncThreadSelectionWithRoute(): Promise<void> {
   if (isRouteSyncInProgress.value) return
   isRouteSyncInProgress.value = true
+  const requestedRoute = route.fullPath
 
   try {
     if (
@@ -1500,7 +1502,13 @@ async function syncThreadSelectionWithRoute(): Promise<void> {
       if (!threadId) return
 
       if (!knownThreadIdSet.value.has(threadId)) {
-        await router.replace({ name: 'home' })
+        try {
+          // A newly spawned child may not have reached the thread list yet.
+          const thread = await getThreadSummary(threadId)
+          if (route.fullPath === requestedRoute) await selectThreadFromSearch(thread)
+        } catch {
+          if (route.fullPath === requestedRoute) await router.replace({ name: 'home' })
+        }
         return
       }
 
@@ -1512,6 +1520,7 @@ async function syncThreadSelectionWithRoute(): Promise<void> {
 
   } finally {
     isRouteSyncInProgress.value = false
+    if (route.fullPath !== requestedRoute) void syncThreadSelectionWithRoute()
   }
 }
 
@@ -1584,7 +1593,7 @@ watch(isMobile, (mobile) => {
   if (mobile && !isSidebarCollapsed.value) {
     setSidebarCollapsed(true)
   }
-})
+}, { immediate: true })
 
 async function submitFirstMessageForNewThread(
   text: string,

@@ -514,6 +514,7 @@ test('plans read-only, preserves the reviewed task graph, and applies feature se
   const task = (await store.read()).cards.find((card) => card.parentCardId === feature.id)
   await assert.rejects(service.handleDynamicToolCall(toolCall('lead-thread', 'start_task', { taskId: task.id })), /read-only planning run/u)
   await assert.rejects(service.updateCard(feature.id, { model: 'other-model' }), /run to stop/u)
+  await assert.rejects(service.updateCard(feature.id, { description: 'A different scope while planning.' }), /run to stop/u)
   await service.handleNotification({ method: 'turn/completed', params: { threadId: 'lead-thread', turn: { id: 'lead-turn-1', status: 'completed' } } })
   let snapshot = await store.read()
   assert.equal(snapshot.cards.find((card) => card.id === feature.id).planStatus, 'ready')
@@ -606,4 +607,32 @@ test('runs only the approved ready queue and pauses at questions without answer-
   assert.equal((await service.read()).queues[0].status, 'paused')
   await service.handleNotification({ method: 'codexui/appServer/exited', params: {} })
   assert.equal((await store.read()).cards.find((card) => card.title === 'Unapproved later feature').threadId, '')
+
+  let resolveSettings
+  let pendingSettings = true
+  const raceService = new ProjectBoardService({ store, appServer, resolveExecutionSettings: async (settings) => {
+    if (pendingSettings) return new Promise((resolve) => { resolveSettings = () => resolve(settings) })
+    return settings
+  } })
+  const pendingQueue = raceService.startBoardQueue(board.id, { featureIds: [second.id], allowWorkspaceWrite: true })
+  await waitFor(() => resolveSettings, 'Queue did not reach model lookup')
+  await raceService.stopBoardQueue(board.id)
+  await assert.rejects(raceService.startBoardQueue(board.id, { featureIds: [second.id], allowWorkspaceWrite: true }), /still settling/u)
+  resolveSettings()
+  await pendingQueue
+  assert.equal((await raceService.read()).queues[0].status, 'paused')
+  assert.equal((await store.read()).runs.filter((run) => run.status === 'running').length, 0)
+  pendingSettings = false
+  await raceService.startBoardQueue(board.id, { featureIds: [second.id], allowWorkspaceWrite: true })
+  await waitFor(() => appServer.calls.filter((call) => call.method === 'turn/start')[3], 'Queue retry stayed stranded')
+  assert.equal((await raceService.read()).queues[0].status, 'running')
+  await raceService.handleNotification({ method: 'codexui/appServer/exited', params: {} })
+  pendingSettings = true
+  resolveSettings = undefined
+  const pendingFeature = raceService.startFeature(second.id, { allowWorkspaceWrite: true })
+  await waitFor(() => resolveSettings, 'Feature did not reach model lookup')
+  await raceService.updateCard(second.id, { description: 'A revised scope requiring a fresh Start.' })
+  resolveSettings()
+  await assert.rejects(pendingFeature, /feature changed while starting/u)
+  assert.equal((await store.read()).runs.filter((run) => run.status === 'running').length, 0)
 })

@@ -933,7 +933,7 @@ export class ProjectBoardStore {
       this.assertPublicCardFields(changes, true)
       if ('status' in changes && !STATUSES.has(changes.status as ProjectBoardStatus)) throw new Error('Unknown card status.')
       if ('taskPurpose' in changes && !TASK_PURPOSES.has(changes.taskPurpose as ProjectBoardTaskPurpose)) throw new Error('Unknown task purpose.')
-      const workflowChange = ['status', 'verificationPolicy', 'assignedAgentId', 'taskPurpose', 'dependencyIds', 'model', 'reasoningEffort'].some((key) => key in changes)
+      const workflowChange = ['title', 'description', 'acceptanceCriteria', 'status', 'verificationPolicy', 'assignedAgentId', 'taskPurpose', 'dependencyIds', 'model', 'reasoningEffort'].some((key) => key in changes)
       if (workflowChange) assertManualEdit(current, existing)
       const board = current.boards.find((entry) => entry.id === existing.boardId)
       if (!board) throw new Error('Project board not found.')

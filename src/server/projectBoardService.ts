@@ -466,9 +466,11 @@ export class ProjectBoardService {
   }
 
   async startBoardQueue(boardId: string, input: unknown): Promise<ProjectBoardSnapshot> {
+    if (this.queuePumping.has(boardId)) throw new Error('The previous queue start is still settling. Try again shortly.')
     const record = asRecord(input) ?? {}
     const snapshot = await this.store.read()
     const board = snapshot.boards.find((entry) => entry.id === boardId)
+    if (this.queuePumping.has(boardId)) throw new Error('The previous queue start is still settling. Try again shortly.')
     const featureIds = [...new Set(Array.isArray(record.featureIds) ? record.featureIds.map(readString).filter(Boolean) : [])]
     if (!board || !featureIds.length) throw new Error('Select the feature cards to run.')
     if (this.queues.get(boardId)?.status === 'running') throw new Error('This queue is already running. Pause it before changing the selection.')
@@ -539,6 +541,7 @@ export class ProjectBoardService {
       queue.currentFeatureId = next.id
       try { await this.startFeatureRun(next.id, false, queue.allowWorkspaceWrite, 'execute', queue) }
       catch (error) {
+        if (this.queues.get(boardId) !== queue) return
         this.pauseQueue(boardId, error instanceof Error ? error.message : 'The next feature could not start.')
         this.publish(await this.store.read())
       }

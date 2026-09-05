@@ -90,13 +90,24 @@ const snapshot = {
 
 snapshot.boards.push({ ...snapshot.boards[0], id: 'board-2', projectPath: secondProject, projectName: 'Second smoke project', name: 'Another board' })
 snapshot.questions.push({ ...snapshot.questions[0], id: 'question-2', prompt: 'Which feature should ship first?' })
+snapshot.runs.push(
+  { id: 'run-plan', boardId: 'board-1', cardId: '', agentId: 'builtin-product', kind: 'board_plan', status: 'succeeded', threadId: '', startedAtIso: new Date(Date.parse(now) - 180_000).toISOString(), finishedAtIso: new Date(Date.parse(now) - 150_000).toISOString(), summary: 'Prepared the project feature plan.', error: '' },
+  { id: 'run-done', boardId: 'board-1', cardId: 'feature-done', agentId: 'builtin-engineer', kind: 'execute', status: 'succeeded', threadId: 'daily-run-thread', requestedModel: 'review-model', requestedReasoningEffort: 'medium', startedAtIso: new Date(Date.parse(now) - 125_000).toISOString(), finishedAtIso: now, summary: 'Storage and its combined checks passed.', error: '' },
+)
 
 await writeFile(join(fixtureHome, 'codexui-project-boards.json'), `${JSON.stringify(snapshot, null, 2)}\n`, { mode: 0o600 })
 const fixtureEnvFile = join(fixtureHome, 'empty.env')
 await writeFile(fixtureEnvFile, '', { mode: 0o600 })
 await mkdir(outputDirectory, { recursive: true })
 
-const server = spawn('npm', ['run', 'dev', '--', '--host', '127.0.0.1', '--port', String(port), '--strictPort'], {
+const server = spawn(process.execPath, ['--input-type=module', '--eval', `
+  import { createServer } from 'vite'
+  const server = await createServer({ server: { host: '127.0.0.1', port: ${port}, strictPort: true } })
+  // Repository watch settings can override watch:null; close it explicitly so
+  // unrelated source edits cannot reload the page and discard fixture drafts.
+  await server.watcher.close()
+  await server.listen()
+`], {
   cwd: repositoryRoot,
   env: {
     ...process.env,
@@ -194,6 +205,53 @@ try {
   assert.equal(await page.getByTestId('needs-you-question').locator('p').textContent(), 'Which feature should ship first?')
   assert.equal(await detail.locator('.detail-status-select select').isDisabled(), true)
 
+  // The inbox retains each decision's exact question and the run list is a saved receipt.
+  await page.getByRole('button', { name: 'Close feature', exact: true }).click()
+  await page.getByRole('button', { name: /need you$/ }).click()
+  const inbox = page.getByTestId('board-inbox')
+  await inbox.waitFor()
+  assert.equal(await inbox.locator('[data-question-id]').count(), 2)
+  assert.match(await inbox.locator('[data-question-id="question-2"]').textContent(), /Choose the release workflow.*Lead/s)
+  assert.match(await inbox.locator('[data-attention-feature-id="feature-review"]').textContent(), /Ready for batch QA/)
+  await page.screenshot({ path: join(outputDirectory, 'project-board-inbox-desktop.png'), fullPage: true })
+  await inbox.locator('[data-attention-feature-id="feature-review"]').getByRole('button', { name: 'Open feature' }).click()
+  await detail.getByRole('heading', { name: 'Mobile interaction pass', exact: true }).waitFor()
+  await page.getByRole('button', { name: 'Close feature', exact: true }).click()
+  assert.equal(await page.getByRole('tab', { name: /Needs you/ }).getAttribute('aria-selected'), 'true')
+  await page.getByRole('tab', { name: 'Runs', exact: true }).click()
+  const runs = page.getByTestId('board-runs')
+  assert.equal(await runs.locator('[data-board-run-id]').count(), 3)
+  assert.equal(await runs.evaluate((element) => element.scrollTop), 0, 'Switching daily views opens the new list at its beginning')
+  assert.match(await runs.locator('[data-board-run-id="run-1"]').textContent(), /Interrupted.*Feature work/s)
+  assert.match(await runs.locator('[data-board-run-id="run-done"]').textContent(), /Engineer.*2m 5s.*Requested: review-model · medium reasoning/s)
+  assert.match(await runs.locator('[data-board-run-id="run-plan"]').textContent(), /Project planning.*Model settings were not recorded/s)
+  assert.equal(await page.getByRole('tab', { name: 'Runs', exact: true }).getAttribute('aria-selected'), 'true')
+  assert.equal(await runs.getByRole('heading', { name: 'Runs', exact: true }).textContent(), 'Runs')
+  await page.evaluate(() => new Promise((resolvePaint) => requestAnimationFrame(() => requestAnimationFrame(resolvePaint))))
+  await page.screenshot({ path: join(outputDirectory, 'project-board-runs-desktop.png'), fullPage: true })
+  await runs.locator('[data-board-run-id="run-done"]').getByRole('button', { name: 'Open feature' }).click()
+  await detail.getByRole('heading', { name: 'Persistent board storage', exact: true }).waitFor()
+  await page.getByRole('button', { name: 'Close feature', exact: true }).click()
+  const dailyThread = { id: 'daily-run-thread', cwd: fixtureProject, preview: 'Storage checks', status: { type: 'idle' }, createdAt: Date.now() / 1000, updatedAt: Date.now() / 1000, turns: [{ id: 'daily-turn', status: 'completed', items: [{ id: 'daily-result', type: 'agentMessage', phase: 'final_answer', text: 'The saved storage run is ready to inspect.' }] }] }
+  await page.route('**/codex-api/rpc', (route) => {
+    const { method, params } = route.request().postDataJSON()
+    if ((method === 'thread/read' || method === 'thread/resume') && params.threadId === dailyThread.id) return route.fulfill({ json: { result: { thread: dailyThread, model: 'review-model', reasoningEffort: 'medium', cwd: fixtureProject } } })
+    return route.fallback()
+  })
+  await page.route('**/codex-api/thread-resume-lite', (route) => route.request().postDataJSON().threadId === dailyThread.id ? route.fulfill({ json: { result: { thread: dailyThread, model: 'review-model', reasoningEffort: 'medium' } } }) : route.fallback())
+  await page.route('**/codex-api/thread-page', (route) => route.request().postDataJSON().threadId === dailyThread.id ? route.fulfill({ json: { result: { thread: dailyThread, page: { startTurnIndex: 0, endTurnIndex: 1, totalTurns: 1, hasEarlier: false } } } }) : route.fallback())
+  await runs.locator('[data-board-run-id="run-done"]').getByRole('button', { name: 'Open chat' }).click()
+  await page.waitForURL('**#/thread/daily-run-thread')
+  await page.getByText('The saved storage run is ready to inspect.', { exact: true }).waitFor()
+  await visitBoard()
+  const boardTab = page.getByRole('tab', { name: 'Board', exact: true })
+  await boardTab.focus()
+  await page.keyboard.press('ArrowRight')
+  assert.equal(await page.getByRole('tab', { name: /Needs you/ }).getAttribute('aria-selected'), 'true')
+  await inbox.locator('[data-question-id="question-2"]').getByRole('button', { name: 'Review & answer' }).click()
+  await page.waitForURL('**question=question-2')
+  assert.equal(await page.getByTestId('needs-you-question').locator('p').textContent(), 'Which feature should ship first?')
+
   await page.locator('button[aria-label^="Notifications:"]').click()
   await page.getByText('Choose the release workflow', { exact: true }).last().waitFor()
   await page.keyboard.press('Escape')
@@ -209,11 +267,21 @@ try {
   await answer.fill('Use one shared QA batch for the small related features.')
   await page.getByRole('button', { name: 'Answer & continue' }).click()
   await page.getByTestId('needs-you-question').waitFor({ state: 'detached' })
+  assert.equal(await inbox.locator('[data-question-id]').count(), 0, 'Answered decisions leave the inbox')
+  await page.getByRole('button', { name: 'Close feature', exact: true }).click()
+  await page.getByRole('tab', { name: 'Board', exact: true }).click()
   await page.screenshot({ path: join(outputDirectory, 'project-board-desktop.png'), fullPage: true })
 
   // Route changes cannot retain detail from a different board, project, or missing query.
   await page.getByTestId('board-project-select').selectOption(secondProject)
   await page.locator('[data-feature-id="feature-other"]').waitFor()
+  assert.equal(await page.getByRole('tab', { name: 'Board', exact: true }).getAttribute('aria-selected'), 'true')
+  await page.getByRole('tab', { name: /Needs you/ }).click()
+  await page.getByText('You’re all caught up', { exact: true }).waitFor()
+  await page.getByRole('tab', { name: 'Runs', exact: true }).click()
+  await page.getByText('No runs yet', { exact: true }).waitFor()
+  assert.equal(await page.locator('[data-board-run-id]').count(), 0, 'A different board cannot show these runs')
+
   assert.equal(await detail.count(), 0)
   await page.getByTestId('board-project-select').selectOption(emptyProject)
   await page.getByText('No board for this project', { exact: true }).waitFor()
@@ -258,7 +326,8 @@ try {
   await page.screenshot({ path: join(outputDirectory, 'project-board-agent-prompt.png'), fullPage: true })
   await library.getByRole('button', { name: 'Customize Engineer', exact: true }).click()
   assert.equal(await library.getByLabel('Name', { exact: true }).inputValue(), 'Engineer copy')
-  assert.match(await agentPrompt.inputValue(), /implementation engineer/u)
+  const engineerPrompt = (await (await fetch(`${origin}/codex-api/project-boards`)).json()).data.agents.find((agent) => agent.id === 'builtin-engineer').instructions
+  assert.equal(await agentPrompt.inputValue(), engineerPrompt, 'Customize starts with the current source profile instructions')
   await library.getByRole('button', { name: 'Create copy', exact: true }).click()
   await library.getByRole('button', { name: 'Edit Engineer copy', exact: true }).waitFor()
   await page.keyboard.press('Escape')
@@ -536,6 +605,17 @@ try {
   assert.equal(await mobilePage.evaluate(() => document.documentElement.scrollWidth <= innerWidth), true)
   assert.equal(await mobilePage.locator('.boards-header-actions').first().getByRole('button').evaluateAll((buttons) => buttons.every((button) => button.scrollWidth <= button.clientWidth)), true, 'Phone toolbar labels must fit inside their buttons')
   await mobilePage.screenshot({ path: join(outputDirectory, `project-board-${mobileEngineName}-touch.png`), fullPage: true })
+  for (const [view, label] of [['needs-you', /Needs you/], ['runs', 'Runs']]) {
+    await mobilePage.getByRole('tab', { name: label }).tap()
+    const mobileDaily = mobilePage.getByTestId(view === 'runs' ? 'board-runs' : 'board-inbox')
+    await mobileDaily.waitFor()
+    await mobileDaily.locator('.daily-row').first().scrollIntoViewIfNeeded()
+    assert.equal(await mobileDaily.evaluate((element) => element.scrollWidth <= element.clientWidth), true, 'Daily views fit a phone without horizontal scrolling')
+    assert.equal(await mobilePage.evaluate(() => document.documentElement.scrollWidth <= innerWidth), true)
+    assert.equal(await mobileDaily.getByRole('button').evaluateAll((buttons) => buttons.every((button) => button.getBoundingClientRect().height >= 44)), true, 'Daily actions have comfortable touch targets')
+    await mobilePage.screenshot({ path: join(outputDirectory, `project-board-${view}-${mobileEngineName}-touch.png`), fullPage: true })
+  }
+  await mobilePage.getByRole('tab', { name: 'Board', exact: true }).tap()
   const touchCard = mobilePage.locator('.board-card-main').first()
   await touchCard.scrollIntoViewIfNeeded()
   await mobilePage.screenshot({ path: join(outputDirectory, `project-board-${mobileEngineName}-touch-cards.png`), fullPage: true })
@@ -569,7 +649,7 @@ try {
   await touchPlan.getByRole('button', { name: 'Close planning', exact: true }).tap()
 
   assert.deepEqual(pageErrors, [])
-  console.log(`Project board smoke passed: questions, draft/retry preservation, model settings, Plan first, queue consent, chat-to-board entry, Activity and unlisted-child links, voice/manual save, dark dialogs, ${mobileEngineName} touch/mobile layout, and ordinary chat navigation. Model execution is verified separately by the native runtime probe.`)
+  console.log(`Project board smoke passed: inbox decisions and run receipts, questions, draft/retry preservation, model settings, Plan first, queue consent, chat-to-board entry, Activity and unlisted-child links, voice/manual save, dark dialogs, ${mobileEngineName} touch/mobile layout, and ordinary chat navigation. Model execution is verified separately by the native runtime probe.`)
 } catch (error) {
   await mobilePage?.screenshot({ path: join(outputDirectory, 'project-board-mobile-failure.png'), fullPage: true }).catch(() => undefined)
   await page?.screenshot({ path: join(outputDirectory, 'project-board-failure.png'), fullPage: true }).catch(() => undefined)

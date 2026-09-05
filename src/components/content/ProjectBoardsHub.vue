@@ -67,10 +67,18 @@
     <div v-if="activeBoard && featureCards.length" class="board-overview" aria-label="Board overview">
       <div class="board-score">
         <span><span class="lane-status-dot" data-tone="blue" />{{ workingFeatureCount }} in progress</span>
-        <button type="button" :disabled="!attentionFeatures.length" @click="attentionFeatures[0] && selectCard(attentionFeatures[0])"><span class="lane-status-dot" data-tone="amber" />{{ attentionFeatures.length }} need you</button>
+        <button type="button" @click="activeView = 'needs-you'"><span class="lane-status-dot" data-tone="amber" />{{ attentionCount }} need you</button>
         <span><span class="lane-status-dot" data-tone="green" />{{ completedFeatureCount }} done</span>
       </div>
-      <DictationField v-model="featureSearch" label="Find a feature" v-bind="voiceField('feature-search')" aria-label="Find a feature" placeholder="Find a feature…" class="feature-search" />
+      <DictationField v-if="activeView === 'board'" v-model="featureSearch" label="Find a feature" v-bind="voiceField('feature-search')" aria-label="Find a feature" placeholder="Find a feature…" class="feature-search" />
+    </div>
+
+    <div v-if="activeBoard" class="board-view-tabs" role="tablist" aria-label="Board views">
+      <button v-for="view in boardViews" :id="`board-tab-${view.id}`" :key="view.id" type="button" role="tab"
+        :aria-selected="activeView === view.id" :tabindex="activeView === view.id ? 0 : -1" :data-board-view="view.id"
+        aria-controls="board-view-panel" @click="activeView = view.id" @keydown="navigateBoardView($event, view.id)">
+        {{ view.label }}<span v-if="view.id === 'needs-you' && attentionCount">{{ attentionCount }}</span>
+      </button>
     </div>
 
     <p v-if="error" class="boards-alert" role="alert">{{ error }}</p>
@@ -87,7 +95,8 @@
       <Button type="button" @click="ensureSelectedProjectBoard">Create project board</Button>
     </div>
 
-    <template v-else>
+    <section v-else id="board-view-panel" class="board-view-panel" role="tabpanel" :aria-labelledby="`board-tab-${activeView}`" tabindex="0">
+      <template v-if="activeView === 'board'">
       <div v-if="featureCards.length === 0" class="boards-empty boards-empty-compact">
         <Sparkles aria-hidden="true" />
         <strong>Turn a large build into visible work</strong>
@@ -151,7 +160,12 @@
           </div>
         </section>
       </div>
-    </template>
+      </template>
+      <BoardDailyViews v-else :key="activeView" :view="activeView" :board-id="activeBoard.id" :snapshot="snapshot"
+        :questions="openBoardQuestions" :attention-cards="attentionCards"
+        @open-feature="(card, questionId) => emit('select-feature', card.id, card.boardId, questionId)"
+        @open-thread="threadId => emit('select-thread', threadId)" />
+    </section>
 
     <DialogRoot :open="Boolean(selectedCard)" :modal="!isDockedDetail" @update:open="!$event && closeCard()">
       <DialogPortal>
@@ -414,6 +428,7 @@ import type { ProjectBoardUpdateInput, ProjectBoardCardUpdateInput, ProjectBoard
 import Button from '../ui/button/Button.vue'
 import DictationField from './DictationField.vue'
 import BoardExecutionSettings from './BoardExecutionSettings.vue'
+import BoardDailyViews from './BoardDailyViews.vue'
 import type { ReasoningEffort } from '../../types/codex'
 import type {
   ProjectBoard,
@@ -503,6 +518,9 @@ const queueDialogOpen = ref(false)
 const queueFeatureIds = ref<string[]>([])
 const queueAllowEdits = ref(false)
 const featureSearch = ref('')
+const boardViews = [{ id: 'board', label: 'Board' }, { id: 'needs-you', label: 'Needs you' }, { id: 'runs', label: 'Runs' }] as const
+type BoardView = typeof boardViews[number]['id']
+const activeView = ref<BoardView>('board')
 const busyVoiceFields = reactive(new Set<string>())
 const isDictating = computed(() => busyVoiceFields.size > 0)
 function voiceField(key: string) {
@@ -578,7 +596,9 @@ const activeBoard = computed<ProjectBoard | null>(() => {
 })
 const boardAgents = computed(() => props.snapshot.agents.filter((agent) => activeBoard.value?.agentIds.includes(agent.id)))
 const featureCards = computed(() => props.snapshot.cards.filter((card) => card.boardId === activeBoard.value?.id && !card.parentCardId))
-const attentionFeatures = computed(() => featureCards.value.filter((card) => card.status === 'needs_input' || card.status === 'blocked'))
+const openBoardQuestions = computed(() => props.snapshot.questions.filter((question) => question.boardId === activeBoard.value?.id && question.status === 'open').sort((a, b) => a.createdAtIso.localeCompare(b.createdAtIso)))
+const attentionCards = computed(() => featureCards.value.filter((card) => card.status === 'blocked' || card.status === 'review' || (card.status === 'needs_input' && !openQuestionFor(card))))
+const attentionCount = computed(() => openBoardQuestions.value.length + attentionCards.value.length)
 const workingFeatureCount = computed(() => featureCards.value.filter((card) => card.status === 'working').length)
 const completedFeatureCount = computed(() => featureCards.value.filter((card) => card.status === 'done').length)
 const dependencyCandidates = computed(() => featureCards.value.filter((card) => card.type === 'feature' && card.id !== editingCardId.value))
@@ -597,6 +617,7 @@ const selectedComments = computed(() => props.snapshot.comments.filter((comment)
 const selectedRunIsActive = computed(() => selectedRuns.value.some((run) => run.status === 'running' || run.status === 'queued'))
 const canStartSelectedCard = computed(() => selectedCard.value?.type === 'feature' && selectedCard.value.status !== 'done' && selectedCard.value.status !== 'review')
 
+watch(() => activeBoard.value?.id, () => { activeView.value = 'board' })
 watch([() => activeBoard.value?.id, () => props.initialFeatureId, selectedProjectPath], () => {
   questionAnswer.value = ''
   commentText.value = ''
@@ -617,6 +638,18 @@ watch(activeBoard, (board) => {
 function cardsForColumn(statuses: ProjectBoardStatus[]): ProjectBoardCard[] {
   const query = featureSearch.value.trim().toLowerCase()
   return featureCards.value.filter((card) => statuses.includes(card.status) && (!query || `${card.title} ${card.description} ${agentFor(card.assignedAgentId)?.name || ''}`.toLowerCase().includes(query))).sort((a, b) => b.updatedAtIso.localeCompare(a.updatedAtIso))
+}
+
+function navigateBoardView(event: KeyboardEvent, view: BoardView): void {
+  const index = boardViews.findIndex((entry) => entry.id === view)
+  const next = event.key === 'ArrowRight' ? (index + 1) % boardViews.length
+    : event.key === 'ArrowLeft' ? (index + boardViews.length - 1) % boardViews.length
+      : event.key === 'Home' ? 0 : event.key === 'End' ? boardViews.length - 1 : -1
+  if (next < 0) return
+  event.preventDefault()
+  activeView.value = boardViews[next]!.id
+  const tablist = (event.currentTarget as HTMLElement).parentElement
+  tablist?.querySelector<HTMLButtonElement>(`[data-board-view="${activeView.value}"]`)?.focus()
 }
 
 function selectBoardFromEvent(event: Event): void {
@@ -898,6 +931,11 @@ function formatTime(value: string): string { const date = new Date(value); retur
 .queue-feature small { @apply text-xs font-normal; color: var(--text-tertiary); }
 .boards-alert { @apply m-0 rounded-lg border px-3 py-2 text-sm; color: var(--text-primary); background: color-mix(in srgb, var(--surface-elevated) 90%, #e11d48); border-color: color-mix(in srgb, var(--border-strong) 60%, #e11d48); }
 .board-overview { @apply mb-3 flex flex-wrap items-center justify-between gap-3; }
+.board-view-tabs { @apply mb-4 flex shrink-0 gap-1 border-b; border-color: var(--border-soft); }
+.board-view-tabs button { @apply flex min-h-10 items-center gap-2 border-b-2 border-transparent px-3 text-sm font-medium; color: var(--text-secondary); }
+.board-view-tabs button[aria-selected='true'] { color: var(--text-primary); border-color: var(--text-primary); }
+.board-view-tabs button span { @apply rounded-full px-1.5 py-0.5 text-[10px]; background: var(--surface-muted); }
+.board-view-panel { @apply flex min-h-0 min-w-0 flex-1 flex-col; }
 .board-score { @apply flex flex-wrap items-center gap-x-4 gap-y-2 text-xs; color: var(--text-secondary); }
 .board-score > span, .board-score > button { @apply inline-flex items-center gap-1.5; }
 .board-score > button { @apply rounded-md px-1 py-2 hover:underline disabled:cursor-default disabled:no-underline; }
@@ -1040,6 +1078,9 @@ select:disabled { cursor: not-allowed; opacity: 0.65; }
   .boards-toolbar .boards-auto-toggle { @apply ml-0 min-h-11 w-full flex-none pb-0; }
   .board-lane { @apply w-[85vw]; }
   .boards-lanes { flex: none; height: max(24rem, 60dvh); }
+  .board-view-tabs { @apply mb-3; }
+  .board-view-tabs button { @apply flex-1 justify-center; }
+  .board-view-panel { flex: none; }
   .board-detail-panel { @apply max-w-none; }
   .board-form-grid, .agent-dialog-body { @apply grid-cols-1; }
   .board-dialog { @apply top-auto bottom-0 left-0 max-h-[94dvh] w-full translate-x-0 translate-y-0 rounded-b-none; }

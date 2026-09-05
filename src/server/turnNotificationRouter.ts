@@ -20,6 +20,7 @@ type NotificationBridge = {
   readThread: (threadId: string) => Promise<unknown>
   subscribeNotifications: (listener: (notification: BridgeNotification) => void) => () => void
   readProjectBoards?: () => Promise<ProjectBoardSnapshot>
+  takeProjectBoardRecoveryBaseline?: () => Promise<ProjectBoardSnapshot> | null
   publishLocalNotification?: (method: string, params: unknown) => void
 }
 
@@ -144,10 +145,16 @@ export function createTurnNotificationRouter(
     }
   }
 
-  // Establish a baseline on startup; reopening the app must not replay old work.
+  // The bridge captures this once, before recovery marks interrupted runs.
+  // Later router instances use current state and cannot replay startup history.
+  const recoveryBaseline = options.bridge.takeProjectBoardRecoveryBaseline?.()
   let boardSnapshotQueue = options.bridge.readProjectBoards
-    ? withTimeout(options.bridge.readProjectBoards(), backfillRequestTimeoutMs, 'project board notification baseline')
-      .then(observeBoardSnapshot)
+    ? (async () => {
+      if (recoveryBaseline) {
+        observeBoardSnapshot(await withTimeout(recoveryBaseline, backfillRequestTimeoutMs, 'project board recovery baseline'))
+      }
+      observeBoardSnapshot(await withTimeout(options.bridge.readProjectBoards!(), backfillRequestTimeoutMs, 'project board notification baseline'))
+    })()
       .catch((error: unknown) => {
         const message = error instanceof Error ? error.message : String(error)
         console.warn(`[project-boards] Could not load notification baseline: ${message}`)

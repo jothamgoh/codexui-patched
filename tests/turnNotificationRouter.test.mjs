@@ -45,6 +45,7 @@ function createHarness({
   threadLookupTimeoutMs = 40,
   backfillRequestTimeoutMs = 40,
   readProjectBoards,
+  takeProjectBoardRecoveryBaseline,
 }) {
   let listener = null
   const telegram = []
@@ -57,6 +58,7 @@ function createHarness({
     listThreads,
     readThread,
     readProjectBoards,
+    takeProjectBoardRecoveryBaseline,
     publishLocalNotification(method, params) { boardPublished.push({ method, params }) },
     subscribeNotifications(nextListener) {
       listener = nextListener
@@ -200,4 +202,50 @@ test('routes committed board outcomes once and suppresses Lead and planner turn 
   assert.equal(harness.boardPublished[0].method, 'codexui/projectBoards/notification')
   assert.equal(harness.boardPublished[0].params.questionId, 'q')
   harness.router.dispose()
+})
+
+test('delivers only new recovery interruptions and does not replay them when the router is recreated', async () => {
+  const beforeRecovery = {
+    version: 5,
+    boards: [{ id: 'board', planningThreadId: '' }],
+    cards: [{ id: 'feature', type: 'feature', boardId: 'board', status: 'working', threadId: 'lead' }],
+    runs: [
+      { id: 'active', boardId: 'board', cardId: 'feature', kind: 'execute', status: 'running', threadId: 'lead' },
+      { id: 'historical-failure', boardId: 'board', cardId: 'feature', kind: 'execute', status: 'failed', threadId: 'lead' },
+    ],
+    questions: [{ id: 'old-question', cardId: 'feature', boardId: 'board', status: 'open', createdAtIso: '2026-09-05T01:00:00Z' }],
+    updatedAtIso: '2026-09-05T01:00:00Z',
+  }
+  const recovered = {
+    ...beforeRecovery,
+    version: 6,
+    cards: [{ ...beforeRecovery.cards[0], status: 'blocked' }],
+    runs: [{ ...beforeRecovery.runs[0], status: 'interrupted', finishedAtIso: '2026-09-06T01:00:00Z' }, beforeRecovery.runs[1]],
+    updatedAtIso: '2026-09-06T01:00:00Z',
+  }
+  let recoveryBaseline = Promise.resolve(beforeRecovery)
+  const options = {
+    readThread: async (id) => ({ thread: { id, source: 'appServer' } }),
+    readProjectBoards: async () => recovered,
+    takeProjectBoardRecoveryBaseline() {
+      const result = recoveryBaseline
+      recoveryBaseline = null
+      return result
+    },
+  }
+  const harness = createHarness(options)
+  harness.emit({ method: 'codexui/projectBoards/updated', params: recovered })
+  await delay(15)
+  assert.deepEqual(harness.boardPush.map((event) => event.id), ['project-board-run:active:interrupted'])
+  assert.equal(harness.boardTelegram.length, 1)
+  assert.equal(harness.boardPublished.length, 1)
+  harness.router.dispose()
+
+  const recreated = createHarness(options)
+  recreated.emit({ method: 'codexui/projectBoards/updated', params: recovered })
+  await delay(15)
+  assert.equal(recreated.boardPush.length, 0)
+  assert.equal(recreated.boardTelegram.length, 0)
+  assert.equal(recreated.boardPublished.length, 0)
+  recreated.router.dispose()
 })

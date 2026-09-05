@@ -2,11 +2,10 @@
 
 Updated: 2026-09-06
 
-Status: follow-up implementation and verification are in progress. The previous
-release through 9523339 was deployed and its CI passed; the changes below are
-not yet a completed release. A newly reported stale-history/final-message
-regression still needs its fix and final checks.
-Final grouped validation, push/CI, restart, and health verification remain.
+Status: source through 1196862 is implemented and locally validated. All 209
+unit/regression tests, the production build, board browser flow, and targeted
+chat checks passed. Publication/CI and the authorized restart/health verification
+remain before this follow-up is a completed release.
 
 ## Goal and decisions
 
@@ -45,6 +44,12 @@ Multi-account/provider execution remains separate future work.
 
 ## Follow-up changes in this checkout
 
+- Delayed history cannot replace newer streamed text with an empty/partial
+  snapshot. Hydration preserves subsequent deltas and one message per ID, keeps
+  final-answer order, and respects authoritative completion and rollback.
+- Phone-width and composer-height changes keep the latest reply visible while
+  following the bottom. Deliberately reading older history keeps that position.
+  The existing heavy-content windowing remains; no renderer rewrite was needed.
 - Pending automatic continuation retains its originating queue identity. Pause,
   replacement, failure, or app-server exit cannot authorize a late start or let
   an old rejection block a replacement queue.
@@ -78,9 +83,19 @@ Do not erase real notification history as part of test cleanup.
 
 ## Evidence and its limits
 
-- Focused queue/continuation, storage-isolation, starter-prompt, and question
-  regressions passed. The Board/Needs You/Runs browser check and type-check
-  passed; final integrated validation after outstanding fixes is still due.
+- Final grouped check after the viewport fix: 209 tests, production type-check/
+  frontend/CLI build, and isolated Board/Needs You/Runs browser flow passed.
+  Diff whitespace review and Gitleaks scan passed.
+- Five actual-state delayed-response regressions and independent review passed:
+  stale/empty/reordered history, continued deltas, item identity, completion,
+  lifecycle freshness, and rollback. Chat browser checks passed actual tail
+  visibility through phone/composer resizing, history remounts, chat switches,
+  and incoming messages, while preserving deliberate reading in older history.
+  Screenshot review exposed the resize defect and confirmed the corrected tail.
+- Final question browsers passed descriptions, free text/voice, explicit reply,
+  retry/replay, resumed messages, masked secrets, mobile layout, and the new-chat
+  setting's default, persistence, capability/policy gates, and unchanged pending
+  requests.
 - Two disposable real-write native probes passed with gpt-6-astra/low, including
   the new built-in prompt copies. Each planned two dependent features, used
   read-only Plan first, wrote a parser and CLI, and finished four native runs.
@@ -103,8 +118,9 @@ Do not erase real notification history as part of test cleanup.
   and output/chat-reliability/. Inspect assertions and screenshots together.
 - Synthetic 2,000-message checks reduced roughly 47,385→2,193 DOM nodes,
   2,000→6 mounted rich bodies, and 97→40MB Chromium heap. This is illustrative
-  browser memory, not total device RAM. The user's latest stale-message report
-  found a separate delayed-history overwrite race; its fix is under validation.
+  browser memory, not total device RAM. The user's latest report exposed two
+  separate defects—delayed-history replacement and bottom-follow loss on resize—
+  now covered by state and browser regressions.
 - The local WebKit engine crashes even on a blank page. Physical iPhone Safari
   remains unverified; Android and Chromium emulation are not a Safari pass.
 
@@ -125,11 +141,11 @@ References and adopted choices remain in PRD.md and ../UX_BACKLOG.md.
 
 ## Exact next steps
 
-1. Finish the delayed-history/final-message regression fix and its targeted
-   replay/viewport check. The new-chat question setting checks have passed.
-2. Run one final coherent validation boundary, review screenshots/diff/status,
-   and scan secrets. Update this file with actual results, not planned claims.
-3. Commit discrete changes, push main, verify CI, then use the authorized
-   machine-local independent-Terminal restart and verify health after reconnecting.
-4. Dogfood a real user project and check physical iPhone Safari when available.
-   Add only regressions that explain observed friction; do not expand the framework.
+1. Finish publication: push main and verify CI, then use the authorized
+   machine-local independent-Terminal restart exactly once. Verify health after
+   reconnecting and record the release evidence here. Source and local checks
+   are complete; a docs-only evidence update does not require another restart.
+2. Refresh the UI and dogfood a real user project. Check physical iPhone Safari
+   when available; its compatibility is still unverified.
+3. Add only regressions that explain observed friction. Keep feature boundaries,
+   compact handoffs, and the current native runtime; do not expand the framework.

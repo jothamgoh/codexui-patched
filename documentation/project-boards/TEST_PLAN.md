@@ -14,6 +14,7 @@ unchanged suites just because a small edit was made.
 | npm run test:project-boards | Store/service/model/board-notification diagnosis. |
 | npm run check:project-boards | Full tests, production build, board browser flow. |
 | npm run test:e2e:project-boards | Browser-only rerun after a UI correction. |
+| npm run test:thread-scroll | Actual-state delayed-history/rollback races and scroll/final-order rules. |
 | node tests/chatReliability.e2e.mjs | Chat rendering, live/persisted activity, dictation, and stress. |
 | node tests/requestUserInput.e2e.mjs | Native question choices, voice/free text, retry, replay, and resume. |
 | npm run test:e2e:question-preference | New-chat setting defaults, persistence, capability/policy gates. |

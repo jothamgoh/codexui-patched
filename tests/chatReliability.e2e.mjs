@@ -141,6 +141,24 @@ try {
  assert.equal(await page.evaluate(()=>window.audioRecordStarts||0),startsBeforePermission);
  assert.equal(await page.evaluate(()=>drafts.draftFor('chat-2').responseTextAnnotations[0].annotation),'Keep this typed note.');
  await page.setViewportSize({width:390,height:844});
+ await assertLatestVisible();
+ // Phone-height/composer changes keep the tail visible, but resizing while
+ // reading older history must not pull the reader back to the latest reply.
+ await page.locator('.conversation-list').evaluate(el=>el.scrollTop=0);
+ await page.waitForTimeout(150);
+ await page.setViewportSize({width:390,height:640});
+ await page.waitForTimeout(250);
+ assert.ok(await page.locator('.conversation-list').evaluate(el=>el.scrollHeight-el.scrollTop-el.clientHeight>1000));
+ await page.getByRole('button',{name:'Scroll to bottom',exact:true}).click();
+ await assertLatestVisible();
+ await page.locator('.thread-composer-input').fill(Array.from({length:9},(_,i)=>'Draft line '+i).join('\n'));
+ await assertLatestVisible();
+ await page.locator('.thread-composer-input').fill('');
+ await page.setViewportSize({width:390,height:844});
+ await assertLatestVisible();
+ results.bottomRendering.phoneResize=true;
+ results.bottomRendering.composerResize=true;
+ results.bottomRendering.preservedHistoryReading=true;
  await page.screenshot({path:`${output}/long-chat-mobile.png`});
  assert.equal(await page.evaluate(()=>document.documentElement.scrollWidth<=innerWidth),true);
  // Persisted activity cards retain names, task context, lifecycle labels and child links.

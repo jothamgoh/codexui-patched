@@ -1102,6 +1102,7 @@ let responseSelectionPointerIsDown = false
 let responseSelectionChangedWhilePointerDown = false
 let pendingResponseAnnotationSelection: CapturedResponseSelection | null = null
 let coarsePointerMediaQuery: MediaQueryList | null = null
+let viewportResizeObserver: ResizeObserver | null = null
 let pendingPrependAnchor: {
   threadId: string
   scrollHeight: number
@@ -2028,6 +2029,15 @@ function onScrollToBottomClick(): void {
   scheduleBottomLock(2)
 }
 
+function onConversationViewportResize(): void {
+  const container = conversationListRef.value
+  // Responsive gaps and composer height can move the viewport without resizing
+  // any message. Rebase layout movement before interpreting upward user scroll.
+  if (container) lastScrollTop = container.scrollTop
+  if (shouldLockToBottom()) scheduleBottomLock()
+  scheduleResponseAnnotationMarkerUpdate()
+}
+
 function openImageModal(imageUrl: string): void {
   modalImageUrl.value = toRenderableImageUrl(imageUrl)
 }
@@ -2045,7 +2055,9 @@ onMounted(() => {
   document.addEventListener('pointercancel', onDocumentPointerCancel)
   document.addEventListener('selectionchange', onDocumentSelectionChange)
   document.addEventListener('keydown', onDocumentKeyDown, true)
-  window.addEventListener('resize', scheduleResponseAnnotationMarkerUpdate)
+  window.addEventListener('resize', onConversationViewportResize)
+  viewportResizeObserver = new ResizeObserver(onConversationViewportResize)
+  if (conversationRootRef.value) viewportResizeObserver.observe(conversationRootRef.value)
 })
 
 onBeforeUnmount(() => {
@@ -2056,7 +2068,8 @@ onBeforeUnmount(() => {
   document.removeEventListener('pointercancel', onDocumentPointerCancel)
   document.removeEventListener('selectionchange', onDocumentSelectionChange)
   document.removeEventListener('keydown', onDocumentKeyDown, true)
-  window.removeEventListener('resize', scheduleResponseAnnotationMarkerUpdate)
+  window.removeEventListener('resize', onConversationViewportResize)
+  viewportResizeObserver?.disconnect()
   cancelResponseAnnotationRecording()
   cancelScheduledResponseSelectionUpdate()
   if (scrollRestoreFrame) {

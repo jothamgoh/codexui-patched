@@ -46,6 +46,11 @@ description: "Use when implementing or changing user-visible behavior/UI in this
   correctness boundary and regression-test it with reordered responses. Track
   current fix status in Project Boards PROGRESS.md rather than assuming a narrow
   viewport or a passing rendering fixture explains every missing final answer.
+- For the web layout, observe conversation viewport changes as well as message
+  sizes. Responsive gaps and a growing composer can hide the tail without any
+  message resizing. Preserve bottom-follow intent through that reflow and keep
+  a reader in older history in place. Verify the actual last text intersects the
+  viewport after settling; a screenshot or small DOM count alone is insufficient.
 
 ## Findings: Planning controls and long conversations (2026-09-05)
 

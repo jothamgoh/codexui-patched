@@ -61,7 +61,7 @@ export function useDictation(options: {
       errorMessage.value = error instanceof Error ? error.message : 'Could not open the microphone.'
       options.onError?.(error)
     } finally {
-      isStarting.value = false
+      if (currentOperationId === operationId) isStarting.value = false
     }
   }
 
@@ -144,6 +144,7 @@ export function useDictation(options: {
 
   function cancelRecording() {
     operationId += 1
+    isStarting.value = false
     retryRecording = null
     canRetry.value = false
     errorMessage.value = ''

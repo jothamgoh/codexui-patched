@@ -22,7 +22,9 @@ const titleModuleUrl = await compileTypeScriptModule(new URL('../src/lib/project
 const storeModuleUrl = await compileTypeScriptModule(storeSourceUrl, [["from '../lib/projectBoardTitle'", `from '${titleModuleUrl}'`]])
 const { ProjectBoardStore } = await import(storeModuleUrl)
 const serviceSourceUrl = new URL('../src/server/projectBoardService.ts', import.meta.url)
+const notificationModuleUrl = await compileTypeScriptModule(new URL('../src/utils/projectBoardNotifications.ts', import.meta.url))
 const serviceModuleUrl = await compileTypeScriptModule(serviceSourceUrl, [
+  ["from '../utils/projectBoardNotifications'", `from '${notificationModuleUrl}'`],
   ["from './projectBoardStore'", `from '${storeModuleUrl}'`],
 ])
 const { ProjectBoardService, PROJECT_BOARD_DYNAMIC_TOOL_SPEC } = await import(serviceModuleUrl)
@@ -689,6 +691,67 @@ test('imports a plan into linked feature cards once, scopes planner authority, a
   assert.equal(snapshot.cards.find((card) => card.id === ui.id).status, 'backlog')
 })
 
+test('notifies once after the last approved feature turn finishes and gives later batches distinct identities', async (t) => {
+  const { appServer, board, feature, service, store } = await createHarness(t)
+  const batchEvents = () => appServer.notifications.filter((event) => event.method === 'codexui/projectBoards/batchCompleted').map((event) => event.params)
+  const completedTurn = (threadId, turnId) => ({ method: 'turn/completed', params: { threadId, turn: { id: turnId, status: 'completed' } } })
+  async function finishFeature(featureId, threadId, turnId) {
+    const call = (action, fields) => service.handleDynamicToolCall({ ...toolCall(threadId, action, fields), turnId })
+    await call('replace_plan', { plan: { summary: 'Implement and verify.', tasks: [
+      { key: 'work', title: 'Deliver the feature', description: 'Complete this scope.', acceptanceCriteria: 'Checks pass.', agentId: 'builtin-engineer', taskPurpose: 'work', dependsOn: [] },
+    ] } })
+    const task = (await store.read()).cards.find((card) => card.parentCardId === featureId)
+    await call('start_task', { taskId: task.id })
+    await call('complete_task', { taskId: task.id, summary: 'Implemented and checked.' })
+    await call('finish_feature', { summary: 'The requested result is ready.' })
+  }
+  await service.updateCard(feature.id, { verificationPolicy: 'self' })
+  const snapshot = await service.createCard({ boardId: board.id, title: 'Dependent result', dependencyIds: [feature.id], verificationPolicy: 'self' })
+  const second = snapshot.cards.find((card) => card.title === 'Dependent result')
+  const started = await service.startBoardQueue(board.id, { featureIds: [second.id, feature.id, feature.id], allowWorkspaceWrite: true })
+  const firstQueue = started.queues[0]
+  assert.deepEqual(firstQueue.featureIds, [second.id, feature.id], 'Duplicate card IDs belong to one approved batch')
+  assert.ok(firstQueue.id)
+  await waitFor(() => appServer.calls.find((call) => call.method === 'turn/start'), 'First batch turn did not start')
+  await finishFeature(feature.id, 'lead-thread', 'lead-turn-1')
+  assert.equal(batchEvents().length, 0)
+  await service.handleNotification(completedTurn('lead-thread', 'lead-turn-1'))
+  await waitFor(() => appServer.calls.filter((call) => call.method === 'turn/start')[1], 'Dependent batch turn did not start')
+  await service.handleNotification(completedTurn('lead-thread', 'lead-turn-1'))
+  assert.equal(batchEvents().length, 0, 'Neither the first feature nor its replay finishes the batch')
+  await finishFeature(second.id, 'lead-thread-2', 'lead-turn-2')
+  assert.equal(batchEvents().length, 0, 'A done card still waits for the actual Lead turn to finish')
+  await Promise.all([
+    service.handleNotification(completedTurn('lead-thread-2', 'lead-turn-2')),
+    service.handleNotification(completedTurn('lead-thread-2', 'lead-turn-2')),
+  ])
+  await waitFor(() => batchEvents().length === 1, 'No completed-batch notification')
+  const [firstEvent] = batchEvents()
+  assert.equal(firstEvent.kind, 'batch_completed')
+  assert.equal(firstEvent.boardId, board.id)
+  assert.equal(firstEvent.queueId, firstQueue.id)
+  assert.equal(firstEvent.id, `project-board-batch:${firstQueue.id}:completed`)
+  assert.equal(firstEvent.featureId, '')
+  assert.equal(firstEvent.cardId, '')
+  assert.equal((await service.read()).queues[0].status, 'paused')
+  await service.handleNotification(completedTurn('lead-thread-2', 'lead-turn-2'))
+  await service.stopBoardQueue(board.id)
+  assert.equal(batchEvents().length, 1)
+
+  const nextSnapshot = await service.createCard({ boardId: board.id, title: 'A later approved batch', verificationPolicy: 'self' })
+  const third = nextSnapshot.cards.find((card) => card.title === 'A later approved batch')
+  const nextBatch = await service.startBoardQueue(board.id, { featureIds: [third.id], allowWorkspaceWrite: true })
+  assert.notEqual(nextBatch.queues[0].id, firstQueue.id)
+  await waitFor(() => appServer.calls.filter((call) => call.method === 'turn/start')[2], 'Later batch turn did not start')
+  await service.handleNotification(completedTurn('lead-thread-2', 'lead-turn-2'))
+  assert.equal(batchEvents().length, 1, 'An old turn cannot finish a newly approved batch')
+  await finishFeature(third.id, 'lead-thread-3', 'lead-turn-3')
+  await service.handleNotification(completedTurn('lead-thread-3', 'lead-turn-3'))
+  await waitFor(() => batchEvents().length === 2, 'Later approved batch did not notify')
+  assert.notEqual(batchEvents()[1].id, firstEvent.id, 'Separate approvals must not deduplicate each other')
+  assert.equal(batchEvents()[1].queueId, nextBatch.queues[0].id)
+})
+
 test('runs only the approved ready queue and pauses at questions without answer-triggered restart', async (t) => {
   const { appServer, board, feature, service, store } = await createHarness(t)
   await service.updateCard(feature.id, { verificationPolicy: 'self' })
@@ -708,10 +771,12 @@ test('runs only the approved ready queue and pauses at questions without answer-
   const nextTurn = await waitFor(() => appServer.calls.filter((call) => call.method === 'turn/start')[1], 'Dependent feature did not start')
   assert.match(nextTurn.params.input[0].text, /Foundation built and checked/u)
   assert.equal((await service.read()).queues[0].currentFeatureId, second.id)
+  assert.equal(appServer.notifications.some((event) => event.method === 'codexui/projectBoards/batchCompleted'), false)
   await service.handleDynamicToolCall({ ...toolCall('lead-thread-2', 'ask_user', { question: 'Choose the final copy.' }), turnId: 'lead-turn-2' })
   await service.handleNotification({ method: 'turn/completed', params: { threadId: 'lead-thread-2', turn: { id: 'lead-turn-2', status: 'completed' } } })
   snapshot = await service.read()
   assert.equal(snapshot.queues[0].status, 'paused')
+  assert.equal(appServer.notifications.some((event) => event.method === 'codexui/projectBoards/batchCompleted'), false, 'A question is not batch completion')
   await service.answerQuestion(snapshot.questions[0].id, { answer: 'Use concise copy.' })
   await delay(60)
   assert.equal(appServer.calls.filter((call) => call.method === 'turn/start').length, 2)
@@ -721,6 +786,7 @@ test('runs only the approved ready queue and pauses at questions without answer-
   assert.equal((await service.read()).queues[0].status, 'paused')
   await service.handleNotification({ method: 'codexui/appServer/exited', params: {} })
   assert.equal((await store.read()).cards.find((card) => card.title === 'Unapproved later feature').threadId, '')
+  assert.equal(appServer.notifications.some((event) => event.method === 'codexui/projectBoards/batchCompleted'), false, 'Pause and app-server exit never report a completed batch')
 
   let resolveSettings
   let pendingSettings = true
@@ -815,5 +881,6 @@ test('pending automatic continuations respect queue pause, failure, replacement,
       }
     }
     await service.handleNotification({ method: 'codexui/appServer/exited', params: {} })
+    assert.equal(appServer.notifications.some((event) => event.method === 'codexui/projectBoards/batchCompleted'), false, `${scenario} must not report a completed batch`)
   }
 })

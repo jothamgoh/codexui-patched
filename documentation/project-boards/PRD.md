@@ -29,14 +29,18 @@ create a second agent runtime.
 
 ## From a plan to delivery
 
-Start from a normal planning chat using Turn this chat into a board, or choose
-Plan features on a board. The editable brief includes a bounded recent source
+Chat is the primary working view; the board is the project overview. From a
+normal chat, Track on board creates one linked feature with a brief and optional
+title. Missing titles are generated locally from the brief and remain editable.
+The original chat stays a reference; a fresh prepared Lead chat owns execution.
+Choose Create several feature cards for a larger plan, or Plan features on a board. The editable brief includes a bounded recent source
 excerpt and a link back to the chat. A read-only coordinator creates distinct
 feature cards with dependencies; planning itself does not start implementation.
 Retries retain drafts and reuse a board already created by that attempt.
 
 For a feature, Plan first saves a read-only task plan and returns it for review.
-Start work resumes that same Lead chat. Plan & start remains the direct path
+Start work resumes and opens that same Lead chat. The chat header links to its
+feature, board, and source conversation. Selected batches stay on the overview. Plan & start remains the direct path
 for a clear brief. Completed task history is preserved during targeted repair;
 new chats support reopening affected tasks before fresh verification.
 
@@ -99,6 +103,31 @@ The Lead proposes the smallest useful task graph and works through eligible
 tasks. Independent read-only specialists may run together; multiple writers in
 one project must not run together. The service permits one orchestrated feature
 per project directory at a time.
+
+Lead chat replies use the board service. During an active run they steer the
+exact current turn; a stale turn cannot silently become a new run. Idle replies
+create a new tracked run in the same chat using current profile, dependency,
+project-lock, and write-consent checks. Planning chats remain read-only. A done
+feature requires explicit reopening, retaining prior handoffs and respecting
+its dependents. Ordinary turn/start and goal continuation cannot bypass this
+lifecycle. Submission errors retain the full composer draft. Stop revokes pending
+continuation/queue consent and targets the current run; a stale Stop cannot
+cancel a newer attempt. Cancellation is confirmed for the Lead and its owned
+native subagents before releasing the project lock; uncertainty keeps the run
+locked with retry guidance. Active work must stop before deletion. Idle unanswered
+questions may be deleted with their feature without fabricating answers; code
+files and the Lead conversation remain intact.
+
+The project sidebar reveals the selected Lead without replacing manual chat
+ordering. Working Leads and native approvals are visible in Activity even when
+the ordinary thread list has not caught up. Feature completion opens its Lead
+result, with a board fallback when unavailable. During an approved selected
+batch, individual results remain in Activity quietly; the final completed batch
+emits one summary. Native Lead approvals/questions use the existing device alert
+channels and resolve from history when answered or cancelled. Questions and
+unexpected interruptions notify promptly; explicit user stops stay in history
+without another device alert. A board is an
+ongoing container, not a single completable job.
 
 Native subagents share the Lead thread sandbox. Persona labels are guidance,
 not separate security boundaries. Before a write-capable start, the UI explains

@@ -7,15 +7,17 @@ live in [Project Boards progress](project-boards/PROGRESS.md).
 
 | Starting point | Flow |
 |---|---|
-| Existing planning chat | Turn this chat into a board → review the prefilled plan/project → coordinator creates cards. |
+| Existing chat, one bug/feature | Track on board → dictate/edit brief → generated title → read-only plan in linked Lead chat. |
+| Existing planning chat, many features | Track on board → Create several feature cards → review plan/project → coordinator creates cards. |
 | New board | Plan features → describe the goal or reference a project plan → review cards and dependencies. |
 | Straightforward feature | Add a brief and acceptance criteria → Plan & start. |
 | Explore before building | Plan first → review tasks → Start work in the same Lead chat. |
 | Many features | Review/select the cards → Run selected features → one ready feature at a time. |
 | Shared groundwork | Put it in one prerequisite feature; dependent cards receive its saved outcome. Combine tightly coupled work when that is simpler. |
 | Decision needed | Needs You lists the exact question → Review & answer → continue if enabled, otherwise Start. A paused queue needs explicit resume. |
-| Inspect an attempt | Runs → saved outcome/requested settings → open its feature or chat. |
+| Inspect work or a result | Activity → working Lead, exact approval/question, or finished result. Chat header → feature/board; Runs → attempt details. |
 | Review finds a defect | Lead reopens affected work, retains previous handoffs, repairs, and verifies after the changes. |
+| Cancel work | Stop run from the feature or Lead chat → review retained work → Delete feature if no longer needed. |
 | Restart/interruption | Partial work remains visible and blocked; review it and explicitly retry/select remaining cards. |
 
 Any reusable agent may lead. Each profile has editable instructions and starter
@@ -26,8 +28,8 @@ guidance; app updates preserve user-customized copies.
 
 ## Delivered UI and efficiency work
 
-- Turn-local final-answer/separator grouping is implemented; a newly reported
-  delayed-history overwrite regression is tracked in PROGRESS.md before release.
+- Turn-local final-answer/separator grouping and delayed-history protection are
+  released. Current dogfood findings and release status live in PROGRESS.md.
 - Heavy offscreen message bodies unmount; markdown/inactive history caches are
   bounded. The active raw transcript and lightweight shells still consume memory.
 - Recording → Transcribing → Ready, transcription retry, preserved original-chat
@@ -37,6 +39,9 @@ guidance; app updates preserve user-customized copies.
   text cannot silently be omitted by saving the form.
 - Project plans, dependency labels, explicit planning versus implementation,
   compact handoffs, and one selected queue make the next action visible.
+- Tracked chats are visible in the project sidebar and open on individual Start.
+  Replies remain managed work, retain failed drafts, and require explicit reopening
+  after completion. Titles are optional and generated without another model call.
 - Questions, completed features, planning results, and failures use the existing
   Activity/notification system. A real test-delivery leak was found and corrected:
   fixtures must isolate subscriber state and environment loading, not just boards.
@@ -66,9 +71,9 @@ automatic account rotation are not part of this cycle.
 
 ## Next improvements only if dogfooding justifies them
 
-1. Finish the currently reported chat-history regression and final release checks.
-   Two disposable native builds already passed shared groundwork → dependent CLI
-   → fresh QA → injected-defect repair. Use a real user project next to find friction.
+1. Dogfood the chat-centered board flow on a real feature. Two disposable native
+   builds already passed shared groundwork → dependent CLI → fresh QA → repair.
+   The reported missing Lead/Activity/title friction is handled in this slice.
 2. Profile native transcript retrieval if backend memory still causes lag.
    Current gains chiefly reduce browser rendering and inactive cache retention.
 3. Verify physical iPhone Safari. Real Android mic/keyboard/manual-save and daily

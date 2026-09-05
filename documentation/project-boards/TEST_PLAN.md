@@ -14,6 +14,7 @@ unchanged suites just because a small edit was made.
 | npm run test:project-boards | Store/service/model/board-notification diagnosis. |
 | npm run check:project-boards | Full tests, production build, board browser flow. |
 | npm run test:e2e:project-boards | Browser-only rerun after a UI correction. |
+| node tests/boardChatFlow.e2e.mjs | Frontend/store fixture for tracked chat creation, Activity, replies, drafts, and mobile navigation. |
 | npm run test:thread-scroll | Actual-state delayed-history/rollback races and scroll/final-order rules. |
 | node tests/chatReliability.e2e.mjs | Chat rendering, live/persisted activity, dictation, and stress. |
 | node tests/requestUserInput.e2e.mjs | Native question choices, voice/free text, retry, replay, and resume. |
@@ -56,6 +57,18 @@ notification storage too. Retain explicit defense in every bridge fixture:
   start awaits model metadata. A stale attempt cannot start or block new work.
 - Committed outcomes enter existing history once, suppress generic Lead alerts,
   and recover interruptions without replaying old history or leaking fixtures.
+- Brief-only titles, source/Lead separation, active exact-turn steering, idle
+  same-chat tracked replies, atomic explicit reopening, and direct-RPC bypass
+  rejection. Preserve inputs and drafts through failures and navigation.
+- Stop covers delayed starts, native interruption failure, replay and replacement,
+  owned descendants, and exact request cleanup even if a completion event is
+  missing. Deleting stopped or waiting work must preserve code
+  files and reject deletion while execution remains active.
+- Native Lead requests produce one redacted device alert, resolve on answer/Stop,
+  and agree across Activity, the board count, and Needs You. Exclude internal
+  child chats and stale requests after restart.
+- A selected batch alerts exactly once after its last turn; replay, pause,
+  question, failure, and replacement cannot produce false completion.
 - Delayed history must not overwrite newer streamed text or remove a fresh final
   answer. Keep turn-local final/separator order and relevant viewport coverage.
 - Question retries and bridge replays retain drafts and prevent duplicate replies;

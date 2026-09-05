@@ -5,6 +5,30 @@ description: "Use when implementing or changing user-visible behavior/UI in this
 
 # Codex App Parity Skill
 
+## Findings: Chat-centered boards and explicit Stop (2026-09-06)
+
+- Rechecked integrated app `26.901.31953`: `app-primary-37ff25fd4643.js`
+  keeps thread identity, Rename, and project navigation together. Native
+  `app-initial-caa927532ffb.js` distinguishes `waitingOnApproval` and
+  `waitingOnUserInput` from ordinary work. A pending request is attention,
+  not a reason to show an indefinite Working state.
+- Current CLI protocol supports `turn/steer` with exact `expectedTurnId`.
+  Dynamic tools attach only at thread creation. Track on board therefore
+  creates a feature with a source reference and a fresh prepared Lead chat;
+  idle and active Lead replies stay in the board service. This is an
+  intentional board extension, not an ordinary-chat tool retrofit.
+- Native Stop uses exact `turn/interrupt` and descendant cleanup. A stopped
+  turn's native approval UI must clear without inventing an approval or
+  answering its question. Deletion is a separate explicit action and keeps
+  code files and chat history.
+- Board status/title links extend native sidebar and Activity conventions.
+  Reveal a selected row without changing manual order. Keep working status,
+  requests, completed results, and explicit selected-batch summaries distinct.
+- Inspect active/idle/completed phone screenshots together. Collapse optional
+  Lead controls when typing on a phone, retain the entered draft across failed
+  requests and chat switches, and scope pending-send UI to its originating chat.
+  Synthetic Chromium touch checks do not establish physical Safari parity.
+
 ## Findings: Native questions, board views, and real Android (2026-09-06)
 
 - Native `item/tool/requestUserInput` supplies question IDs, described options,

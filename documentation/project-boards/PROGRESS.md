@@ -2,12 +2,52 @@
 
 Updated: 2026-09-06
 
-Status: released. Source through 458e7b3 was pushed to main and
-[GitHub CI passed](https://github.com/jothamgoh/codexui-patched/actions/runs/33982089492).
-The authorized independent-Terminal restart completed once. After reconnecting,
-the new service returned valid HTTP 200 bridge/board/model responses, served the
-built frontend and updated starter prompts, and unauthenticated public root/API
-requests redirected to the authenticated gateway.
+Status: chat/board follow-up is verified through 402bb83. Publication and the
+authorized independent-Terminal restart remain to do; the previous release is
+still deployed. Preserve the stopped Lead’s uncommitted
+message-display edits in the main checkout; they are separate from this release.
+A real run waiting at an invisible native test approval was stopped at the
+user’s request; its code edits remain saved.
+
+## Current follow-up
+
+- Chat is the working view; the board is the overview. Track on board creates
+  a feature with an optional generated title and a distinct, linked Lead chat.
+  Large-plan entry still proposes multiple cards. Voice retains manual save.
+- Individual starts open the Lead; selected batches stay on the board. Sidebar,
+  header, card, and Activity links retain feature identity and title.
+- Managed replies steer the exact active turn or start a guarded tracked run
+  in the same chat. Explicit reopening preserves prior work. Failed or delayed
+  sends retain drafts and cannot affect another chat's composer.
+- Activity exposes working Leads and native approvals, even before ordinary chat
+  listing catches up. Feature results open their Lead. Selected queue outcomes
+  stay in history quietly and the final batch emits one summary.
+- Stop shows the reason for waiting, revokes continuation consent, and confirms
+  that the exact Lead and owned native subagents ended before releasing the
+  project lock. Failure/uncertainty keeps Delete disabled with retry guidance;
+  a stale Stop cannot cancel a replacement run. Confirmed Stop clears pending
+  approvals even if a native completion event was missed. Deletion preserves
+  code files and the Lead chat; it does not fabricate answers.
+- Native Lead approvals/questions use configured device notification channels,
+  resolve on answer/cancel, and agree across Activity, board counts, and Needs
+  You. Explicit user stops are quiet; unexpected interruptions still alert.
+- Final checks passed: 226 unit tests, production type-check/frontend/CLI build,
+  isolated full-bridge browser flow, desktop/Chromium touch chat workflow, and
+  Gitleaks. Browsers cover optional titles/voice, retry without duplicate cards,
+  source/Lead navigation, approvals/results, rename, delayed draft retention, a
+  second feature from the same chat, Stop failure/retry, and delete preserving
+  files. Pending approval counts/Needs You agree and open the exact Lead.
+- Physical Pixel 8a Chrome passed real microphone recording/upload, synthetic
+  transcript insertion, blank-title manual creation, Lead/approval navigation,
+  failed Stop retaining Delete protection, successful retry, and deletion
+  retaining the code file. No horizontal overflow at 411px. The discovered board
+  approval-count inconsistency was fixed and rechecked in Chromium touch; that
+  final count change was not rechecked on the physical device. All temporary
+  device tabs, forwarding, captures, and fixture processes were cleaned up.
+- New evidence lives in ignored output/board-chat-flow/ and
+  output/android-chat-flow/. These workflows used isolated fixture responses
+  and no external notification delivery. Physical iPhone Safari remains
+  unverified; Android and Chromium touch are not a Safari pass.
 
 ## Goal and decisions
 
@@ -44,7 +84,7 @@ Multi-account/provider execution remains separate future work.
   receipts with exact feature/question/chat navigation. Phone forms and controls
   remain usable with touch, keyboard, voice, and both themes.
 
-## Follow-up changes in this checkout
+## Previously delivered reliability work
 
 - Delayed history cannot replace newer streamed text with an empty/partial
   snapshot. Hydration preserves subsequent deltas and one message per ID, keeps
@@ -83,7 +123,7 @@ was not mutated. The fixture environment and notification storage defaults were
 corrected; subsequent phone/browser checks used verified zero-subscriber state.
 Do not erase real notification history as part of test cleanup.
 
-## Evidence and its limits
+## Earlier evidence and its limits
 
 - Final grouped check after the viewport fix: 209 tests, production type-check/
   frontend/CLI build, and isolated Board/Needs You/Runs browser flow passed.
@@ -143,11 +183,12 @@ References and adopted choices remain in PRD.md and ../UX_BACKLOG.md.
 
 ## Exact next steps
 
-1. Refresh the UI to load the new frontend. Dogfood a real build from a chat or
-   board, dictate a brief, review feature cards, and run a small dependent queue
-   with one review/fix. The source, checks, publication, restart, and health
-   verification are complete; no further service restart is needed.
-2. Check physical iPhone Safari when available. Android and Chromium evidence
-   do not establish Safari compatibility.
-3. Add only regressions that explain observed friction. Keep feature boundaries,
-   compact handoffs, and the current native runtime; do not expand the framework.
+1. Integrate the isolated branch without committing or losing the stopped
+   Lead’s saved edits. Publish main and verify CI. Deploy the already-built
+   committed source separately from those unrelated uncommitted edits.
+2. Perform one authorized independent-Terminal restart after release checks,
+   then verify local health and authenticated public access after reconnecting.
+3. Dogfood one small feature through the new chat flow. The stopped Lead’s
+   saved bug-fix edits still need their own review/verification before release.
+   Physical iPhone Safari remains unverified. Keep provider rotation, scheduling,
+   and automatic batch QA separate unless a real workflow needs them.

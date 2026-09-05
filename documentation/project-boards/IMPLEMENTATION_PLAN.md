@@ -14,7 +14,8 @@ Scope revised: 2026-09-06. PROGRESS.md owns release status and actual evidence.
 | server/turnNotificationRouter.ts | Board outcomes through existing durable notification sinks. |
 | api/projectBoards.ts and composables/useProjectBoards.ts | Browser requests, snapshots, live updates. |
 | components/content/ProjectBoardsHub.vue and BoardDailyViews.vue | Cards, decisions, run receipts, profiles, planning, queue controls. |
-| components/content/BoardPlanDialog.vue | Chat/board plan entry with preserved retries. |
+| components/content/BoardPlanDialog.vue and TrackFeatureDialog.vue | Multi-card planning or a single tracked feature, with voice and preserved retries. |
+| App.vue, SidebarThreadTree.vue, and NotificationSettingsButton.vue | Linked chats/cards, selected-chat visibility, working/attention/result navigation. |
 | components/content/BoardExecutionSettings.vue | Inherited or explicit supported model/reasoning settings. |
 | components/content/DictationField.vue | Reusable speech insertion, retry, overflow review, and manual-save state. |
 | components/content/RequestUserInputCard.vue | Native question choices, drafts, manual replies, and retry. |
@@ -42,6 +43,10 @@ database migration, generic policy layer, or LLM polling dispatcher.
 6. Follow-up hardening: queue identity and consent checked across async waits,
    notification storage/fixtures isolated, and useful starter guidance with
    preserved custom copies. Current remaining fixes are tracked in PROGRESS.md.
+
+7. Chat-centered board work: automatic editable titles, source links, selected
+   Lead reveal, active/idle managed replies, exact native approvals, result links,
+   and one selected-batch summary. No polling agent or new orchestration layer.
 
 Context reads are compact by default. New native chats expose lazy read_agent
 and read_card; legacy chats keep their existing tool schema and compatibility

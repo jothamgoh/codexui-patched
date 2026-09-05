@@ -12,6 +12,29 @@ next action. Then read only the relevant product or implementation details:
 The focused scope removes the speculative full-MVP framework and
 exhaustive test checklist. Future ideas are options, not release requirements.
 
+## Everyday flow
+
+Use chat for the conversation and the board for the project overview.
+
+- In an ordinary chat, choose **Track on board**. Dictate or edit the brief;
+  leave the title blank to generate it locally. The feature starts with a
+  read-only plan in its own Lead chat, linked to the original conversation.
+- For a larger plan, choose **Create several feature cards** in that dialog,
+  then review the proposed cards and dependencies before starting work.
+- Individual starts open the Lead chat. Use its feature link or **View board**
+  to return. A selected batch stays on the overview.
+- Reply in the Lead chat to steer active work. When idle, choose **Continue work**
+  and workspace access; completed features require explicit reopening. Lead
+  settings remain editable on the card. Failed sends retain the draft.
+- **Stop run** ends the active attempt; completed code stays on disk. Stop before
+  deleting a feature. Deletion removes its board records, keeping the code and
+  Lead chat. Native approval requests are visible instead of looking like work.
+- The sidebar labels tracked chats. Activity shows working Leads, exact approvals
+  and questions, results, and stops. Completed features open their Lead results;
+  a completed selected batch produces one summary alert. The board stays open
+  for future work. Waiting Lead approvals also use your configured notification
+  channels and disappear from Needs You when answered or cancelled.
+
 ## Continuing development
 
 1. Read `PROGRESS.md`, repository `AGENTS.md`, and `git status`.

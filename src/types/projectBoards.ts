@@ -115,6 +115,7 @@ export type ProjectBoardRun = {
   cardId: string
   agentId: string
   kind: ProjectBoardRunKind
+  createdCardIds: string[]
   status: ProjectBoardRunStatus
   threadId: string
   startedAtIso: string

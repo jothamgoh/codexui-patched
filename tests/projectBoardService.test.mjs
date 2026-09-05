@@ -562,6 +562,7 @@ test('imports a plan into linked feature cards once, scopes planner authority, a
   assert.equal(ui.autoRun, false)
   assert.equal(snapshot.boards[0].sourceThreadId, 'ordinary-chat')
   assert.equal(snapshot.runs[0].kind, 'board_plan')
+  assert.deepEqual(new Set(snapshot.runs[0].createdCardIds), new Set([base.id, ui.id]))
   await service.handleNotification({ method: 'turn/completed', params: { threadId: 'lead-thread', turn: { id: 'lead-turn-1', status: 'completed' } } })
   await service.startBoardPlan(board.id, { plan: 'Consider an optional follow-up.' })
   await waitFor(() => appServer.calls.filter((call) => call.method === 'turn/start')[1], 'No resumed planner')

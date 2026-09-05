@@ -576,6 +576,7 @@ test('edits feature dependencies without cycles and reopens repairs without losi
   const { board, feature } = await createBoardAndFeature(store)
   let snapshot = await store.createCard({ boardId: board.id, title: 'Dependent interface', model: 'selected-model', reasoningEffort: 'medium' })
   const second = snapshot.cards.find((card) => card.title === 'Dependent interface')
+  await assert.rejects(store.startRun(second.id, 'builtin-lead', 'execute', 'stale-feature-state'), /feature changed while starting/u)
   await store.updateCard(second.id, { dependencyIds: [feature.id] })
   await assert.rejects(store.updateCard(feature.id, { dependencyIds: [second.id] }), /cycle/u)
   await assert.rejects(store.updateCard(second.id, { dependencyIds: ['missing'] }), /Missing dependency/u)

@@ -11,7 +11,7 @@ import type {
   ProjectBoardSnapshot,
 } from '../types/projectBoards'
 import type { ReasoningEffort } from '../types/codex'
-import { ProjectBoardStore } from './projectBoardStore'
+import { ProjectBoardStore, projectBoardFeatureFingerprint } from './projectBoardStore'
 
 type RpcClient = {
   rpc: (method: string, params: unknown) => Promise<unknown>
@@ -478,7 +478,7 @@ export class ProjectBoardService {
       const feature = snapshot.cards.find((card) => card.id === id && card.boardId === boardId && card.type === 'feature')
       if (!feature) throw new Error('Every selected feature must belong to this board.')
       if (feature.status === 'needs_input' || feature.status === 'review') throw new Error('Resolve questions and review before adding those features to the queue.')
-      approved[id] = this.featureApproval(feature)
+      approved[id] = projectBoardFeatureFingerprint(feature)
     }
     if (snapshot.agents.some((agent) => board.agentIds.includes(agent.id) && agent.sandbox === 'workspace-write') && record.allowWorkspaceWrite !== true) {
       throw new Error('Confirm workspace-write access before starting the selected features.')
@@ -491,10 +491,6 @@ export class ProjectBoardService {
   async stopBoardQueue(boardId: string): Promise<ProjectBoardSnapshot> {
     this.pauseQueue(boardId, 'Queue paused. Any current feature finishes its active turn; no next feature will start.')
     return this.publish(await this.store.read())
-  }
-
-  private featureApproval(feature: ProjectBoardCard): string {
-    return JSON.stringify([feature.title, feature.description, feature.acceptanceCriteria, feature.assignedAgentId, feature.model, feature.reasoningEffort, feature.verificationPolicy, feature.dependencyIds])
   }
 
   private pauseQueue(boardId: string, reason: string): void {
@@ -529,7 +525,7 @@ export class ProjectBoardService {
         this.publish(snapshot)
         return
       }
-      if (remaining.some((feature) => !feature || this.featureApproval(feature) !== queue.approved[feature.id])) {
+      if (remaining.some((feature) => !feature || projectBoardFeatureFingerprint(feature) !== queue.approved[feature.id])) {
         this.pauseQueue(boardId, 'A selected feature changed. Review the cards and start the queue again.')
         this.publish(snapshot)
         return
@@ -587,7 +583,7 @@ export class ProjectBoardService {
     this.activeFeatureIds.add(feature.id)
     this.activeProjectPaths.add(projectPath)
     try {
-      const { snapshot: startedSnapshot, run } = await this.store.startRun(feature.id, lead.id, kind)
+      const { snapshot: startedSnapshot, run } = await this.store.startRun(feature.id, lead.id, kind, projectBoardFeatureFingerprint(feature))
       if (generation !== this.processGeneration) {
         this.publish(await this.store.failRun(run.id, 'Codex app-server exited while this run was starting.', 'interrupted'))
         throw new Error('Codex app-server exited. Select Start to retry this feature.')

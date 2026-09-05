@@ -307,6 +307,7 @@ function normalizeRun(value: unknown): ProjectBoardRun | null {
     cardId,
     agentId: readString(record.agentId, 200),
     kind,
+    createdCardIds: readStringArray(record.createdCardIds),
     status: allowedStatuses.has(rawStatus) ? rawStatus as ProjectBoardRun['status'] : 'failed',
     threadId: readString(record.threadId, 200),
     startedAtIso: readString(record.startedAtIso, 100),
@@ -342,6 +343,10 @@ function assertCardDependencies(snapshot: ProjectBoardSnapshot): void {
     visited.add(card.id)
   }
   for (const card of snapshot.cards) visit(card)
+}
+
+export function projectBoardFeatureFingerprint(feature: ProjectBoardCard): string {
+  return JSON.stringify([feature.title, feature.description, feature.acceptanceCriteria, feature.assignedAgentId, feature.model, feature.reasoningEffort, feature.verificationPolicy, feature.dependencyIds])
 }
 
 function emptySnapshot(now: Date): ProjectBoardSnapshot {
@@ -1092,11 +1097,12 @@ export class ProjectBoardStore {
     })
   }
 
-  startRun(cardId: string, agentId: string, kind: ProjectBoardRunKind): Promise<{ snapshot: ProjectBoardSnapshot; run: ProjectBoardRun }> {
+  startRun(cardId: string, agentId: string, kind: ProjectBoardRunKind, expectedFingerprint?: string): Promise<{ snapshot: ProjectBoardSnapshot; run: ProjectBoardRun }> {
     let createdRun!: ProjectBoardRun
     return this.mutate((current) => {
       const card = current.cards.find((entry) => entry.id === cardId)
       if (!card) throw new Error('Board card not found.')
+      if (expectedFingerprint !== undefined && projectBoardFeatureFingerprint(card) !== expectedFingerprint) throw new Error('The feature changed while starting. Review its settings and start again.')
       if (card.type !== 'feature') throw new Error('Only features can start a Lead run; QA batches are not executable yet.')
       assertManualEdit(current, card)
       if (card.status === 'done') throw new Error('This feature is already done. Reopen it or create a follow-up feature.')
@@ -1117,6 +1123,7 @@ export class ProjectBoardStore {
         cardId,
         agentId,
         kind,
+        createdCardIds: [],
         status: 'running',
         threadId: '',
         startedAtIso: now.toISOString(),
@@ -1144,7 +1151,7 @@ export class ProjectBoardStore {
       if (current.runs.some((entry) => entry.boardId === boardId && entry.status === 'running')) throw new Error('Wait for this board’s active run to finish.')
       if (!readString(plan)) throw new Error('A project plan is required.')
       const now = this.now().toISOString()
-      run = { id: randomUUID(), boardId, cardId: '', agentId, kind: 'board_plan', status: 'running', threadId: '', startedAtIso: now, finishedAtIso: '', summary: '', error: '' }
+      run = { id: randomUUID(), boardId, cardId: '', agentId, kind: 'board_plan', createdCardIds: [], status: 'running', threadId: '', startedAtIso: now, finishedAtIso: '', summary: '', error: '' }
       return {
         ...current,
         runs: [run, ...current.runs],
@@ -1160,7 +1167,7 @@ export class ProjectBoardStore {
       const run = current.runs.find((entry) => entry.id === runId && entry.boardId === boardId && entry.kind === 'board_plan' && entry.status === 'running')
       const board = current.boards.find((entry) => entry.id === boardId)
       if (!run || !board) throw new Error('Board planning run is no longer active.')
-      if (current.cards.some((card) => card.lastRunId === runId)) return current
+      if (run.createdCardIds.length) return current
       if (!Array.isArray(result.features) || !result.features.length || result.features.length > 30) throw new Error('Provide between 1 and 30 feature cards.')
       const ids = new Map<string, string>()
       for (const feature of result.features) {
@@ -1182,7 +1189,7 @@ export class ProjectBoardStore {
           summary: '', progressNote: 'Review the proposed feature before starting', createdAtIso: now, updatedAtIso: now, completedAtIso: '',
         }
       })
-      const next = { ...current, cards: [...cards, ...current.cards] }
+      const next = { ...current, cards: [...cards, ...current.cards], runs: current.runs.map((entry) => entry.id === runId ? { ...entry, createdCardIds: cards.map((card) => card.id) } : entry) }
       assertCardDependencies(next)
       return next
     })

@@ -306,8 +306,9 @@
           <header><div><DialogTitle>{{ editingCardId ? 'Edit feature' : 'New feature' }}</DialogTitle><p>Give the Lead a clear brief. It will make the task plan.</p></div><Button type="button" variant="ghost" size="icon-sm" aria-label="Close" @click="featureDialogOpen = false"><X /></Button></header>
           <form class="board-form" data-testid="new-feature-form" @submit.prevent="createFeature">
             <p v-if="error" class="boards-alert" role="alert">{{ error }}</p>
-            <label><span>Title</span><DictationField v-model="featureDraft.title" label="Title" v-bind="voiceField('feature-title')" required placeholder="Add project progress board" /></label>
-            <label><span>Brief</span><DictationField v-model="featureDraft.description" label="Brief" v-bind="voiceField('feature-brief')" multiline rows="4" placeholder="What should be built, and why?" /></label>
+            <label><span>Brief</span><DictationField v-model="featureDraft.description" label="Brief" v-bind="voiceField('feature-brief')" multiline rows="4" maxlength="20000" placeholder="What should be built, and why?" /></label>
+            <label><span>{{ editingCardId ? 'Title' : 'Title (optional)' }}</span><DictationField v-model="featureDraft.title" label="Title" v-bind="voiceField('feature-title')" :required="!!editingCardId" maxlength="240" placeholder="Add project progress board" /></label>
+            <p v-if="!editingCardId && !featureDraft.title.trim()" class="detail-muted break-words" data-testid="feature-title-preview">{{ suggestedFeatureTitle ? `Title from your brief: ${suggestedFeatureTitle}` : 'Leave the title blank to use a short title from your brief.' }}</p>
             <label><span>Done when</span><DictationField v-model="featureDraft.acceptanceCriteria" label="Done when" v-bind="voiceField('feature-acceptance')" multiline rows="3" placeholder="The result you expect" /></label>
             <div class="board-form-grid">
               <label><span>Priority</span><select v-model="featureDraft.priority"><option value="low">Low</option><option value="normal">Normal</option><option value="high">High</option><option value="urgent">Urgent</option></select></label>
@@ -318,7 +319,7 @@
             <fieldset v-if="dependencyCandidates.length" class="dependency-picker"><legend>Depends on</legend><p class="detail-muted">Shared groundwork belongs in one feature. Select anything this feature needs first.</p><label v-for="feature in dependencyCandidates" :key="feature.id" class="checkbox-row"><input v-model="featureDraft.dependencyIds" type="checkbox" :value="feature.id" /><span>{{ feature.title }} · {{ statusLabel(feature.status) }}</span></label></fieldset>
             <p v-if="draftLeadUnavailable" class="boards-alert">Choose another Lead or enable the assigned agent in the Agent library.</p>
             <p class="verification-help">{{ verificationHelp[featureDraft.verificationPolicy] }}</p>
-            <footer><Button type="button" variant="ghost" @click="featureDialogOpen = false">Cancel</Button><Button type="submit" :disabled="isDictating || isMutating || !featureDraft.title.trim()">{{ editingCardId ? 'Save feature' : 'Create feature' }}</Button></footer>
+            <footer><Button type="button" variant="ghost" @click="featureDialogOpen = false">Cancel</Button><Button type="submit" :disabled="isDictating || isMutating || !hasFeatureContent">{{ editingCardId ? 'Save feature' : 'Create feature' }}</Button></footer>
           </form>
         </DialogContent>
       </DialogPortal>
@@ -406,6 +407,7 @@
 <script setup lang="ts">
 import { computed, nextTick, reactive, ref, watch } from 'vue'
 import { useMediaQuery } from '@vueuse/core'
+import { projectBoardTitleFromBrief } from '../../lib/projectBoardTitle'
 import { DialogRoot, DialogPortal, DialogOverlay, DialogContent, DialogTitle } from 'reka-ui'
 import {
   Check,
@@ -711,9 +713,12 @@ function openEditSelectedCard(): void {
   featureDialogOpen.value = true
 }
 
+const suggestedFeatureTitle = computed(() => projectBoardTitleFromBrief(featureDraft.description))
+const hasFeatureContent = computed(() => Boolean(featureDraft.title.trim() || (!editingCardId.value && suggestedFeatureTitle.value)))
+
 function createFeature(): void {
   const board = activeBoard.value
-  if (!board || !featureDraft.title.trim()) return
+  if (!board || !hasFeatureContent.value) return
   const changes = {
     title: featureDraft.title.trim(), description: featureDraft.description,
     acceptanceCriteria: featureDraft.acceptanceCriteria, priority: featureDraft.priority,

@@ -153,7 +153,7 @@ export type ProjectBoardCardCreateInput = {
   parentCardId?: string
   type?: ProjectBoardCardType
   taskPurpose?: ProjectBoardTaskPurpose
-  title: string
+  title?: string
   description?: string
   acceptanceCriteria?: string
   status?: ProjectBoardStatus
@@ -207,7 +207,7 @@ export type ProjectBoardFeaturePlan = {
   summary: string
   features: Array<{
     key: string
-    title: string
+    title?: string
     description: string
     acceptanceCriteria: string
     agentId: string

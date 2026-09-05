@@ -5,19 +5,23 @@ import { join } from 'node:path'
 import test from 'node:test'
 import ts from 'typescript'
 
-async function loadTypeScriptModule(sourcePath) {
-  const source = await readFile(sourcePath, 'utf8')
+async function compileTypeScriptModule(sourcePath, replacements = []) {
+  let source = await readFile(sourcePath, 'utf8')
+  for (const [search, replacement] of replacements) source = source.replace(search, replacement)
   const compiled = ts.transpileModule(source, {
     compilerOptions: {
       module: ts.ModuleKind.ES2022,
       target: ts.ScriptTarget.ES2022,
     },
   }).outputText
-  return import(`data:text/javascript;base64,${Buffer.from(compiled).toString('base64')}`)
+  return `data:text/javascript;base64,${Buffer.from(compiled).toString('base64')}`
 }
 
+const titleModuleUrl = await compileTypeScriptModule(new URL('../src/lib/projectBoardTitle.ts', import.meta.url))
 const storeSourceUrl = new URL('../src/server/projectBoardStore.ts', import.meta.url)
-const { ProjectBoardStore } = await loadTypeScriptModule(storeSourceUrl)
+const { ProjectBoardStore } = await import(await compileTypeScriptModule(storeSourceUrl, [
+  ["from '../lib/projectBoardTitle'", `from '${titleModuleUrl}'`],
+]))
 
 async function createFixture(t, nowIso = '2026-09-05T02:00:00.000Z') {
   const directory = await mkdtemp(join(tmpdir(), 'codexui-project-boards-'))
@@ -71,6 +75,50 @@ function planTask(overrides) {
     ...overrides,
   }
 }
+
+test('brief-first cards receive concise titles without replacing explicit titles or accepting empty content', async (t) => {
+  const { store, reopen } = await createFixture(t)
+  const { board } = await createBoardAndFeature(store)
+  const brief = '\n# Fix **missing replies** in `ThreadConversation.vue`\n\nKeep the final reply visible after keyboard resizing.'
+  let snapshot = await store.createCard({ boardId: board.id, description: brief })
+  const generated = snapshot.cards[0]
+  assert.equal(generated.title, 'Fix missing replies in ThreadConversation.vue')
+  assert.equal(generated.description, brief.trim())
+  assert.equal((await reopen().read()).cards.find((card) => card.id === generated.id).title, generated.title)
+  snapshot = await store.updateCard(generated.id, { title: 'My chosen label', description: 'A revised brief.' })
+  assert.equal(snapshot.cards.find((card) => card.id === generated.id).title, 'My chosen label')
+  snapshot = await store.updateCard(generated.id, { description: 'Another revision.' })
+  assert.equal(snapshot.cards.find((card) => card.id === generated.id).title, 'My chosen label')
+  snapshot = await store.createCard({ boardId: board.id, title: '  Exact _custom_ title  ', description: brief })
+  assert.equal(snapshot.cards[0].title, 'Exact _custom_ title')
+  snapshot = await store.createCard({ boardId: board.id, title: 'Title only still works' })
+  assert.equal(snapshot.cards[0].description, '')
+  for (const description of ['', ' \n ', '# \n---\n```']) {
+    await assert.rejects(store.createCard({ boardId: board.id, title: ' ', description }), /brief or a title/u)
+  }
+  snapshot = await store.createCard({ boardId: board.id, description: '- [ ] Repair [mobile](https://example.test/mobile) **scrolling** ' + '🙂'.repeat(100) })
+  assert.ok(Array.from(snapshot.cards[0].title).length <= 80)
+  assert.match(snapshot.cards[0].title, /^Repair mobile scrolling /u)
+  assert.ok(snapshot.cards[0].title.endsWith('…'))
+  assert.ok(!/[\uD800-\uDBFF](?![\uDC00-\uDFFF])|(?<![\uD800-\uDBFF])[\uDC00-\uDFFF]/u.test(snapshot.cards[0].title))
+  snapshot = await store.createCard({ boardId: board.id, title: 'T'.repeat(300), description: 'D'.repeat(21_000) })
+  assert.equal(snapshot.cards[0].title.length, 240)
+  assert.equal(snapshot.cards[0].description.length, 20_000)
+})
+
+test('agent feature plans apply the same optional-title rule atomically', async (t) => {
+  const { store } = await createFixture(t)
+  const { board } = await createBoardAndFeature(store)
+  const { run } = await store.startBoardPlan(board.id, 'builtin-lead', 'Make two related features.', '')
+  const proposed = { key: 'first', description: '> Fix **mobile scrolling**', acceptanceCriteria: 'The final reply remains visible.', agentId: 'builtin-lead', verificationPolicy: 'self', dependsOn: [] }
+  await assert.rejects(store.saveBoardFeatures(board.id, { summary: 'Invalid plan.', features: [proposed, { ...proposed, key: 'empty', description: '' }] }, run.id), /brief or a title/u)
+  assert.equal((await store.read()).runs.find((entry) => entry.id === run.id).createdCardIds.length, 0)
+  const snapshot = await store.saveBoardFeatures(board.id, { summary: 'Ready to review.', features: [proposed, { ...proposed, key: 'second', title: 'My follow-up', description: '', dependsOn: ['first'] }] }, run.id)
+  const first = snapshot.cards.find((card) => card.title === 'Fix mobile scrolling')
+  const second = snapshot.cards.find((card) => card.title === 'My follow-up')
+  assert.deepEqual(second.dependencyIds, [first.id])
+  assert.equal(snapshot.runs.find((entry) => entry.id === run.id).createdCardIds.length, 2)
+})
 
 test('refreshes maintained starter prompts on reload without replacing custom instructions', async (t) => {
   const fixture = await createFixture(t)

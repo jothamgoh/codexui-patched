@@ -1,6 +1,7 @@
 import { randomUUID } from 'node:crypto'
 import { mkdir, readFile, rename, rm, writeFile } from 'node:fs/promises'
 import { dirname } from 'node:path'
+import { projectBoardTitleFromBrief } from '../lib/projectBoardTitle'
 import type {
   ProjectBoard,
   ProjectBoardAgent,
@@ -896,13 +897,15 @@ export class ProjectBoardStore {
       this.assertPublicCardFields(record)
       if ('status' in record && record.status !== 'backlog') throw new Error('New cards must start in Backlog.')
       if ('taskPurpose' in record && !TASK_PURPOSES.has(record.taskPurpose as ProjectBoardTaskPurpose)) throw new Error('Unknown task purpose.')
+      const description = readString(record.description)
+      const title = readString(record.title, 240) || projectBoardTitleFromBrief(description)
       const input: ProjectBoardCardCreateInput = {
         boardId: readString(record.boardId, 200),
         parentCardId: readString(record.parentCardId, 200),
         type: record.type === 'task' || record.type === 'qa_batch' ? record.type : 'feature',
         taskPurpose: record.type === 'task' && record.taskPurpose === 'verification' ? 'verification' : 'work',
-        title: readString(record.title, 240),
-        description: readString(record.description),
+        title,
+        description,
         acceptanceCriteria: readString(record.acceptanceCriteria),
         status: normalizeStatus(record.status),
         priority: normalizePriority(record.priority),
@@ -915,7 +918,7 @@ export class ProjectBoardStore {
       }
       const board = current.boards.find((entry) => entry.id === input.boardId)
       if (!board) throw new Error('Project board not found.')
-      if (!input.title) throw new Error('A card title is required.')
+      if (!title) throw new Error('Add a brief or a title for this card.')
       const parent = current.cards.find((card) => card.id === input.parentCardId && card.boardId === board.id && card.type === 'feature')
       if ((input.type === 'task' && !parent) || (input.parentCardId && (input.type !== 'task' || !parent))) {
         throw new Error('Tasks must belong to a feature on this board; other cards cannot be nested.')
@@ -935,7 +938,7 @@ export class ProjectBoardStore {
         parentCardId: input.parentCardId ?? '',
         type: input.type ?? 'feature',
         taskPurpose: input.taskPurpose ?? 'work',
-        title: input.title,
+        title,
         description: input.description ?? '',
         acceptanceCriteria: input.acceptanceCriteria ?? '',
         status: input.status ?? 'backlog',
@@ -1221,11 +1224,12 @@ export class ProjectBoardStore {
       const now = this.now().toISOString()
       const cards: ProjectBoardCard[] = result.features.map((feature) => {
         if (!board.agentIds.includes(feature.agentId)) throw new Error('Every feature must choose an enabled agent.')
-        const title = readString(feature.title, 240)
-        if (!title) throw new Error('Every feature needs a title.')
+        const description = readString(feature.description)
+        const title = readString(feature.title, 240) || projectBoardTitleFromBrief(description)
+        if (!title) throw new Error('Every feature needs a brief or a title.')
         return {
           id: ids.get(readString(feature.key, 100))!, boardId, parentCardId: '', type: 'feature', taskPurpose: 'work', title,
-          description: readString(feature.description), acceptanceCriteria: readString(feature.acceptanceCriteria), status: 'backlog', priority: 'normal',
+          description, acceptanceCriteria: readString(feature.acceptanceCriteria), status: 'backlog', priority: 'normal',
           verificationPolicy: normalizeVerificationPolicy(feature.verificationPolicy), assignedAgentId: feature.agentId,
           dependencyIds: readStringArray(feature.dependsOn).map((key) => ids.get(key) ?? key),
           autoRun: false, model: '', reasoningEffort: '', planSummary: '', planStatus: 'none', toolSchemaVersion: 1, threadId: '', lastRunId: runId,

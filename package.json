@@ -64,7 +64,7 @@
     "test:notification-routing": "node --test tests/turnNotificationRouter.test.mjs",
     "test:pinned-threads": "node --test tests/pinnedThreads.test.mjs tests/pinnedThreadsStore.test.mjs tests/threadMetadataStore.test.mjs",
     "test:thread-pagination": "node --test tests/threadPagination.test.mjs",
-    "test:thread-scroll": "node --test tests/threadScroll.test.mjs",
+    "test:thread-scroll": "node --test tests/threadScroll.test.mjs tests/desktopMessageHistory.test.mjs",
     "test:web-push": "node --test tests/webPushDelivery.test.mjs",
     "test:skill-uninstall": "node --test tests/skillUninstall.test.mjs",
     "test:review-diff": "node --test tests/reviewDiff.test.mjs",

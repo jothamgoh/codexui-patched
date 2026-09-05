@@ -1223,6 +1223,12 @@ export function useDesktopState() {
   const loadedVersionByThreadId = ref<Record<string, string>>({})
   const loadedMessagesByThreadId = ref<Record<string, boolean>>({})
   const recentMessageThreadIds: string[] = []
+  let historyReadSequence = 0
+  let historyReadReset = 0
+  const appliedTailReadByThreadId = new Map<string, number>()
+  const resetHistoryReadByThreadId = new Map<string, number>()
+  const realtimeMessageVersionByThreadId = new Map<string, number>()
+  const agentMessageVersionByThreadId = new Map<string, Map<string, number>>()
   const paginationByThreadId = ref<Record<string, ThreadPaginationState>>({})
   const loadingEarlierByThreadId = ref<Record<string, boolean>>({})
   const earlierLoadErrorByThreadId = ref<Record<string, string>>({})
@@ -1328,7 +1334,11 @@ export function useDesktopState() {
     const liveAgent = liveAgentMessagesByThreadId.value[threadId] ?? []
     const liveCommands = liveCommandsByThreadId.value[threadId] ?? []
     const liveToolMessages = liveToolMessagesByThreadId.value[threadId] ?? []
-    const combined = sortMessagesByOrder([...persisted, ...liveCommands, ...liveToolMessages, ...liveAgent])
+    // A live item can already exist in a hydrated page. Render its newest
+    // version once; duplicate keys can otherwise leave an empty/stale body.
+    const combinedById = new Map([...persisted, ...liveCommands, ...liveToolMessages, ...liveAgent]
+      .map((message) => [message.id, message]))
+    const combined = sortMessagesByOrder([...combinedById.values()])
 
     const summaries = turnSummaryByThreadId.value[threadId] ?? []
     if (summaries.length === 0) return combined
@@ -2031,14 +2041,57 @@ export function useDesktopState() {
     }
   }
 
+  // Snapshot order/metadata is canonical, but its text may precede observed
+  // deltas. Explicit live completion can also replace text with a shorter answer.
+  function preserveObservedAgentText(threadId: string, incoming: UiMessage[], readId: number, isInProgress: boolean): UiMessage[] {
+    const live = liveAgentMessagesByThreadId.value[threadId] ?? []
+    const observedById = new Map([...(persistedMessagesByThreadId.value[threadId] ?? []), ...live]
+      .map((message) => [message.id, message]))
+    const liveIds = new Set(live.map((message) => message.id))
+    const versions = agentMessageVersionByThreadId.get(threadId)
+    return incoming.map((message) => {
+      const observed = observedById.get(message.id)
+      const newerLive = liveIds.has(message.id) && readId < (versions?.get(message.id) ?? 0)
+      // Completed history can correct a streaming estimate. Empty/partial
+      // in-progress snapshots must not blank an already observed answer.
+      if (!isInProgress && message.phase === 'final_answer' && message.text && !newerLive) return message
+      if (message.role !== 'assistant' || !observed || observed.role !== 'assistant'
+        || (message.turnId && observed.turnId && message.turnId !== observed.turnId)
+        || (!observed.text.startsWith(message.text) && !newerLive)) return message
+      const phase = observed.phase === 'final_answer' ? observed.phase : message.phase ?? observed.phase
+      return observed.text === message.text && phase === message.phase
+        ? message : { ...message, text: observed.text, phase }
+    })
+  }
+
+  function recordAgentMessageVersion(threadId: string, itemId: string): void {
+    let versions = agentMessageVersionByThreadId.get(threadId)
+    if (!versions) { versions = new Map(); agentMessageVersionByThreadId.set(threadId, versions) }
+    versions.set(itemId, ++historyReadSequence)
+  }
+
+  function historyHasCurrentRuntimeState(threadId: string, readId: number): boolean {
+    return readId >= (realtimeMessageVersionByThreadId.get(threadId) ?? 0)
+  }
+
+  function acceptHistoryRead(threadId: string, readId: number, earlier = false): boolean {
+    const resetId = Math.max(historyReadReset, resetHistoryReadByThreadId.get(threadId) ?? 0)
+    if (readId < resetId || (!earlier && readId < (appliedTailReadByThreadId.get(threadId) ?? 0))) return false
+    if (!earlier) appliedTailReadByThreadId.set(threadId, readId)
+    return true
+  }
+
   async function reconcileThreadProgressState(threadId: string): Promise<void> {
     if (!threadId) return
     try {
+      const readId = ++historyReadSequence
       const [page, nextGoal] = await Promise.all([
         getThreadMessagesWithStatus(threadId),
         getThreadGoal(threadId).catch(() => null),
       ])
-      const { messages: nextMessages, isInProgress, activeTurnId, turnSummaries } = page
+      if (!acceptHistoryRead(threadId, readId)) return
+      const { isInProgress, activeTurnId, turnSummaries } = page
+      const nextMessages = preserveObservedAgentText(threadId, page.messages, readId, isInProgress)
       const previousPersisted = persistedMessagesByThreadId.value[threadId] ?? []
       const mergedMessages = mergeServerMessagesPreservingOptimistic(previousPersisted, nextMessages, {
         preserveMissing: true,
@@ -2053,14 +2106,16 @@ export function useDesktopState() {
       removeLiveCommandsPersistedIn(threadId, nextMessages)
       removeLiveToolMessagesPersistedIn(threadId, nextMessages)
 
-      setThreadInProgress(threadId, isInProgress)
-      setActiveTurnIdForThread(threadId, isInProgress ? activeTurnId || null : null)
+      if (historyHasCurrentRuntimeState(threadId, readId)) {
+        setThreadInProgress(threadId, isInProgress)
+        setActiveTurnIdForThread(threadId, isInProgress ? activeTurnId || null : null)
+        if (!isInProgress) {
+          setTurnActivityForThread(threadId, null)
+          clearLiveReasoningForThread(threadId)
+        }
+      }
       setThreadGoalForState(threadId, nextGoal)
       maybeAutoClearCompletedThreadGoal(threadId, nextGoal)
-      if (!isInProgress) {
-        setTurnActivityForThread(threadId, null)
-        clearLiveReasoningForThread(threadId)
-      }
     } catch {
       // Reconciliation is best-effort; next notification or manual refresh can recover.
     }
@@ -2304,6 +2359,10 @@ export function useDesktopState() {
       loadedMessagesByThreadId.value = omitKey(loadedMessagesByThreadId.value, evicted)
       loadedVersionByThreadId.value = omitKey(loadedVersionByThreadId.value, evicted)
       paginationByThreadId.value = omitKey(paginationByThreadId.value, evicted)
+      appliedTailReadByThreadId.delete(evicted)
+      resetHistoryReadByThreadId.delete(evicted)
+      realtimeMessageVersionByThreadId.delete(evicted)
+      agentMessageVersionByThreadId.delete(evicted)
     }
   }
 
@@ -3090,7 +3149,7 @@ export function useDesktopState() {
       if (!item || item.type !== 'agentMessage') return null
       const id = readString(item.id)
       const text = readRawString(item.text)
-      if (!id || text.length === 0) return null
+      if (!id || typeof item.text !== 'string') return null
       return {
         id,
         role: 'assistant',
@@ -3460,6 +3519,7 @@ export function useDesktopState() {
       const status = asRecord(pick(params ?? {}, 'status', 'status'))
       const statusType = readString(status?.type)
       if (threadId && statusType) {
+        realtimeMessageVersionByThreadId.set(threadId, ++historyReadSequence)
         const isActive = statusType === 'active'
         setThreadInProgress(threadId, isActive)
         if (!isActive) {
@@ -3489,6 +3549,7 @@ export function useDesktopState() {
 
     const startedTurn = readTurnStartedInfo(notification)
     if (startedTurn) {
+      realtimeMessageVersionByThreadId.set(startedTurn.threadId, ++historyReadSequence)
       promoteThreadForActivity(startedTurn.threadId, new Date(startedTurn.startedAtMs).toISOString())
       pendingTurnStartsById.set(startedTurn.turnId, startedTurn)
       rememberRealtimeTurnIndex(startedTurn.threadId, startedTurn.turnId)
@@ -3504,6 +3565,7 @@ export function useDesktopState() {
 
     const completedTurn = readTurnCompletedInfo(notification)
     if (completedTurn) {
+      realtimeMessageVersionByThreadId.set(completedTurn.threadId, ++historyReadSequence)
       const startedTurnState = pendingTurnStartsById.get(completedTurn.turnId)
       if (startedTurnState) {
         pendingTurnStartsById.delete(completedTurn.turnId)
@@ -3552,10 +3614,14 @@ export function useDesktopState() {
 
     const liveAgentMessageDelta = readAgentMessageDelta(notification)
     if (liveAgentMessageDelta) {
+      recordAgentMessageVersion(notificationThreadId, liveAgentMessageDelta.messageId)
       const existing = (liveAgentMessagesByThreadId.value[notificationThreadId] ?? [])
         .find((message) => message.id === liveAgentMessageDelta.messageId)
+        ?? (persistedMessagesByThreadId.value[notificationThreadId] ?? [])
+          .find((message) => message.id === liveAgentMessageDelta.messageId)
       const nextText = `${existing?.text ?? ''}${liveAgentMessageDelta.delta}`
       upsertLiveAgentMessage(notificationThreadId, {
+        ...existing,
         ...withRealtimeItemOrder(notificationThreadId, notificationTurnId, {
           id: liveAgentMessageDelta.messageId,
           role: 'assistant',
@@ -3567,6 +3633,7 @@ export function useDesktopState() {
 
     const completedAgentMessage = readAgentMessageCompleted(notification)
     if (completedAgentMessage) {
+      recordAgentMessageVersion(notificationThreadId, completedAgentMessage.id)
       upsertLiveAgentMessage(notificationThreadId, withRealtimeItemOrder(notificationThreadId, notificationTurnId, completedAgentMessage))
       scheduleInProgressReconcile(notificationThreadId)
     }
@@ -3877,11 +3944,14 @@ export function useDesktopState() {
         }
       }
 
+      const readId = ++historyReadSequence
       const [page, nextGoal] = await Promise.all([
         getThreadMessagesWithStatus(threadId, { limit: THREAD_MESSAGE_PAGE_SIZE }),
         getThreadGoal(threadId).catch(() => null),
       ])
-      const { messages: nextMessages, isInProgress, activeTurnId, turnSummaries } = page
+      if (!acceptHistoryRead(threadId, readId)) return
+      const { isInProgress, activeTurnId, turnSummaries } = page
+      const nextMessages = preserveObservedAgentText(threadId, page.messages, readId, isInProgress)
       const previousPersisted = persistedMessagesByThreadId.value[threadId] ?? []
       const mergedMessages = mergeServerMessagesPreservingOptimistic(previousPersisted, nextMessages, {
         preserveMissing: options.silent === true || alreadyLoaded,
@@ -3912,13 +3982,13 @@ export function useDesktopState() {
           [threadId]: version,
         }
       }
-      setThreadInProgress(threadId, isInProgress)
-      if (isInProgress) {
-        if (activeTurnId) {
-          setActiveTurnIdForThread(threadId, activeTurnId)
+      if (historyHasCurrentRuntimeState(threadId, readId)) {
+        setThreadInProgress(threadId, isInProgress)
+        if (isInProgress) {
+          if (activeTurnId) setActiveTurnIdForThread(threadId, activeTurnId)
+        } else {
+          setActiveTurnIdForThread(threadId, null)
         }
-      } else {
-        setActiveTurnIdForThread(threadId, null)
       }
       setThreadGoalForState(threadId, nextGoal)
       maybeAutoClearCompletedThreadGoal(threadId, nextGoal)
@@ -3942,10 +4012,12 @@ export function useDesktopState() {
     earlierLoadErrorByThreadId.value = omitKey(earlierLoadErrorByThreadId.value, threadId)
 
     try {
+      const readId = ++historyReadSequence
       const page = await getThreadMessagesWithStatus(threadId, {
         beforeTurnIndex: pagination.startTurnIndex,
         limit: THREAD_MESSAGE_PAGE_SIZE,
       })
+      if (!acceptHistoryRead(threadId, readId, true)) return
       const previous = persistedMessagesByThreadId.value[threadId] ?? []
       const merged = mergeServerMessagesPreservingOptimistic(previous, page.messages, {
         preserveMissing: true,
@@ -4474,6 +4546,9 @@ export function useDesktopState() {
     error.value = ''
     try {
       const nextMessages = await rollbackThread(threadId, numTurns)
+      // Explicit rollback is authoritative; a read started before it completed
+      // must not restore removed turns, even if its response arrives later.
+      resetHistoryReadByThreadId.set(threadId, ++historyReadSequence)
       setPersistedMessagesForThread(threadId, nextMessages)
       setLiveAgentMessagesForThread(threadId, [])
       clearLiveReasoningForThread(threadId)
@@ -4805,11 +4880,14 @@ export function useDesktopState() {
 
             const threadId = selectedThreadId.value
             if (threadId) {
+              const readId = ++historyReadSequence
               const [page, goal] = await Promise.all([
                 getThreadMessagesWithStatus(threadId),
                 getThreadGoal(threadId).catch(() => null),
               ])
-              const { messages, isInProgress, activeTurnId, turnSummaries } = page
+              if (!acceptHistoryRead(threadId, readId)) return
+              const { isInProgress, activeTurnId, turnSummaries } = page
+              const messages = preserveObservedAgentText(threadId, page.messages, readId, isInProgress)
               const previous = persistedMessagesByThreadId.value[threadId] ?? []
               const merged = mergeServerMessagesPreservingOptimistic(previous, messages, { preserveMissing: true })
               setPersistedMessagesForThread(threadId, merged)
@@ -4822,13 +4900,13 @@ export function useDesktopState() {
               removeLiveCommandsPersistedIn(threadId, messages)
               removeLiveToolMessagesPersistedIn(threadId, messages)
 
-              setThreadInProgress(threadId, isInProgress)
-              if (isInProgress) {
-                if (activeTurnId) {
-                  setActiveTurnIdForThread(threadId, activeTurnId)
+              if (historyHasCurrentRuntimeState(threadId, readId)) {
+                setThreadInProgress(threadId, isInProgress)
+                if (isInProgress) {
+                  if (activeTurnId) setActiveTurnIdForThread(threadId, activeTurnId)
+                } else {
+                  setActiveTurnIdForThread(threadId, null)
                 }
-              } else {
-                setActiveTurnIdForThread(threadId, null)
               }
               setThreadGoalForState(threadId, goal)
               maybeAutoClearCompletedThreadGoal(threadId, goal)
@@ -4904,6 +4982,11 @@ export function useDesktopState() {
     liveTurnIndexByTurnId.clear()
     liveItemIndexByItemKey.clear()
     liveItemCounterByTurnKey.clear()
+    historyReadReset = ++historyReadSequence
+    appliedTailReadByThreadId.clear()
+    resetHistoryReadByThreadId.clear()
+    realtimeMessageVersionByThreadId.clear()
+    agentMessageVersionByThreadId.clear()
     persistedMessagesByThreadId.value = {}
     recentMessageThreadIds.length = 0
     paginationByThreadId.value = {}

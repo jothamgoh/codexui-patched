@@ -56,6 +56,36 @@ try {
  await page.locator('.conversation-list').evaluate(el=>el.scrollTop=0);await page.getByText('Request 0',{exact:true}).waitFor();
  await page.getByRole('button',{name:'Scroll to bottom',exact:true}).click();await page.waitForTimeout(400);
  assert.ok((await page.locator('.message-body').count())<100);
+ // Latest text must remain inside the actual scroll viewport after history
+ // remounts, resize, chat switching and a burst of live items.
+ const assertLatestVisible=async()=>{
+   await page.waitForFunction(()=>{
+     const list=document.querySelector('.conversation-list');
+     const rows=[...list.querySelectorAll('.conversation-item')];
+     const last=rows.at(-1);
+     const body=last?.querySelector('.message-body');
+     if(!body?.textContent?.trim()) return false;
+     const a=body.getBoundingClientRect(),b=list.getBoundingClientRect();
+     return a.bottom>b.top && a.top<b.bottom && list.scrollHeight-list.scrollTop-list.clientHeight<24;
+   },null,{timeout:5000});
+ };
+ await assertLatestVisible();
+ for(const width of [390,1100]) {
+   await page.setViewportSize({width,height:844});
+   for(let i=0;i<3;i++) {
+     await page.locator('.conversation-list').evaluate(el=>el.scrollTop=0);
+     await page.waitForTimeout(80);
+     await page.locator('.conversation-list').evaluate(el=>el.scrollTop=el.scrollHeight);
+     await assertLatestVisible();
+   }
+ }
+ await page.evaluate(()=>{fixture.activeThreadId='changed-chat';fixture.messages=fixture.messages.slice(-70)});
+ await assertLatestVisible();
+ await page.evaluate(()=>{fixture.messages=[...fixture.messages,...Array.from({length:35},(_,i)=>({id:'burst-'+i,role:'assistant',text:'New live result '+i,turnId:'burst-turn'}))]});
+ await assertLatestVisible();
+ await page.evaluate(()=>fixture.activeThreadId='chat-1');
+ await assertLatestVisible();
+ results.bottomRendering={resize:true,historyRemount:true,chatSwitch:true,liveBurst:true};
  // Use the visible native selection interaction before dictating an annotation.
  const selectLastAnswer=async()=>{
    await page.locator('[data-response-selection-surface]').last().evaluate(surface=>{

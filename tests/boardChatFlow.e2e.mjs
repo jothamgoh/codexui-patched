@@ -55,6 +55,7 @@ try {
     let pending = []
     let history = []
     let failReply = true
+    let failFirstStart = true
     let holdReply = false
     let releaseReply
     let failStop = true
@@ -63,6 +64,18 @@ try {
       for (const stream of window.fixtureStreams) stream.onmessage?.({ data: JSON.stringify({ method, params }) })
     }, { method, params })
     const publish = async () => { snapshot = await store.read(); await notify('codexui/projectBoards/updated', snapshot) }
+    const publishNativeAlert = async (request) => {
+      const occurredAt = new Date().toISOString()
+      const event = { id: `project-board-native:${request.params.threadId}:${request.params.turnId}:${request.id}`, kind: 'native_request', boardId: board.id, featureId, cardId: featureId, threadId: request.params.threadId, requestId: request.id, requestKind: 'approval', occurredAt }
+      history.unshift({ id: event.id, threadId: `project-board:${board.id}:${featureId}`, turnId: event.id, status: 'native_request', title: 'Lead needs your approval', body: 'Open the Lead chat to review the request and continue.', completedAt: occurredAt, readAt: null, projectBoard: event })
+      await notify('codexui/projectBoards/notification', event)
+    }
+    const resolveNativeRequest = async (request, mode) => {
+      const resolvedAtIso = new Date().toISOString()
+      history = history.map((item) => item.projectBoard?.requestId === request.id ? { ...item, status: 'resolved', readAt: resolvedAtIso, body: 'This Lead request has been resolved.' } : item)
+      await notify('server/request/resolved', { id: request.id, method: request.method, threadId: request.params.threadId, mode, resolvedAtIso })
+      await notify('codexui/projectBoards/historyUpdated', {})
+    }
     await page.addInitScript(({ project, sourceId }) => {
       localStorage.setItem('codex-web-local.new-thread-cwd.v1', project)
       localStorage.setItem('codex-web-local.theme.v1', 'dark')
@@ -90,6 +103,7 @@ try {
         }
         if (path === `/codex-api/project-board-cards/${featureId}/start`) {
           mutations.push({ kind: 'start', input })
+          if (failFirstStart) { failFirstStart = false; return json({ error: 'The feature was saved, but its Lead could not start. Retry safely.' }, 503) }
           const started = await store.startRun(featureId, 'builtin-lead', input.mode)
           runId = started.run.id
           const startedThreadId = mutations.filter((item) => item.kind === 'create').length === 1 ? leadId : `second-lead-${label}`
@@ -110,7 +124,7 @@ try {
           snapshot = await store.failRun(run.id, 'Stopped by you. Review partial work before continuing.', 'interrupted')
           const cancelled = pending.filter((item) => item.params.threadId === run.threadId)
           pending = pending.filter((item) => item.params.threadId !== run.threadId)
-          for (const request of cancelled) await notify('server/request/resolved', { id: request.id, method: request.method, threadId: run.threadId, mode: 'cancelled', resolvedAtIso: new Date().toISOString() })
+          for (const request of cancelled) await resolveNativeRequest(request, 'cancelled')
           await notify('turn/completed', { threadId: run.threadId, turn: { id: `${run.threadId}-turn`, status: 'interrupted', items: [] } })
           return json({ data: snapshot })
         }
@@ -128,7 +142,7 @@ try {
         if (path === '/codex-api/transcribe') return json({ text: brief })
         if (path === '/codex-api/project-board-models') return json({ data: { defaultModel: 'build-model', defaultReasoningEffort: 'high', models: [{ id: 'build-model', label: 'Build model', reasoningEfforts: ['medium', 'high'], defaultReasoningEffort: 'high' }] } })
         if (path === '/codex-api/server-requests') return json({ requests: pending })
-        if (path === '/codex-api/server-requests/respond') { pending = pending.filter((item) => item.id !== input.id); return json({ ok: true }) }
+        if (path === '/codex-api/server-requests/respond') { const resolved = pending.find((item) => item.id === input.id); pending = pending.filter((item) => item.id !== input.id); if (resolved) await resolveNativeRequest(resolved, 'manual'); return json({ ok: true }) }
         if (path === '/codex-api/push/history') return json({ data: { items: history, unreadCount: history.filter((item) => !item.readAt).length, dismissals: [] } })
         if (path === '/codex-api/push/history/read') { history = history.map((item) => input.all || input.threadId === item.threadId || input.ids?.includes(item.id) ? { ...item, readAt: new Date().toISOString() } : item); return json({ data: { items: history, unreadCount: history.filter((item) => !item.readAt).length, dismissals: [] } }) }
         if (path === '/codex-api/push/config') return json({ data: { supported: false, publicKey: '' } })
@@ -168,7 +182,11 @@ try {
       assert.equal(await dialog.evaluate((element) => element.scrollWidth <= element.clientWidth), true)
       await page.screenshot({ path: join(output, `track-feature-${label}.png`), fullPage: true })
       await dialog.getByRole('button', { name: 'Create feature & plan', exact: true }).click()
+      await dialog.getByRole('alert').filter({ hasText: 'The feature was saved, but its Lead could not start. Retry safely.' }).waitFor()
+      assert.equal((await store.read()).cards.filter((item) => item.type === 'feature').length, 1)
+      await dialog.getByRole('button', { name: 'Retry opening chat', exact: true }).click()
       await page.waitForURL(`**/#/thread/${leadId}`)
+      assert.equal(mutations.filter((item) => item.kind === 'create').length, 1, 'A failed start must reuse the already saved feature')
       const tracked = page.getByRole('region', { name: 'Tracked work', exact: true })
       const openOriginal = async () => {
         const button = tracked.getByRole('button', { name: 'Original chat', exact: true })
@@ -196,8 +214,10 @@ try {
       await openOriginal()
       pending = [{ id: 811, method: 'item/commandExecution/requestApproval', params: { threadId: leadId, turnId: `${leadId}-turn`, itemId: 'approval', command: 'npm test', cwd: project, reason: 'Run the combined checks.' } }]
       await notify('server/request', pending[0])
+      await publishNativeAlert(pending[0])
       await page.locator('button[aria-label^="Notifications:"]').click()
       await activity.getByText('Approval needed', { exact: true }).waitFor()
+      assert.equal(await activity.getByText('Approval needed', { exact: true }).count(), 1, 'Durable native alert and live request share one Activity row')
       assert.equal(await activity.getByText('Running', { exact: true }).count(), 0, 'Waiting Lead must not also appear as working')
       await page.screenshot({ path: join(output, `board-approval-${label}.png`), fullPage: true })
       await activity.getByRole('button').filter({ hasText: 'Approval needed' }).click()
@@ -311,19 +331,27 @@ try {
 
       pending = [{ id: 812, method: 'item/commandExecution/requestApproval', params: { threadId: `second-lead-${label}`, turnId: `second-lead-${label}-turn`, itemId: 'second-approval', command: 'npm test', cwd: project, reason: 'Verify the feature before continuing.' } }]
       await notify('server/request', pending[0])
+      await publishNativeAlert(pending[0])
+      await page.getByRole('button', { name: 'Stop', exact: true }).click()
+      await page.getByRole('alert').filter({ hasText: 'The stop request could not reach the server. Try again.' }).waitFor()
       await tracked.getByRole('button', { name: 'View board', exact: true }).click()
+      await page.getByTestId('project-board').getByRole('button', { name: '1 need you', exact: true }).click()
+      await page.getByTestId('board-inbox').getByText('Approval needed', { exact: true }).waitFor()
+      await page.getByTestId('board-inbox').getByRole('button', { name: 'Review in Lead chat', exact: true }).click()
+      await page.waitForURL(`**/#/thread/second-lead-${label}`)
+      await tracked.getByRole('button', { name: 'View board', exact: true }).click()
+      await page.getByRole('tab', { name: 'Board', exact: true }).click()
       await page.locator('.board-card-main').filter({ hasText: 'Add a compact status summary' }).click()
       const detail = page.getByTestId('feature-detail')
       await detail.getByRole('region', { name: 'Lead request', exact: true }).getByText('Approval needed', { exact: true }).waitFor()
       await detail.getByText('The Lead is waiting for you. Open its chat to review the request, or stop this run.', { exact: true }).waitFor()
       await detail.getByText('Stop the run before deleting. Your code files are kept.', { exact: true }).waitFor()
       assert.equal(await detail.getByRole('button', { name: 'Delete feature', exact: true }).isDisabled(), true, 'Active work must stop before its record can be deleted')
-      await detail.getByRole('button', { name: 'Stop run', exact: true }).click()
-      await detail.getByRole('alert').filter({ hasText: 'The stop request could not reach the server. Try again.' }).waitFor()
       assert.equal(await detail.getByRole('button', { name: 'Delete feature', exact: true }).isDisabled(), true, 'A rejected stop must keep the active feature protected')
       await detail.getByRole('button', { name: 'Stop run', exact: true }).click()
       await detail.getByRole('button', { name: 'Stop run', exact: true }).waitFor({ state: 'hidden' })
       await detail.getByRole('region', { name: 'Lead request', exact: true }).waitFor({ state: 'hidden' })
+      await detail.getByRole('button', { name: 'Delete feature', exact: true }).and(page.locator('button:enabled')).waitFor()
       assert.equal(await detail.getByRole('button', { name: 'Delete feature', exact: true }).isEnabled(), true)
       assert.equal((await store.read()).runs.find((item) => item.cardId === featureId).status, 'interrupted')
       await page.screenshot({ path: join(output, `stopped-feature-${label}.png`), fullPage: true })

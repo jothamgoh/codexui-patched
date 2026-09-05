@@ -281,4 +281,12 @@ test('records selected feature results quietly and sends one final batch summary
   assert.deepEqual(harness.boardTelegram.map((event) => event.kind), ['batch_completed'])
   assert.deepEqual(harness.boardPublished.map(({ params }) => params.kind), ['completed', 'batch_completed'])
   harness.router.dispose()
+
+  const paused = createHarness({ readThread: async () => ({}), readProjectBoards: async () => baseline })
+  paused.emit({ method: 'codexui/projectBoards/updated', params: { ...baseline, queues: [{ ...baseline.queues[0], status: 'paused' }] } })
+  paused.emit({ method: 'codexui/projectBoards/updated', params: next })
+  await delay(15)
+  assert.equal(paused.boardPush[0].quiet, undefined, 'Pausing the queue must restore an alert when its active feature finishes')
+  assert.deepEqual(paused.boardTelegram.map((event) => event.kind), ['completed'])
+  paused.router.dispose()
 })

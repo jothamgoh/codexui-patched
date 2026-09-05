@@ -123,7 +123,13 @@ export function createTurnNotificationRouter(
   }
 
   const observeBoardSnapshot = (snapshot: ProjectBoardSnapshot): void => {
-    if (disposed || (boardSnapshot && snapshot.version <= boardSnapshot.version)) return
+    if (disposed || (boardSnapshot && snapshot.version < boardSnapshot.version)) return
+    if (boardSnapshot && snapshot.version === boardSnapshot.version) {
+      // Pausing a runtime queue does not mutate the persisted board version.
+      // Retain its current consent without replaying card/question outcomes.
+      boardSnapshot = { ...boardSnapshot, queues: snapshot.queues }
+      return
+    }
     const events = boardSnapshot ? collectProjectBoardNotifications(boardSnapshot, snapshot) : []
     const openQuestionIds = new Set(snapshot.questions.filter((question) => question.status === 'open').map((question) => question.id))
     const resolvedQuestionIds = (boardSnapshot?.questions ?? [])

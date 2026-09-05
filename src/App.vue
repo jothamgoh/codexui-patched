@@ -208,7 +208,7 @@
               @select-feature="setProjectBoardFeature"
               :actions="{
                 ensureBoard: onEnsureProjectBoard, createBoard: onCreateProjectBoard,
-                updateBoard: updateProjectBoard, createAgent: createProjectBoardAgent,
+                updateBoard: updateProjectBoard, createAgent: createProjectBoardAgent, updateAgent: updateProjectBoardAgent,
                 createCard: onCreateProjectBoardCard, updateCard: updateProjectBoardCard,
                 deleteCard: deleteProjectBoardCard, addComment: onAddProjectBoardComment,
                 answerQuestion: onAnswerProjectBoardQuestion, startFeature: onStartProjectBoardFeature,
@@ -496,6 +496,7 @@ const {
   createBoard: createProjectBoard,
   updateBoard: updateProjectBoard,
   createAgent: createProjectBoardAgent,
+  updateAgent: updateProjectBoardAgent,
   createCard: createProjectBoardCard,
   updateCard: updateProjectBoardCard,
   deleteCard: deleteProjectBoardCard,

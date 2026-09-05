@@ -3,7 +3,7 @@
     <header class="boards-header">
       <div class="boards-heading-copy">
         <h2>Project board</h2>
-        <p>Track larger builds across chats. A Lead plans the work, hands tasks to agents, and pauses here when it needs you.</p>
+        <p>Track larger builds across chats. Choose an agent to lead each feature, bring in other agents, and ask for decisions when needed.</p>
       </div>
       <div class="boards-header-actions">
         <Button type="button" variant="outline" @click="agentDialogOpen = true">
@@ -206,7 +206,7 @@
                   <div>
                     <strong>{{ task.title }}</strong>
                     <p>{{ task.summary || task.progressNote || task.description }}</p>
-                    <small>{{ agentFor(task.assignedAgentId)?.name ?? 'Unassigned' }} · {{ statusLabel(task.status) }}</small>
+                    <small>{{ agentFor(task.assignedAgentId)?.name ?? 'Unassigned' }} · {{ task.taskPurpose === 'verification' ? 'Verification · ' : '' }}{{ statusLabel(task.status) }}</small>
                   </div>
                 </li>
               </ol>
@@ -265,10 +265,11 @@
             <label><span>Done when</span><Textarea v-model="featureDraft.acceptanceCriteria" rows="3" placeholder="The result you expect" /></label>
             <div class="board-form-grid">
               <label><span>Priority</span><select v-model="featureDraft.priority"><option value="low">Low</option><option value="normal">Normal</option><option value="high">High</option><option value="urgent">Urgent</option></select></label>
-              <label><span>Verification</span><select v-model="featureDraft.verificationPolicy"><option value="none">None</option><option value="self">Engineer self-check</option><option value="independent">Independent QA</option><option value="batch">Review later</option></select></label>
-              <label><span>Lead</span><select v-model="featureDraft.assignedAgentId"><option v-for="agent in boardAgents" :key="agent.id" :value="agent.id">{{ agent.name }} · {{ agent.role }}</option></select></label>
+              <label><span>Verification</span><select v-model="featureDraft.verificationPolicy"><option value="none">None</option><option value="self">Self-check</option><option value="independent">Independent verification</option><option value="batch">Review later</option></select></label>
+              <label><span>Lead for this feature</span><select v-model="featureDraft.assignedAgentId" aria-label="Lead for this feature"><option v-if="draftLeadUnavailable" :value="featureDraft.assignedAgentId" disabled>{{ agentFor(featureDraft.assignedAgentId)?.name ?? 'Assigned agent' }} · not on this board</option><option v-for="agent in boardAgents" :key="agent.id" :value="agent.id">{{ agent.name }}</option></select></label>
             </div>
-            <p class="verification-help">Run combined checks once the feature is ready. Review later leaves completed work waiting for manual review.</p>
+            <p v-if="draftLeadUnavailable" class="boards-alert">Choose another Lead or enable the assigned agent in the Agent library.</p>
+            <p class="verification-help">{{ verificationHelp[featureDraft.verificationPolicy] }}</p>
             <footer><Button type="button" variant="ghost" @click="featureDialogOpen = false">Cancel</Button><Button type="submit" :disabled="isMutating || !featureDraft.title.trim()">{{ editingCardId ? 'Save feature' : 'Create feature' }}</Button></footer>
           </form>
         </DialogContent>
@@ -294,25 +295,33 @@
       <DialogPortal>
         <DialogOverlay class="board-dialog-backdrop" />
         <DialogContent aria-modal="true" class="board-dialog agent-dialog" :aria-describedby="undefined" @open-auto-focus="rememberFocus('agents')" @close-auto-focus="restoreFocus('agents', $event)">
-          <header><div><DialogTitle>Agent library</DialogTitle><p>Boards reuse these role templates. The Lead passes the right instructions to native Codex subagents.</p></div><Button type="button" variant="ghost" size="icon-sm" aria-label="Close" @click="agentDialogOpen = false"><X /></Button></header>
+          <header><div><DialogTitle>Agent library</DialogTitle><p>Reusable agent profiles. Any agent can lead a feature or work on its tasks.</p></div><Button type="button" variant="ghost" size="icon-sm" aria-label="Close" @click="agentDialogOpen = false"><X /></Button></header>
           <p v-if="error" class="boards-alert" role="alert">{{ error }}</p>
           <p class="agent-access-note">Access is shared by the Lead and its subagents. If any selected agent can edit, read-only role instructions are guidance, not separate sandbox restrictions.</p>
           <div class="agent-dialog-body">
             <section>
-              <h3>On this board</h3>
-              <label v-for="agent in snapshot.agents" :key="agent.id" class="agent-row">
-                <input :checked="activeBoard?.agentIds.includes(agent.id)" type="checkbox" :disabled="isMutating || !activeBoard || (activeBoard.agentIds.length === 1 && activeBoard.agentIds.includes(agent.id))" @change="toggleBoardAgent(agent.id, $event)" />
+              <h3>Available agents <span class="agent-help">· {{ boardAgents.length }} on this board</span></h3>
+              <p class="agent-help">Checked agents are available on this board. Membership saves immediately.</p>
+              <Input v-model="agentSearch" aria-label="Find an agent" placeholder="Find an agent" class="agent-search" />
+              <p v-if="filteredAgents.length === 0" class="agent-help">No agents match your search.</p>
+              <div v-for="agent in filteredAgents" :key="agent.id" class="agent-row" :class="{ 'is-editing': editingAgentId === agent.id }">
+                <input :id="`board-agent-${agent.id}`" :checked="activeBoard?.agentIds.includes(agent.id)" type="checkbox" :disabled="isMutating || !activeBoard || (activeBoard.agentIds.length === 1 && activeBoard.agentIds.includes(agent.id))" @change="toggleBoardAgent(agent.id, $event)" />
                 <span class="agent-avatar">{{ agent.name.slice(0, 1).toUpperCase() }}</span>
-                <span><strong>{{ agent.name }}</strong><small>{{ agent.role }} · {{ agent.sandbox === 'workspace-write' ? 'requests project edits' : 'read-only instructions' }}</small><p>{{ agent.description }}</p></span>
-              </label>
+                <label :for="`board-agent-${agent.id}`"><strong>{{ agent.name }}</strong><small>{{ agent.role }} · {{ agent.sandbox === 'workspace-write' ? 'requests project edits' : 'read-only instructions' }}</small><p>{{ agent.description }}</p></label>
+                <Button type="button" variant="ghost" size="sm" :disabled="isMutating || agentDraftIsDirty" :aria-label="`${agent.builtIn ? 'Customize' : 'Edit'} ${agent.name}`" @click="editAgent(agent)">{{ agent.builtIn ? 'Customize' : 'Edit' }}</Button>
+              </div>
             </section>
-            <form class="new-agent-form" @submit.prevent="createAgent">
-              <h3>Add your own agent</h3>
-              <label><span>Name</span><Input v-model="agentDraft.name" required placeholder="Accessibility reviewer" /></label>
-              <div class="board-form-grid"><label><span>Role</span><select v-model="agentDraft.role"><option value="custom">Custom</option><option value="product">Product</option><option value="design">Design</option><option value="engineering">Engineering</option><option value="qa">QA</option><option value="lead">Lead</option></select></label><label><span>Access</span><select v-model="agentDraft.sandbox"><option value="read-only">Read only</option><option value="workspace-write">Can edit project</option></select></label></div>
-              <label><span>Description</span><Input v-model="agentDraft.description" placeholder="What this specialist is for" /></label>
-              <label><span>Instructions</span><Textarea v-model="agentDraft.instructions" required rows="4" placeholder="How this agent should work" /></label>
-              <Button type="submit" size="sm" :disabled="isMutating"><Plus aria-hidden="true" /> Add agent</Button>
+            <form ref="agentEditor" class="new-agent-form" @submit.prevent="createAgent">
+              <h3>{{ editingAgentId ? 'Edit agent' : copyingAgentName ? `Customize ${copyingAgentName}` : 'Add your own agent' }}</h3>
+              <p v-if="agentFeedback" role="status" class="agent-help">{{ agentFeedback }}</p>
+              <label><span>Name</span><Input v-model="agentDraft.name" maxlength="120" required placeholder="Accessibility reviewer" /></label>
+              <div class="board-form-grid"><label><span>Specialty</span><select v-model="agentDraft.role" aria-label="Specialty"><option value="custom">Custom</option><option value="product">Product</option><option value="design">Design</option><option value="engineering">Engineering</option><option value="qa">QA</option><option value="lead">Coordination</option></select></label><label><span>Access</span><select v-model="agentDraft.sandbox" aria-label="Access" :disabled="editingAgentAccessLocked"><option value="read-only">Read only</option><option value="workspace-write">Can edit project</option></select></label></div>
+              <p v-if="editingAgentAccessLocked" class="agent-help">This agent has assigned work. Make a copy to change its access.</p>
+              <label><span>Description</span><Input v-model="agentDraft.description" maxlength="500" placeholder="What this specialist is for" /></label>
+              <label><span>Instructions</span><Textarea v-model="agentDraft.instructions" class="agent-instructions" maxlength="20000" required rows="9" placeholder="Describe the agent’s expertise, how it should work, and when it should ask for help." /></label>
+              <p class="agent-help">This is the agent’s prompt. Saved changes apply when a feature starts or continues. New agents are added to this board.</p>
+              <p v-if="agentDraftIsDirty" class="agent-draft-note">Unsaved changes. Save or cancel before choosing another agent.</p>
+              <div class="boards-header-actions"><Button type="submit" size="sm" :disabled="isMutating || !agentDraftIsDirty || !agentDraft.name.trim() || !agentDraft.instructions.trim()">{{ editingAgentId ? 'Save agent' : copyingAgentName ? 'Create copy' : 'Add agent' }}</Button><Button v-if="editingAgentId || agentDraftIsDirty" type="button" variant="ghost" size="sm" :disabled="isMutating" @click="resetAgentEditor">Cancel</Button><Button v-if="editingAgentId && !agentDraftIsDirty" type="button" variant="ghost" size="sm" :disabled="isMutating" @click="copyEditingAgent">Make a copy</Button></div>
             </form>
           </div>
         </DialogContent>
@@ -336,7 +345,7 @@
 </template>
 
 <script setup lang="ts">
-import { computed, reactive, ref, watch } from 'vue'
+import { computed, nextTick, reactive, ref, watch } from 'vue'
 import { useMediaQuery } from '@vueuse/core'
 import { DialogRoot, DialogPortal, DialogOverlay, DialogContent, DialogTitle } from 'reka-ui'
 import {
@@ -357,7 +366,7 @@ import {
   Users,
   X,
 } from '@lucide/vue'
-import type { ProjectBoardUpdateInput, ProjectBoardCardUpdateInput } from '../../api/projectBoards'
+import type { ProjectBoardUpdateInput, ProjectBoardCardUpdateInput, ProjectBoardAgentUpdateInput } from '../../api/projectBoards'
 import Button from '../ui/button/Button.vue'
 import Input from '../ui/input/Input.vue'
 import Textarea from '../ui/textarea/Textarea.vue'
@@ -380,6 +389,7 @@ type BoardActions = {
   createBoard: (input: { projectPath: string; projectName: string; name: string; isDefault: boolean }) => Promise<unknown>
   updateBoard: (boardId: string, changes: ProjectBoardUpdateInput) => Promise<unknown>
   createAgent: (input: ProjectBoardAgentCreateInput) => Promise<unknown>
+  updateAgent: (agentId: string, changes: ProjectBoardAgentUpdateInput) => Promise<unknown>
   createCard: (input: ProjectBoardCardCreateInput) => Promise<unknown>
   updateCard: (cardId: string, changes: ProjectBoardCardUpdateInput) => Promise<unknown>
   deleteCard: (cardId: string) => Promise<unknown>
@@ -430,6 +440,11 @@ const featureDialogOpen = ref(false)
 const editingCardId = ref('')
 const boardDialogOpen = ref(false)
 const agentDialogOpen = ref(false)
+const editingAgentId = ref('')
+const copyingAgentName = ref('')
+const agentSearch = ref('')
+const agentFeedback = ref('')
+const agentEditor = ref<HTMLFormElement | null>(null)
 const boardName = ref('')
 const boardIsDefault = ref(false)
 const questionAnswer = ref('')
@@ -453,7 +468,23 @@ const agentDraft = reactive({
   description: '',
   instructions: '',
   sandbox: 'read-only',
+  model: '',
+  reasoningEffort: 'high' as ProjectBoardAgent['reasoningEffort'],
 })
+const initialAgentDraft = ref(JSON.stringify(agentDraft))
+const agentDraftIsDirty = computed(() => JSON.stringify(agentDraft) !== initialAgentDraft.value)
+const editingAgentAccessLocked = computed(() => Boolean(editingAgentId.value) && props.snapshot.cards.some((card) => card.assignedAgentId === editingAgentId.value))
+const filteredAgents = computed(() => {
+  const query = agentSearch.value.trim().toLowerCase()
+  return props.snapshot.agents.filter((agent) => `${agent.name} ${agent.role} ${agent.description}`.toLowerCase().includes(query))
+})
+const draftLeadUnavailable = computed(() => Boolean(featureDraft.assignedAgentId) && !boardAgents.value.some((agent) => agent.id === featureDraft.assignedAgentId))
+const verificationHelp: Record<ProjectBoardVerificationPolicy, string> = {
+  none: 'No separate verification step. Use for work that does not need additional checks.',
+  self: 'The agent records combined checks once the feature is ready.',
+  independent: 'A fresh review checks the finished feature after all work tasks. Any suitable agent can perform it.',
+  batch: 'Completed work waits in Review for manual combined verification.',
+}
 
 const projectOptions = computed<ProjectOption[]>(() => {
   const seen = new Set<string>()
@@ -580,6 +611,36 @@ function createFeature(): void {
   () => { featureDialogOpen.value = false })
 }
 
+function resetAgentEditor(): void {
+  editingAgentId.value = ''
+  copyingAgentName.value = ''
+  agentFeedback.value = ''
+  Object.assign(agentDraft, { name: '', description: '', instructions: '', role: 'custom', sandbox: 'read-only', model: '', reasoningEffort: 'high' })
+  initialAgentDraft.value = JSON.stringify(agentDraft)
+}
+
+function editAgent(agent: ProjectBoardAgent, copy = agent.builtIn): void {
+  if (agentDraftIsDirty.value) return
+  resetAgentEditor()
+  editingAgentId.value = copy ? '' : agent.id
+  copyingAgentName.value = copy ? agent.name : ''
+  Object.assign(agentDraft, {
+    name: copy ? `${agent.name} copy` : agent.name,
+    description: agent.description, instructions: agent.instructions,
+    role: agent.role, sandbox: agent.sandbox, model: agent.model, reasoningEffort: agent.reasoningEffort,
+  })
+  if (!copy) initialAgentDraft.value = JSON.stringify(agentDraft)
+  void nextTick(() => {
+    agentEditor.value?.scrollIntoView({ block: 'nearest' })
+    agentEditor.value?.querySelector('input')?.focus({ preventScroll: true })
+  })
+}
+
+function copyEditingAgent(): void {
+  const agent = agentFor(editingAgentId.value)
+  if (agent) editAgent(agent, true)
+}
+
 function createAgent(): void {
   if (!agentDraft.name.trim() || !agentDraft.instructions.trim()) return
   const input = {
@@ -588,8 +649,10 @@ function createAgent(): void {
     sandbox: agentDraft.sandbox as ProjectBoardAgentCreateInput['sandbox'],
     name: agentDraft.name.trim(), instructions: agentDraft.instructions.trim(),
   }
-  void submitMutation(() => props.actions.createAgent(input), () => {
-    Object.assign(agentDraft, { name: '', description: '', instructions: '', role: 'custom', sandbox: 'read-only' })
+  const agentId = editingAgentId.value
+  void submitMutation(() => agentId ? props.actions.updateAgent(agentId, input) : props.actions.createAgent({ ...input, boardId: activeBoard.value?.id }), () => {
+    resetAgentEditor()
+    agentFeedback.value = `${input.name} saved.`
   })
 }
 
@@ -797,17 +860,24 @@ function formatTime(value: string): string { const date = new Date(value); retur
 .board-form footer { @apply flex justify-end gap-2 pt-2; }
 .checkbox-row { @apply flex-row items-center; }
 .checkbox-row input, .agent-row input { @apply h-4 w-4 accent-blue-600; }
-.agent-dialog { @apply max-w-4xl; }
-.agent-dialog-body { @apply grid grid-cols-[1.2fr_1fr] gap-5 p-5; }
+.agent-dialog { @apply max-w-5xl; }
+.agent-dialog > header { position: sticky; top: 0; z-index: 1; background: var(--surface-elevated); }
+.agent-dialog-body { @apply grid grid-cols-[1fr_1.2fr] items-start gap-5 p-5; }
+.agent-dialog-body > section, .new-agent-form { min-width: 0; }
+.agent-search { @apply mb-3; }
 .agent-dialog-body h3 { @apply mt-0 mb-3 text-sm font-semibold; }
-.agent-row { @apply mb-2 grid grid-cols-[auto_auto_1fr] items-start gap-3 rounded-lg border p-3; border-color: var(--border-soft); }
+.agent-row { @apply mb-2 grid grid-cols-[auto_auto_1fr_auto] items-start gap-3 rounded-lg border p-3; border-color: var(--border-soft); }
 .agent-row input { @apply mt-2; }
 .agent-avatar { background: var(--surface-muted); @apply flex h-8 w-8 items-center justify-center rounded-full text-xs font-semibold; }
-.agent-row > span:last-child { @apply min-w-0; }
+.agent-row > label { @apply min-w-0; }
 .agent-row strong { @apply block text-sm; }
 .agent-row small { @apply block text-[11px]; color: var(--text-muted); }
 .agent-row p { @apply mt-1 mb-0 text-xs; color: var(--text-secondary); }
-.new-agent-form { background: var(--surface-muted); @apply space-y-3 rounded-xl p-4; }
+.agent-row.is-editing { border-color: var(--text-muted); background: var(--surface-muted); }
+.agent-help { @apply my-2 text-xs leading-5; color: var(--text-muted); }
+.agent-instructions { min-height: 14rem; field-sizing: fixed; }
+.agent-draft-note { @apply text-xs; color: var(--text-secondary); }
+.new-agent-form { scroll-margin-top: 8rem; background: var(--surface-muted); @apply space-y-3 rounded-xl p-4; }
 
 .question-picker { @apply flex min-w-0 flex-col gap-1 text-xs; }
 .question-picker select { @apply min-w-0 w-full; }

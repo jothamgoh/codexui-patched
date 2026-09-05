@@ -31,6 +31,7 @@ function card(input) {
     status: input.status ?? 'backlog',
     priority: input.priority ?? 'normal',
     verificationPolicy: input.verificationPolicy ?? 'self',
+    taskPurpose: input.taskPurpose ?? 'work',
     assignedAgentId: input.assignedAgentId ?? 'builtin-lead',
     dependencyIds: input.dependencyIds ?? [],
     autoRun: false,
@@ -69,7 +70,7 @@ const snapshot = {
     card({ id: 'feature-done', title: 'Persistent board storage', status: 'done', summary: 'Atomic JSON persistence is complete.', progressNote: 'All tasks complete' }),
     card({ id: 'task-product', parentCardId: 'feature-working', type: 'task', title: 'Write product brief', status: 'done', assignedAgentId: 'builtin-product', summary: 'PRD and acceptance criteria written.' }),
     card({ id: 'task-engineer', parentCardId: 'feature-working', type: 'task', title: 'Build native UI', status: 'working', assignedAgentId: 'builtin-engineer', progressNote: 'Engineer is working' }),
-    card({ id: 'task-qa', parentCardId: 'feature-working', type: 'task', title: 'Validate feature', status: 'backlog', assignedAgentId: 'builtin-qa', dependencyIds: ['task-engineer'], progressNote: 'Waiting for dependencies' }),
+    card({ id: 'task-qa', parentCardId: 'feature-working', type: 'task', taskPurpose: 'verification', title: 'Validate feature', status: 'backlog', assignedAgentId: 'builtin-qa', dependencyIds: ['task-product', 'task-engineer'], progressNote: 'Waiting for dependencies' }),
   ],
   questions: [{
     id: 'question-1',
@@ -195,6 +196,38 @@ try {
   assert.equal(await detail.count(), 0)
   await page.screenshot({ path: join(outputDirectory, 'project-board-overview.png'), fullPage: true })
 
+  // A custom prompt can be saved, edited, and selected to coordinate a feature.
+  await page.getByRole('button', { name: 'Agents', exact: true }).click()
+  const library = page.getByRole('dialog', { name: 'Agent library' })
+  await library.getByLabel('Name', { exact: true }).fill('Release coordinator')
+  await library.getByLabel('Specialty', { exact: true }).selectOption('engineering')
+  await library.getByLabel('Instructions', { exact: true }).fill('Coordinate releases and check the final feature.')
+  await library.getByRole('button', { name: 'Add agent', exact: true }).click()
+  await library.getByRole('button', { name: 'Edit Release coordinator', exact: true }).click()
+  const agentPrompt = library.getByLabel('Instructions', { exact: true })
+  await agentPrompt.fill('Coordinate releases. Use specialists when useful and validate the whole feature.')
+  assert.equal(await library.getByRole('button', { name: 'Customize Engineer', exact: true }).isDisabled(), true, 'Choosing another profile must not discard a dirty prompt')
+  await rejectOnce('project-board-agents/*', 'Agent could not be saved.')
+  await library.getByRole('button', { name: 'Save agent', exact: true }).click()
+  await library.getByRole('alert').getByText('Agent could not be saved.').waitFor()
+  assert.match(await agentPrompt.inputValue(), /validate the whole feature/u)
+  await library.getByRole('button', { name: 'Save agent', exact: true }).click()
+  await library.getByRole('button', { name: 'Add agent', exact: true }).waitFor()
+  await library.getByRole('button', { name: 'Edit Release coordinator', exact: true }).click()
+  assert.match(await agentPrompt.inputValue(), /validate the whole feature/u)
+  const customAgent = await page.evaluate(async () => {
+    const { data } = await (await fetch('/codex-api/project-boards')).json()
+    return data.agents.find((agent) => agent.name === 'Release coordinator')
+  })
+  assert.match(customAgent.instructions, /validate the whole feature/u)
+  await page.screenshot({ path: join(outputDirectory, 'project-board-agent-prompt.png'), fullPage: true })
+  await library.getByRole('button', { name: 'Customize Engineer', exact: true }).click()
+  assert.equal(await library.getByLabel('Name', { exact: true }).inputValue(), 'Engineer copy')
+  assert.match(await agentPrompt.inputValue(), /implementation engineer/u)
+  await library.getByRole('button', { name: 'Create copy', exact: true }).click()
+  await library.getByRole('button', { name: 'Edit Engineer copy', exact: true }).waitFor()
+  await page.keyboard.press('Escape')
+
   const newFeatureButton = page.getByRole('button', { name: 'New feature', exact: true }).first()
   await newFeatureButton.click()
   const form = page.getByTestId('new-feature-form')
@@ -215,8 +248,14 @@ try {
   assert.equal(await newFeatureButton.evaluate((element) => element === document.activeElement), true, 'Closing a modal restores focus')
   await newFeatureButton.click()
   await form.getByPlaceholder('Add project progress board').fill('Dogfood the board')
+  await form.getByLabel('Lead for this feature', { exact: true }).selectOption(customAgent.id)
   await form.getByRole('button', { name: 'Create feature' }).click()
   await detail.getByText('Dogfood the board', { exact: true }).waitFor()
+  const selectedAgentId = await page.evaluate(async () => {
+    const { data } = await (await fetch('/codex-api/project-boards')).json()
+    return data.cards.find((card) => card.title === 'Dogfood the board').assignedAgentId
+  })
+  assert.equal(selectedAgentId, customAgent.id)
 
   // Server owns completion truth; failed moves keep the current value and explain why.
   await detail.locator('.detail-status-select select').selectOption('done')
@@ -287,6 +326,17 @@ try {
   assert.equal(overflow.scrollable, true)
   assert.ok(overflow.documentWidth <= overflow.viewport, 'Only the board lanes may overflow horizontally')
   await page.screenshot({ path: join(outputDirectory, 'project-board-mobile-overview.png'), fullPage: true })
+  await page.getByRole('button', { name: 'Agents', exact: true }).click()
+  await library.getByLabel('Find an agent', { exact: true }).fill('Release coordinator')
+  await library.getByRole('button', { name: 'Edit Release coordinator', exact: true }).click()
+  const agentName = library.getByLabel('Name', { exact: true })
+  await page.waitForFunction(() => document.activeElement === document.querySelector('.new-agent-form input'))
+  const agentNameBounds = await agentName.boundingBox()
+  const libraryHeaderBounds = await library.locator('header').boundingBox()
+  assert.ok(agentNameBounds.y >= libraryHeaderBounds.y + libraryHeaderBounds.height && agentNameBounds.y < 844, 'Mobile Edit brings its form into view below the visible close control')
+  assert.equal(await library.getByLabel('Access', { exact: true }).isDisabled(), true, 'Access is explained and locked once the profile owns work')
+  assert.ok(await library.evaluate((element) => element.scrollWidth <= element.clientWidth), 'Agent library must fit mobile width')
+  await page.screenshot({ path: join(outputDirectory, 'project-board-agent-mobile.png'), fullPage: true })
 
   console.log('Project board smoke passed: seeded questions, preserved drafts, guarded moves, consent transport, scoped routes, dark dialogs, mobile scrolling, and ordinary chat navigation. Lead orchestration is covered separately by the fake service adapter.')
 } catch (error) {

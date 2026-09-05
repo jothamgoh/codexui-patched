@@ -91,6 +91,14 @@ export type ToolCallData = {
   tone?: 'neutral' | 'warning' | 'error'
 }
 
+export type SubAgentActivityData = {
+  threadId: string | null
+  name: string
+  status: 'active' | 'updated' | 'interrupted' | 'completed' | 'unknown'
+  statusLabel: string
+  task: string | null
+}
+
 export type McpAppResultData = {
   server: string
   tool: string
@@ -277,6 +285,7 @@ export type UiMessage = {
   isUnhandled?: boolean
   commandExecution?: CommandExecutionData
   toolCall?: ToolCallData
+  subAgentActivity?: SubAgentActivityData
   mcpApp?: McpAppResultData
   reviewChanges?: ReviewChangesData
   turnId?: string

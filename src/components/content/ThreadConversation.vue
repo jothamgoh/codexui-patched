@@ -179,8 +179,13 @@
               </details>
 
               <article v-if="shouldRenderMessageCard(message)" class="message-card" :data-role="message.role">
+                <SubAgentActivityCard
+                  v-if="message.subAgentActivity"
+                  :activity="message.subAgentActivity"
+                  :parent-thread-id="activeThreadId"
+                />
                 <ReviewChangesCard
-                  v-if="message.messageType === 'turnDiff' && message.reviewChanges && message.turnId"
+                  v-else-if="message.messageType === 'turnDiff' && message.reviewChanges && message.turnId"
                   :changes="message.reviewChanges"
                   :thread-id="activeThreadId"
                   :turn-id="message.turnId"
@@ -659,6 +664,7 @@ import '@fontsource-variable/inter'
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import markdownit from 'markdown-it'
 import ConversationItem from './ConversationItem.vue'
+import SubAgentActivityCard from './SubAgentActivityCard.vue'
 import { MessageSquare, MessageSquarePlus, MessageSquareQuote } from '@lucide/vue'
 import { RouterLink } from 'vue-router'
 import {
@@ -783,7 +789,7 @@ function compactReasoningPreview(text: string): string {
 
 function shouldRenderMessageCard(message: UiMessage): boolean {
   if (message.messageType === 'commandExecution' && message.commandExecution) return true
-  return Boolean(message.reviewChanges) || Boolean(message.mcpApp) || Boolean(message.toolCall) || message.text.length > 0 || shouldRenderDetailsPayload(message)
+  return Boolean(message.subAgentActivity) || Boolean(message.reviewChanges) || Boolean(message.mcpApp) || Boolean(message.toolCall) || message.text.length > 0 || shouldRenderDetailsPayload(message)
 }
 
 function messageDeliveryState(message: UiMessage): 'pending' | 'sent' | 'failed' | '' {
@@ -1047,6 +1053,7 @@ function isMessagePinned(message: UiMessage): boolean {
 
 function estimateMessageHeight(message: UiMessage): number {
   if (message.messageType === 'worked') return 24
+  if (message.subAgentActivity) return message.subAgentActivity.task ? 96 : 64
   if (message.commandExecution || message.toolCall) return 40
   return Math.max(48, Math.min(2000, Math.ceil(message.text.length / 70) * 24 + 32))
 }

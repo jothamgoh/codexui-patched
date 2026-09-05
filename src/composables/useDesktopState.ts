@@ -47,6 +47,7 @@ import {
   type SharedThreadReadState,
 } from '../api/codexGateway'
 import { formatMcpToolCallPresentation, readMcpAppResult } from '../api/toolCallPresentation'
+import { normalizeSubAgentActivity } from '../api/subAgentActivity'
 import type {
   CommandExecutionData,
   McpAppResultData,
@@ -657,6 +658,11 @@ function areMessageFieldsEqual(first: UiMessage, second: UiMessage): boolean {
     first.isUnhandled === second.isUnhandled &&
     areCommandExecutionsEqual(first.commandExecution, second.commandExecution) &&
     areToolCallsEqual(first.toolCall, second.toolCall) &&
+    first.subAgentActivity?.threadId === second.subAgentActivity?.threadId &&
+    first.subAgentActivity?.name === second.subAgentActivity?.name &&
+    first.subAgentActivity?.status === second.subAgentActivity?.status &&
+    first.subAgentActivity?.statusLabel === second.subAgentActivity?.statusLabel &&
+    first.subAgentActivity?.task === second.subAgentActivity?.task &&
     areMcpAppResultsEqual(first.mcpApp, second.mcpApp) &&
     areReviewChangesEqual(first.reviewChanges, second.reviewChanges) &&
     first.turnId === second.turnId &&
@@ -3192,6 +3198,8 @@ export function useDesktopState() {
     item: Record<string, unknown>,
     phase: 'started' | 'completed',
   ): UiMessage | null {
+    const subAgentActivity = normalizeSubAgentActivity(item)
+    if (subAgentActivity) return subAgentActivity
     const itemId = readString(item.id)
     if (!itemId) return null
 

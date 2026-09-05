@@ -16,6 +16,7 @@ import type {
   UiThread,
 } from '../../types/codex'
 import { formatMcpToolCallPresentation, readMcpAppResult } from '../toolCallPresentation'
+import { normalizeSubAgentActivity } from '../subAgentActivity'
 import { buildReviewChanges } from '../../utils/reviewDiff'
 import { parseThreadReferenceMention } from '../../utils/threadReferences'
 
@@ -360,6 +361,8 @@ function parseUserMessageContent(
 function toUiMessages(item: ThreadItem): UiMessage[] {
   const itemType = normalizeThreadItemType(item.type)
   const rawItem = item as Record<string, unknown>
+  const subAgentActivity = normalizeSubAgentActivity(rawItem)
+  if (subAgentActivity) return [subAgentActivity]
 
   // Completed file-change items are represented once by the aggregated turnDiff card.
   // Keeping the raw fallback message as well duplicates the same change in reconciliation.

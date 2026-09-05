@@ -2,11 +2,11 @@
 
 Updated: 2026-09-05
 
-Status: baseline released through `75ceef3`, CI passed, and the user-authorized
-one-shot Terminal restart completed. Local bridge and board API returned HTTP
-200; the public URL redirects to the authenticated gateway. The composable-agent
-and prompt-editor follow-up is implemented and locally verified, ready for its
-commit/push/CI and authorized production restart.
+Status: composable agents and the prompt editor are released through `222b0ac`,
+[CI passed](https://github.com/jothamgoh/codexui-patched/actions/runs/33968139456),
+and the authorized production restart is complete. The new service process is
+running; local bridge and board API returned HTTP 200 with valid JSON, and the
+public URL redirects to the authenticated gateway. No restart remains pending.
 
 ## Goal and scope
 
@@ -141,6 +141,7 @@ execution evidence. Keep those scopes distinct.
 - `0bc76ee`: exact profile assignment, task purpose, and current-board membership.
 - `83b28dd`: current coordinator context on native turns and useful plan IDs.
 - `12e47b1`: searchable prompt editor, starter copies, and responsive UX.
+- `222b0ac`: design references, behavior contract, and real-runtime evidence.
 
 ## Native app comparison
 
@@ -152,13 +153,19 @@ The parity skill records the inspected areas and reusable findings.
 
 ## Exact next step
 
-1. Local checks, screenshots, and real-runtime verification are complete.
-   Review, scan, commit discrete changes, push, and verify CI.
-2. The user has authorized the hosting-session disconnect. After the new backend
-   build and release checks pass, use exactly one independent Terminal restart
-   for this release. Never use a retry wrapper or scheduled helper.
-3. Verify local/public health after reconnecting. Choose further work from actual
-   usage, keeping validation at the feature boundary.
+1. Refresh CodexUI. In Project boards → Agents, customize a starter or create a
+   profile with the desired instructions. Select it as Lead for a feature.
+2. Use one real feature to assess the complete development workflow; record
+   concrete friction and improve it before expanding the framework. Choose a
+   final self-check or fresh independent verification proportional to that work.
+3. Keep validation at the feature boundary. No additional release/restart work
+   is pending for this source change.
+
+The initial Terminal handoff failed before restarting. Process-start evidence
+confirmed no restart occurred. Opening a fresh independent Terminal instance
+ran the same one-shot command successfully; the user confirmed completion and
+post-restart checks verified a new service process. No direct self-restart,
+scheduler, or restart loop was used. Keep machine-specific commands outside Git.
 
 ## Deliberately deferred
 

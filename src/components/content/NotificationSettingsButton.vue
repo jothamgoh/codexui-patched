@@ -3,16 +3,16 @@
     <PopoverTrigger as-child>
       <button
         class="notification-trigger"
-        :data-has-activity="runningThreads.length > 0 || totalAttentionCount > 0"
+        :data-has-activity="runningActivity.length > 0 || totalAttentionCount > 0"
         type="button"
         :aria-label="triggerLabel"
         :title="`${triggerLabel} (⌘J)`"
       >
         <Bell class="notification-trigger-icon" />
-        <span v-if="runningThreads.length > 0 || totalAttentionCount > 0" class="notification-trigger-statuses" aria-hidden="true">
-          <span v-if="runningThreads.length > 0" class="notification-trigger-count is-running">
+        <span v-if="runningActivity.length > 0 || totalAttentionCount > 0" class="notification-trigger-statuses" aria-hidden="true">
+          <span v-if="runningActivity.length > 0" class="notification-trigger-count is-running">
             <LoaderCircle />
-            {{ compactCount(runningThreads.length) }}
+            {{ compactCount(runningActivity.length) }}
           </span>
           <span v-if="totalAttentionCount > 0" class="notification-trigger-count is-unread">
             <Circle />
@@ -97,10 +97,10 @@
 
       <div v-if="activeView === 'activity'" class="notification-activity" role="tabpanel">
         <div v-if="hasVisibleActivity" class="notification-sections">
-          <section v-if="boardAttention.length > 0" class="notification-section">
+          <section v-if="needsYouCount > 0" class="notification-section">
             <div class="notification-section-header">
               <span>Needs you</span>
-              <span class="notification-section-count">{{ boardAttention.length }}</span>
+              <span class="notification-section-count">{{ needsYouCount }}</span>
             </div>
             <button
               v-for="item in boardAttention"
@@ -121,32 +121,51 @@
                 <span v-if="item.prompt" class="notification-row-preview">{{ item.prompt }}</span>
               </span>
             </button>
+            <button
+              v-for="item in requestAttention"
+              :key="`request:${item.threadId}`"
+              class="notification-row"
+              type="button"
+              @click="openThread(item.threadId)"
+            >
+              <span class="notification-row-icon is-failed"><CircleAlert /></span>
+              <span class="notification-row-copy">
+                <span class="notification-row-title-line">
+                  <span class="notification-row-title">{{ item.title }}</span>
+                  <span class="notification-unread-pill">{{ item.label }}</span>
+                </span>
+                <span class="notification-row-meta">
+                  <span>{{ item.board ? 'Project board' : 'Chat' }}</span><span aria-hidden="true">·</span><span>{{ formatRelative(item.receivedAtIso) }}</span>
+                </span>
+                <span class="notification-row-preview">Open the chat to {{ item.label === 'Approval needed' ? 'review and approve or decline.' : 'answer and continue.' }}</span>
+              </span>
+            </button>
           </section>
 
           <template v-if="activityFilter === 'all'">
-            <section v-if="runningThreads.length > 0" class="notification-section">
+            <section v-if="runningActivity.length > 0" class="notification-section">
               <div class="notification-section-header">
                 <span>Running</span>
-                <span class="notification-section-count">{{ runningThreads.length }}</span>
+                <span class="notification-section-count">{{ runningActivity.length }}</span>
               </div>
               <button
-                v-for="thread in runningThreads"
-                :key="`running:${thread.id}`"
+                v-for="item in runningActivity"
+                :key="`running:${item.id}`"
                 class="notification-row"
                 type="button"
-                @click="openThread(thread.id)"
+                @click="openRunningItem(item)"
               >
                 <span class="notification-row-icon is-running">
                   <LoaderCircle />
                 </span>
                 <span class="notification-row-copy">
-                  <span class="notification-row-title">{{ threadTitle(thread) }}</span>
+                  <span class="notification-row-title">{{ item.title }}</span>
                   <span class="notification-row-meta">
-                    <span>In progress</span>
+                    <span>{{ item.board ? 'Board · In progress' : 'In progress' }}</span>
                     <span aria-hidden="true">·</span>
-                    <span>{{ formatRelative(thread.updatedAtIso) }}</span>
-                    <kbd v-if="shortcutNumber(thread.id)" class="notification-shortcut">
-                      ⌘{{ shortcutNumber(thread.id) }}
+                    <span>{{ formatRelative(item.updatedAtIso) }}</span>
+                    <kbd v-if="shortcutNumber(item.id)" class="notification-shortcut">
+                      ⌘{{ shortcutNumber(item.id) }}
                     </kbd>
                   </span>
                 </span>
@@ -254,6 +273,14 @@
                   <MailOpen v-if="item.isUnread" />
                   <Mail v-else />
                   {{ item.isUnread ? 'Mark read' : 'Mark unread' }}
+                </button>
+                <button
+                  v-if="item.projectBoard"
+                  type="button"
+                  @click.stop="openActivityBoard(item.projectBoard)"
+                >
+                  <SquareKanban />
+                  View board
                 </button>
                 <button
                   v-if="activityFilter === 'all' || item.source === 'history'"
@@ -408,6 +435,7 @@ import {
   MailOpen,
   MoreHorizontal,
   Settings2,
+  SquareKanban,
   X,
 } from '@lucide/vue'
 import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover'
@@ -431,10 +459,19 @@ import {
   type TurnNotificationMode,
 } from '../../composables/useWebPushNotifications'
 import { useRelativeTimeClock } from '../../composables/useRelativeTimeClock'
-import type { UiThread } from '../../types/codex'
+import type { UiServerRequest, UiThread } from '../../types/codex'
 import { compactNotificationText } from '../../utils/notificationText'
 import { formatCompactRelativeTime } from '../../utils/relativeTime'
 import { openProjectBoardDeepLink, projectBoardNotificationDeepLink, type ProjectBoardNotification } from '../../utils/projectBoardNotifications'
+import type { ProjectBoardActivity } from '../../utils/projectBoardActivity'
+
+type RunningActivityItem = {
+  id: string
+  threadId: string
+  title: string
+  updatedAtIso: string
+  board?: ProjectBoardActivity
+}
 
 type RecentActivityItem = {
   id: string
@@ -464,6 +501,8 @@ const props = defineProps<{
   activeThreadId: string
   boardThreadIds?: string[]
   boardActivityTitles?: Record<string, string>
+  boardActivity?: ProjectBoardActivity[]
+  pendingRequests?: UiServerRequest[]
   boardAttention: Array<{
     questionId: string
     boardId: string
@@ -519,9 +558,46 @@ const activityThreads = computed(() => {
   const excluded = new Set(props.boardThreadIds ?? [])
   return props.threads.filter((thread) => !excluded.has(thread.id))
 })
-const runningThreads = computed(() => activityThreads.value.filter((thread) => thread.inProgress))
+const requestAttention = computed(() => {
+  const seen = new Set<string>()
+  return (props.pendingRequests ?? []).filter((request) => {
+    if (!request.threadId || seen.has(request.threadId)) return false
+    const board = props.boardActivity?.find((item) => item.threadId === request.threadId)
+    if (board && props.boardAttention.some((item) => item.boardId === board.boardId && item.featureId === board.featureId)) return false
+    seen.add(request.threadId)
+    return true
+  }).map((request) => {
+    const board = props.boardActivity?.find((item) => item.threadId === request.threadId)
+    const thread = props.threads.find((item) => item.id === request.threadId)
+    return {
+      threadId: request.threadId,
+      title: board?.title || (thread ? threadTitle(thread) : 'Chat needs your input'),
+      label: request.method.endsWith('/requestApproval') ? 'Approval needed' : 'Answer needed',
+      receivedAtIso: request.receivedAtIso,
+      board,
+    }
+  })
+})
+const waitingThreadIds = computed(() => new Set(requestAttention.value.map((item) => item.threadId)))
+const needsYouCount = computed(() => props.boardAttention.length + requestAttention.value.length)
+const runningThreads = computed(() => activityThreads.value.filter((thread) => thread.inProgress && !waitingThreadIds.value.has(thread.id)))
+const runningActivity = computed<RunningActivityItem[]>(() => [
+  ...(props.boardActivity ?? []).filter((item) => item.status === 'running' && !waitingThreadIds.value.has(item.threadId)).map((item) => ({
+    id: `board:${item.boardId}:${item.featureId}`,
+    threadId: item.threadId,
+    title: item.title,
+    updatedAtIso: item.updatedAtIso,
+    board: item,
+  })),
+  ...runningThreads.value.map((thread) => ({
+    id: thread.id,
+    threadId: thread.id,
+    title: threadTitle(thread),
+    updatedAtIso: thread.updatedAtIso,
+  })),
+].sort((left, right) => Date.parse(right.updatedAtIso) - Date.parse(left.updatedAtIso)))
 const unreadThreads = computed(() =>
-  activityThreads.value.filter((thread) => isThreadUnread(thread) && !thread.inProgress),
+  activityThreads.value.filter((thread) => isThreadUnread(thread) && !thread.inProgress && !waitingThreadIds.value.has(thread.id)),
 )
 const visibleHistory = computed(() => history.value.filter((item) =>
   !(props.boardThreadIds ?? []).includes(item.threadId) &&
@@ -531,6 +607,7 @@ const currentActivityThreadIds = computed(() =>
   new Set([
     ...runningThreads.value.map((thread) => thread.id),
     ...unreadThreads.value.map((thread) => thread.id),
+    ...waitingThreadIds.value,
   ]),
 )
 const allRecentHistory = computed<RecentActivityItem[]>(() => {
@@ -544,7 +621,7 @@ const allRecentHistory = computed<RecentActivityItem[]>(() => {
       source: 'history',
       status: item.status,
       title: historyItemTitle(item, thread),
-      body: compactNotificationText(item.body, '', 220),
+      body: historyItemBody(item),
       completedAt: item.completedAt,
       isUnread: item.readAt === null || Boolean(thread && isThreadUnread(thread)),
       projectBoard: item.projectBoard,
@@ -581,6 +658,7 @@ const unreadActivity = computed<RecentActivityItem[]>(() => {
   const candidates: RecentActivityItem[] = []
   for (const item of visibleHistory.value) {
     if (item.readAt !== null) continue
+    if (waitingThreadIds.value.has(item.threadId)) continue
     if (dismissedActivityByThreadId.value[item.threadId] === item.completedAt) continue
     const thread = props.threads.find((candidate) => candidate.id === item.threadId)
     candidates.push({
@@ -589,14 +667,14 @@ const unreadActivity = computed<RecentActivityItem[]>(() => {
       source: 'history',
       status: item.status,
       title: historyItemTitle(item, thread),
-      body: compactNotificationText(item.body, '', 220),
+      body: historyItemBody(item),
       completedAt: item.completedAt,
       isUnread: true,
       projectBoard: item.projectBoard,
     })
   }
   for (const thread of activityThreads.value) {
-    if (!isThreadUnread(thread) || thread.inProgress) continue
+    if (!isThreadUnread(thread) || thread.inProgress || waitingThreadIds.value.has(thread.id)) continue
     candidates.push({
       id: `thread:${thread.id}`,
       threadId: thread.id,
@@ -630,7 +708,7 @@ const shortcutThreadIds = computed(() => [
   ...(activityFilter.value === 'unread'
     ? unreadActivity.value.map((item) => item.threadId)
     : [
-      ...runningThreads.value.map((thread) => thread.id),
+      ...runningActivity.value.map((item) => item.id),
       ...unreadThreads.value.map((thread) => thread.id),
       ...recentHistory.value.map((item) => item.threadId),
     ]),
@@ -642,22 +720,22 @@ const canToggleRecentLimit = computed(() =>
   activityFilter.value === 'all' && allRecentHistory.value.length > DEFAULT_RECENT_LIMIT,
 )
 const unreadAttentionCount = computed(() => unreadActivity.value.length)
-const totalAttentionCount = computed(() => unreadAttentionCount.value + props.boardAttention.length)
+const totalAttentionCount = computed(() => unreadAttentionCount.value + needsYouCount.value)
 const hasUnreadActivity = computed(() => unreadActivity.value.length > 0)
 const hasActivity = computed(() =>
-  runningThreads.value.length > 0 ||
+  runningActivity.value.length > 0 ||
   unreadThreads.value.length > 0 ||
   recentHistory.value.length > 0,
 )
 const hasVisibleActivity = computed(() =>
-  props.boardAttention.length > 0 || (activityFilter.value === 'unread' ? hasUnreadActivity.value : hasActivity.value),
+  needsYouCount.value > 0 || (activityFilter.value === 'unread' ? hasUnreadActivity.value : hasActivity.value),
 )
 const activitySummary = computed(() => {
   const parts: string[] = []
-  if (runningThreads.value.length > 0) {
-    parts.push(`${runningThreads.value.length.toString()} running`)
+  if (runningActivity.value.length > 0) {
+    parts.push(`${runningActivity.value.length.toString()} running`)
   }
-  if (props.boardAttention.length > 0) parts.push(`${props.boardAttention.length.toString()} need you`)
+  if (needsYouCount.value > 0) parts.push(`${needsYouCount.value.toString()} need you`)
   if (unreadAttentionCount.value > 0) parts.push(`${unreadAttentionCount.value.toString()} unread`)
   return parts.length > 0 ? parts.join(' · ') : 'No work needs attention'
 })
@@ -869,12 +947,25 @@ function openBoardQuestion(item: { boardId: string; featureId: string; questionI
   emit('selectBoardQuestion', item)
 }
 
+function openRunningItem(item: RunningActivityItem): void {
+  if (item.threadId) openThread(item.threadId)
+  else if (item.board) openActivityBoard(item.board)
+}
+
+function openActivityBoard(item: { boardId: string; featureId: string }): void {
+  isOpen.value = false
+  openProjectBoardDeepLink(projectBoardNotificationDeepLink({ boardId: item.boardId, featureId: item.featureId }))
+}
+
 function openRecentItem(item: RecentActivityItem): void {
   if (Date.now() < suppressRecentClickUntil) return
   if (item.projectBoard) {
     void markThreadHistoryRead(item.threadId)
     isOpen.value = false
-    openProjectBoardDeepLink(projectBoardNotificationDeepLink(item.projectBoard))
+    const activity = boardItemForEvent(item.projectBoard)
+    const threadId = item.projectBoard.threadId || activity?.threadId
+    if (item.projectBoard.kind === 'completed' && threadId) openThread(threadId)
+    else openProjectBoardDeepLink(projectBoardNotificationDeepLink(item.projectBoard))
     return
   }
   openThread(item.threadId)
@@ -885,7 +976,19 @@ function activityStatusLabel(item: RecentActivityItem): string {
   if (item.status === 'question') return 'Question'
   if (item.status === 'answered') return 'Answered'
   if (item.status === 'plan_ready') return 'Plan ready'
+  if (item.status === 'batch_completed') return 'Selected features complete'
   return item.projectBoard ? 'Feature complete' : 'Completed'
+}
+
+function boardItemForEvent(event: ProjectBoardNotification): ProjectBoardActivity | undefined {
+  return props.boardActivity?.find((item) => item.boardId === event.boardId && item.featureId === event.featureId)
+}
+
+function historyItemBody(item: WebPushHistoryItem): string {
+  const activity = item.projectBoard && boardItemForEvent(item.projectBoard)
+  if (item.status === 'failed' && activity?.summary) return compactNotificationText(`${activity.summary} Open the feature to review and continue.`, '', 220)
+  if (item.projectBoard?.kind === 'completed' && (item.projectBoard.threadId || activity?.threadId)) return 'Open the Lead chat to review the result.'
+  return compactNotificationText(item.body, '', 220)
 }
 
 function historyItemTitle(item: WebPushHistoryItem, thread?: UiThread): string {
@@ -915,6 +1018,11 @@ function selectActivityShortcut(index: number): boolean {
   if (!isOpen.value) return false
   const threadId = shortcutThreadIds.value[index]
   if (!threadId) return false
+  const runningItem = runningActivity.value.find((candidate) => candidate.id === threadId)
+  if (runningItem) {
+    openRunningItem(runningItem)
+    return true
+  }
   const item = visibleRecentHistory.value.find((candidate) => candidate.threadId === threadId)
   if (item) openRecentItem(item)
   else openThread(threadId)

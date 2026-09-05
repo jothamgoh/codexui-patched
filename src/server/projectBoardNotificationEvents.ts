@@ -49,6 +49,8 @@ export function collectProjectBoardNotifications(
       boardId: card.boardId,
       featureId: card.id,
       cardId: card.id,
+      ...(card.threadId ? { threadId: card.threadId } : {}),
+      ...(previous.queues?.some((queue) => queue.status === 'running' && queue.boardId === card.boardId && queue.featureIds.includes(card.id)) ? { quiet: true } : {}),
       occurredAt: card.completedAtIso || card.updatedAtIso,
     })
   }

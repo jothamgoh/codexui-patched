@@ -6,7 +6,7 @@ import {
   type CodexThreadAudience,
 } from '../utils/codexThreadSource.js'
 import type { ProjectBoardSnapshot } from '../types/projectBoards'
-import type { ProjectBoardNotification } from '../utils/projectBoardNotifications'
+import { isProjectBoardNotification, type ProjectBoardNotification } from '../utils/projectBoardNotifications'
 import { collectProjectBoardNotifications, projectBoardThreadIds } from './projectBoardNotificationEvents.js'
 
 type BridgeNotification = {
@@ -108,6 +108,20 @@ export function createTurnNotificationRouter(
     return lookup
   }
 
+  const deliverBoardEvent = (event: ProjectBoardNotification): void => {
+    boardDeliveryQueue = boardDeliveryQueue.then(async () => {
+      if (disposed) return
+      // The existing push history is also the durable inbox and dedupe source.
+      const recorded = await options.webPushTurnNotifier.handleProjectBoardNotification?.(event)
+      if (recorded === false) return
+      options.bridge.publishLocalNotification?.('codexui/projectBoards/notification', event)
+      if (!event.quiet) await options.telegramTurnNotifier.handleProjectBoardNotification?.(event)
+    }).catch((error: unknown) => {
+      const message = error instanceof Error ? error.message : String(error)
+      console.warn(`[project-boards] Could not deliver board notification: ${message}`)
+    })
+  }
+
   const observeBoardSnapshot = (snapshot: ProjectBoardSnapshot): void => {
     if (disposed || (boardSnapshot && snapshot.version <= boardSnapshot.version)) return
     const events = boardSnapshot ? collectProjectBoardNotifications(boardSnapshot, snapshot) : []
@@ -130,19 +144,7 @@ export function createTurnNotificationRouter(
         console.warn(`[project-boards] Could not resolve question notification: ${message}`)
       })
     }
-    for (const event of events) {
-      boardDeliveryQueue = boardDeliveryQueue.then(async () => {
-        if (disposed) return
-        // The existing push history is also the durable inbox and dedupe source.
-        const recorded = await options.webPushTurnNotifier.handleProjectBoardNotification?.(event)
-        if (recorded === false) return
-        options.bridge.publishLocalNotification?.('codexui/projectBoards/notification', event)
-        await options.telegramTurnNotifier.handleProjectBoardNotification?.(event)
-      }).catch((error: unknown) => {
-        const message = error instanceof Error ? error.message : String(error)
-        console.warn(`[project-boards] Could not deliver board notification: ${message}`)
-      })
-    }
+    for (const event of events) deliverBoardEvent(event)
   }
 
   // The bridge captures this once, before recovery marks interrupted runs.
@@ -185,6 +187,15 @@ export function createTurnNotificationRouter(
   }
 
   const unsubscribe = options.bridge.subscribeNotifications((notification) => {
+    if (notification.method === 'codexui/projectBoards/batchCompleted') {
+      const event = notification.params
+      if (isProjectBoardNotification(event) && event.kind === 'batch_completed') {
+        boardSnapshotQueue = boardSnapshotQueue.then(() => {
+          if (boardSnapshot?.boards.some((board) => board.id === event.boardId)) deliverBoardEvent(event)
+        })
+      }
+      return
+    }
     if (notification.method === 'codexui/projectBoards/updated') {
       const snapshot = notification.params as ProjectBoardSnapshot
       if (Array.isArray(snapshot?.cards) && Array.isArray(snapshot?.runs) && Array.isArray(snapshot?.questions)) {

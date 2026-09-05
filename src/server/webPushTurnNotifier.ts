@@ -165,7 +165,7 @@ function normalizeHistoryItem(value: unknown): StoredNotificationHistoryItem | n
   const completedAt = readString(record.completedAt)
   if (!threadId || !turnId || !completedAt) return null
   const board = asRecord(record.projectBoard)
-  const projectBoard = board && ['question', 'failed', 'completed', 'plan_ready'].includes(readString(board.kind)) &&
+  const projectBoard = board && ['question', 'failed', 'completed', 'plan_ready', 'batch_completed'].includes(readString(board.kind)) &&
     readString(board.id) && readString(board.boardId) && readString(board.occurredAt)
     ? {
       id: readString(board.id),
@@ -174,6 +174,9 @@ function normalizeHistoryItem(value: unknown): StoredNotificationHistoryItem | n
       featureId: readString(board.featureId),
       cardId: readString(board.cardId),
       ...(readString(board.questionId) ? { questionId: readString(board.questionId) } : {}),
+      ...(readString(board.threadId) ? { threadId: readString(board.threadId) } : {}),
+      ...(readString(board.queueId) ? { queueId: readString(board.queueId) } : {}),
+      ...(board.quiet === true ? { quiet: true } : {}),
       occurredAt: readString(board.occurredAt),
     }
     : undefined
@@ -542,7 +545,7 @@ export function createWebPushTurnNotifier(): WebPushTurnNotifier {
     const recorded = await recordCompletedTurn(turn)
     if (!recorded) return false
     // Record first so Activity works without any enrolled delivery device.
-    void sendCompletedTurn(turn).catch((error: unknown) => {
+    if (!event.quiet) void sendCompletedTurn(turn).catch((error: unknown) => {
       const message = error instanceof Error ? error.message : String(error)
       console.warn(`[web-push] Failed to send board notification: ${message}`)
     })

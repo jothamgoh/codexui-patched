@@ -16,6 +16,11 @@ const {
   markProjectBoardAttentionSeen,
   projectBoardNeedsInputDeepLink,
   showProjectBoardNeedsInputNotification,
+  showProjectBoardNotification,
+  projectBoardNotificationDeepLink,
+  projectBoardNotificationScope,
+  projectBoardBatchCompletedNotification,
+  isProjectBoardNotification,
 } = await import(`data:text/javascript;base64,${Buffer.from(compiled).toString('base64')}`)
 const utilityModuleUrl = `data:text/javascript;base64,${Buffer.from(compiled).toString('base64')}`
 
@@ -29,6 +34,37 @@ async function importModule(path, replacements = []) {
 }
 
 const { collectProjectBoardNotifications, projectBoardThreadIds } = await importModule('../src/server/projectBoardNotificationEvents.ts')
+const { collectProjectBoardActivity } = await importModule('../src/utils/projectBoardActivity.ts')
+
+test('board activity shows an unlisted Lead and planning run once, preserving exact navigation context', () => {
+  const snapshot = {
+    boards: [{ id: 'board', name: 'Product fixes', planningThreadId: 'planning-chat' }],
+    cards: [
+      { id: 'feature', boardId: 'board', type: 'feature', title: 'Fix message rendering', status: 'working', threadId: '', lastRunId: 'run', updatedAtIso: '2026-09-07T01:00:00Z' },
+      { id: 'task', parentCardId: 'feature', boardId: 'board', type: 'task', title: 'Internal implementation', status: 'working', threadId: 'child' },
+    ],
+    runs: [
+      { id: 'run', boardId: 'board', cardId: 'feature', kind: 'execute', status: 'running', threadId: 'unlisted-lead' },
+      { id: 'planning-run', boardId: 'board', cardId: '', kind: 'board_plan', status: 'queued', threadId: 'planning-chat' },
+    ],
+  }
+  const running = collectProjectBoardActivity(snapshot)
+  assert.deepEqual(running.map(({ featureId, threadId, status }) => ({ featureId, threadId, status })), [
+    { featureId: 'feature', threadId: 'unlisted-lead', status: 'running' },
+    { featureId: '', threadId: 'planning-chat', status: 'running' },
+  ])
+  assert.equal(running[0].title, 'Fix message rendering')
+  snapshot.cards[0].status = 'needs_input'
+  assert.equal(collectProjectBoardActivity(snapshot)[0].status, 'needs_input', 'Waiting questions belong in Needs you, not duplicated in Running')
+  snapshot.cards[0].status = 'working'
+  snapshot.runs[0].status = 'interrupted'
+  snapshot.runs[0].error = 'The server restarted'
+  snapshot.runs[1].status = 'succeeded'
+  const stopped = collectProjectBoardActivity(snapshot)
+  assert.equal(stopped.length, 1)
+  assert.equal(stopped[0].status, 'paused')
+  assert.equal(stopped[0].summary, 'The server restarted')
+})
 
 const attention = {
   boardId: 'board / one',
@@ -48,6 +84,12 @@ test('builds an exact Needs You deep link and deduplicates question events', () 
   assert.equal(markProjectBoardAttentionSeen(seen, attention.questionId), true)
   assert.equal(markProjectBoardAttentionSeen(seen, attention.questionId), false)
   assert.equal(markProjectBoardAttentionSeen(seen, ''), false)
+  assert.equal(projectBoardNotificationDeepLink({ ...attention, kind: 'completed', questionId: undefined, threadId: 'lead / one' }), '#/thread/lead%20%2F%20one?board=board+%2F+one&feature=feature-1')
+  const batch = projectBoardBatchCompletedNotification('board / one', 'queue-1', '2026-09-07T01:00:00Z')
+  assert.equal(isProjectBoardNotification(batch), true)
+  assert.equal(isProjectBoardNotification({ ...batch, queueId: undefined }), false)
+  assert.equal(projectBoardNotificationDeepLink(batch), '#/board/board%20%2F%20one')
+  assert.equal(projectBoardNotificationScope(batch), 'project-board:board / one:batch:queue-1')
 })
 
 test('does not notify without permission and redacts board content when permitted', (t) => {
@@ -93,6 +135,8 @@ test('does not notify without permission and redacts board content when permitte
   assert.equal(notification.options.body.includes(attention.message), false)
   assert.equal(notification.options.body.includes(attention.title), false)
   assert.equal(notification.options.tag, 'project-board-question:question-1')
+  assert.equal(showProjectBoardNotification({ kind: 'completed', quiet: true }), null)
+  assert.equal(created.length, 1, 'Quiet queue feature outcomes must not create a browser banner')
 })
 
 test('notifies authoritative board outcomes, not successful intermediate lead turns', () => {
@@ -114,6 +158,9 @@ test('notifies authoritative board outcomes, not successful intermediate lead tu
   assert.deepEqual(collectProjectBoardNotifications(waiting, waiting), [])
   const finished = { ...waiting, cards: [{ ...initial.cards[0], status: 'done', completedAtIso: initial.updatedAtIso }] }
   assert.deepEqual(collectProjectBoardNotifications(waiting, finished).map((event) => event.kind), ['completed'])
+  assert.equal(collectProjectBoardNotifications(waiting, finished)[0].threadId, 'lead')
+  const queued = { ...waiting, queues: [{ boardId: 'board', status: 'running', featureIds: ['feature'] }] }
+  assert.equal(collectProjectBoardNotifications(queued, finished)[0].quiet, true, 'Last selected feature is still quiet after its queue disappears')
   const failed = { ...initial, runs: [{ ...initial.runs[0], status: 'interrupted', error: 'PRIVATE error' }] }
   assert.deepEqual(collectProjectBoardNotifications(initial, failed).map((event) => event.kind), ['failed'])
   const planned = { ...initial, runs: [{ id: 'plan', boardId: 'board', cardId: '', kind: 'board_plan', status: 'succeeded', threadId: 'planner' }] }
@@ -194,6 +241,13 @@ test('board delivery reuses the durable inbox and device/Telegram preferences wi
   assert.equal(resolved.status, 'answered')
   assert.equal(resolved.readAt, '2026-09-06T02:00:00Z')
   assert.equal(globalThis.__boardPushDeliveries.length, 2)
+  const quietOutcome = { ...event, id: 'quiet-completed', kind: 'completed', questionId: undefined, threadId: 'lead', quiet: true }
+  assert.equal(await restarted.handleProjectBoardNotification(quietOutcome), true)
+  assert.equal(globalThis.__boardPushDeliveries.length, 2)
+  const quietStored = JSON.parse(await readFile(stateFile, 'utf8')).history[0]
+  assert.equal(quietStored.projectBoard.quiet, true)
+  assert.equal(quietStored.projectBoard.threadId, 'lead')
+  assert.equal(await createWebPushTurnNotifier().handleProjectBoardNotification(quietOutcome), false, 'Quiet history remains deduplicated after restart')
 
   const telegramSent = []
   globalThis.fetch = async (_url, options) => { telegramSent.push(JSON.parse(options.body)); return { ok: true } }

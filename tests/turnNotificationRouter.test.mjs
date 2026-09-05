@@ -32,9 +32,13 @@ const boardEventSource = await readFile(new URL('../src/server/projectBoardNotif
 const boardEventModuleUrl = `data:text/javascript;base64,${Buffer.from(ts.transpileModule(boardEventSource, {
   compilerOptions: { module: ts.ModuleKind.ES2022, target: ts.ScriptTarget.ES2022 },
 }).outputText).toString('base64')}`
+const boardUtilitySource = await readFile(new URL('../src/utils/projectBoardNotifications.ts', import.meta.url), 'utf8')
+const boardUtilityModuleUrl = `data:text/javascript;base64,${Buffer.from(ts.transpileModule(boardUtilitySource, {
+  compilerOptions: { module: ts.ModuleKind.ES2022, target: ts.ScriptTarget.ES2022 },
+}).outputText).toString('base64')}`
 const { createTurnNotificationRouter } = await importTypeScriptModule(
   '../src/server/turnNotificationRouter.ts',
-  [['../utils/codexThreadSource.js', threadSourceModuleUrl], ['./projectBoardNotificationEvents.js', boardEventModuleUrl]],
+  [['../utils/codexThreadSource.js', threadSourceModuleUrl], ['./projectBoardNotificationEvents.js', boardEventModuleUrl], ['../utils/projectBoardNotifications', boardUtilityModuleUrl]],
 )
 
 const delay = (milliseconds) => new Promise((resolve) => setTimeout(resolve, milliseconds))
@@ -73,7 +77,11 @@ function createHarness({
     },
     webPushTurnNotifier: {
       handleNotification(notification) { webPush.push(notification) },
-      async handleProjectBoardNotification(event) { boardPush.push(event); return true },
+      async handleProjectBoardNotification(event) {
+        if (boardPush.some((item) => item.id === event.id)) return false
+        boardPush.push(event)
+        return true
+      },
       async removeThreadHistory(threadIds) {
         removedHistory.push([...threadIds])
       },
@@ -248,4 +256,29 @@ test('delivers only new recovery interruptions and does not replay them when the
   assert.equal(recreated.boardTelegram.length, 0)
   assert.equal(recreated.boardPublished.length, 0)
   recreated.router.dispose()
+})
+
+test('records selected feature results quietly and sends one final batch summary', async () => {
+  const baseline = {
+    version: 1,
+    boards: [{ id: 'board', planningThreadId: '' }],
+    cards: [{ id: 'feature', type: 'feature', boardId: 'board', status: 'working', threadId: 'lead' }],
+    runs: [], questions: [], updatedAtIso: '2026-09-07T01:00:00Z',
+    queues: [{ boardId: 'board', status: 'running', featureIds: ['feature'] }],
+  }
+  const harness = createHarness({ readThread: async () => ({}), readProjectBoards: async () => baseline })
+  const next = { ...baseline, version: 2, queues: [], cards: [{ ...baseline.cards[0], status: 'done', completedAtIso: baseline.updatedAtIso }] }
+  harness.emit({ method: 'codexui/projectBoards/updated', params: next })
+  const batch = { id: 'project-board-batch:queue:completed', kind: 'batch_completed', boardId: 'board', featureId: '', cardId: '', queueId: 'queue', occurredAt: baseline.updatedAtIso }
+  harness.emit({ method: 'codexui/projectBoards/batchCompleted', params: batch })
+  harness.emit({ method: 'codexui/projectBoards/batchCompleted', params: batch })
+  harness.emit({ method: 'codexui/projectBoards/batchCompleted', params: { ...batch, id: 'missing-board', boardId: 'missing' } })
+  await delay(15)
+  assert.deepEqual(harness.boardPush.map(({ kind, quiet }) => ({ kind, quiet })), [
+    { kind: 'completed', quiet: true },
+    { kind: 'batch_completed', quiet: undefined },
+  ])
+  assert.deepEqual(harness.boardTelegram.map((event) => event.kind), ['batch_completed'])
+  assert.deepEqual(harness.boardPublished.map(({ params }) => params.kind), ['completed', 'batch_completed'])
+  harness.router.dispose()
 })

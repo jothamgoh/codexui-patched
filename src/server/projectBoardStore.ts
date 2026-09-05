@@ -12,6 +12,7 @@ import type {
   ProjectBoardComment,
   ProjectBoardCreateInput,
   ProjectBoardPlanResult,
+  ProjectBoardFeaturePlan,
   ProjectBoardPriority,
   ProjectBoardQuestion,
   ProjectBoardRun,
@@ -189,6 +190,10 @@ function normalizeBoard(value: unknown): ProjectBoard | null {
     agentIds: readStringArray(record.agentIds),
     autoDispatch: record.autoDispatch !== false,
     maxConcurrentRuns: 1,
+    plan: readString(record.plan),
+    sourceThreadId: readString(record.sourceThreadId, 200),
+    planningThreadId: readString(record.planningThreadId, 200),
+    coordinatorAgentId: readString(record.coordinatorAgentId, 200),
     createdAtIso: readString(record.createdAtIso, 100) || new Date(0).toISOString(),
     updatedAtIso: readString(record.updatedAtIso, 100) || new Date(0).toISOString(),
   }
@@ -218,6 +223,11 @@ function normalizeCard(value: unknown, agents: ProjectBoardAgent[]): ProjectBoar
     assignedAgentId: readString(record.assignedAgentId, 200),
     dependencyIds: readStringArray(record.dependencyIds),
     autoRun: record.autoRun === true,
+    model: readString(record.model, 200),
+    reasoningEffort: readString(record.reasoningEffort) ? normalizeReasoningEffort(record.reasoningEffort) : '',
+    planSummary: readString(record.planSummary),
+    planStatus: record.planStatus === 'ready' ? 'ready' : 'none',
+    toolSchemaVersion: record.toolSchemaVersion === 2 ? 2 : 1,
     threadId: readString(record.threadId, 200),
     lastRunId: readString(record.lastRunId, 200),
     summary: readString(record.summary),
@@ -287,8 +297,8 @@ function normalizeRun(value: unknown): ProjectBoardRun | null {
   const id = readString(record?.id, 200)
   const boardId = readString(record?.boardId, 200)
   const cardId = readString(record?.cardId, 200)
-  if (!record || !id || !boardId || !cardId) return null
-  const kind: ProjectBoardRunKind = record.kind === 'plan' ? 'plan' : 'execute'
+  if (!record || !id || !boardId || (!cardId && record.kind !== 'board_plan')) return null
+  const kind: ProjectBoardRunKind = record.kind === 'board_plan' ? 'board_plan' : record.kind === 'plan' ? 'plan' : 'execute'
   const allowedStatuses = new Set(['queued', 'running', 'succeeded', 'failed', 'interrupted'])
   const rawStatus = readString(record.status)
   return {
@@ -304,6 +314,34 @@ function normalizeRun(value: unknown): ProjectBoardRun | null {
     summary: readString(record.summary),
     error: readString(record.error),
   }
+}
+
+function readOptionalEffort(value: unknown): ReasoningEffort | '' {
+  const effort = readString(value) as ReasoningEffort | ''
+  if (effort && !REASONING_EFFORTS.has(effort)) throw new Error('Unknown reasoning effort.')
+  return effort
+}
+
+function assertCardDependencies(snapshot: ProjectBoardSnapshot): void {
+  const byId = new Map(snapshot.cards.map((card) => [card.id, card]))
+  const visiting = new Set<string>()
+  const visited = new Set<string>()
+  const visit = (card: ProjectBoardCard): void => {
+    if (visited.has(card.id)) return
+    if (visiting.has(card.id)) throw new Error('Feature dependencies cannot contain a cycle.')
+    visiting.add(card.id)
+    for (const id of card.dependencyIds) {
+      const dependency = byId.get(id)
+      if (!dependency || dependency.boardId !== card.boardId) throw new Error('Missing dependency: every dependency must exist on this board.')
+      if (card.type !== 'qa_batch' && (dependency.type !== card.type || dependency.parentCardId !== card.parentCardId)) {
+        throw new Error('Features depend on features; tasks depend on tasks inside the same feature.')
+      }
+      visit(dependency)
+    }
+    visiting.delete(card.id)
+    visited.add(card.id)
+  }
+  for (const card of snapshot.cards) visit(card)
 }
 
 function emptySnapshot(now: Date): ProjectBoardSnapshot {
@@ -528,6 +566,7 @@ function buildPlanCards(
       assignedAgentId: agent.id,
       dependencyIds,
       autoRun: true,
+      model: '', reasoningEffort: '', planSummary: '', planStatus: 'none', toolSchemaVersion: 1,
       threadId: '',
       lastRunId: '',
       summary: '',
@@ -611,6 +650,7 @@ export class ProjectBoardStore {
         agentIds: current.agents.map((agent) => agent.id),
         autoDispatch: true,
         maxConcurrentRuns: 1,
+        plan: '', sourceThreadId: '', planningThreadId: '', coordinatorAgentId: '',
         createdAtIso: now.toISOString(),
         updatedAtIso: now.toISOString(),
       }
@@ -640,6 +680,7 @@ export class ProjectBoardStore {
         agentIds: current.agents.map((agent) => agent.id),
         autoDispatch: true,
         maxConcurrentRuns: 1,
+        plan: '', sourceThreadId: '', planningThreadId: '', coordinatorAgentId: '',
         createdAtIso: now.toISOString(),
         updatedAtIso: now.toISOString(),
       }
@@ -679,6 +720,7 @@ export class ProjectBoardStore {
             name: 'name' in changes ? readString(changes.name, 120) || existing.name : existing.name,
             isDefault: makeDefault || ('isDefault' in changes ? changes.isDefault === true : existing.isDefault),
             agentIds,
+            plan: 'plan' in changes ? readString(changes.plan) : board.plan,
             autoDispatch: 'autoDispatch' in changes ? changes.autoDispatch !== false : existing.autoDispatch,
             maxConcurrentRuns: 1,
             updatedAtIso: now.toISOString(),
@@ -826,6 +868,8 @@ export class ProjectBoardStore {
         assignedAgentId: readString(record.assignedAgentId, 200),
         dependencyIds: readStringArray(record.dependencyIds),
         autoRun: record.autoRun === true,
+        model: readString(record.model, 200),
+        reasoningEffort: readOptionalEffort(record.reasoningEffort),
       }
       const board = current.boards.find((entry) => entry.id === input.boardId)
       if (!board) throw new Error('Project board not found.')
@@ -858,6 +902,7 @@ export class ProjectBoardStore {
         assignedAgentId: input.assignedAgentId || board.agentIds[0] || '',
         dependencyIds: input.dependencyIds ?? [],
         autoRun: input.autoRun === true,
+        model: input.model ?? '', reasoningEffort: input.reasoningEffort ?? '', planSummary: '', planStatus: 'none', toolSchemaVersion: 1,
         threadId: '',
         lastRunId: '',
         summary: '',
@@ -867,6 +912,7 @@ export class ProjectBoardStore {
         completedAtIso: '',
       }
       let next = { ...current, cards: [card, ...current.cards] }
+      assertCardDependencies(next)
       const verificationBlocker = verificationOrderingBlocker(next, card)
       if (verificationBlocker) throw new Error(verificationBlocker)
       next = recalculateParent(next, card.parentCardId, now)
@@ -882,7 +928,7 @@ export class ProjectBoardStore {
       this.assertPublicCardFields(changes, true)
       if ('status' in changes && !STATUSES.has(changes.status as ProjectBoardStatus)) throw new Error('Unknown card status.')
       if ('taskPurpose' in changes && !TASK_PURPOSES.has(changes.taskPurpose as ProjectBoardTaskPurpose)) throw new Error('Unknown task purpose.')
-      const workflowChange = ['status', 'verificationPolicy', 'assignedAgentId', 'taskPurpose'].some((key) => key in changes)
+      const workflowChange = ['status', 'verificationPolicy', 'assignedAgentId', 'taskPurpose', 'dependencyIds', 'model', 'reasoningEffort'].some((key) => key in changes)
       if (workflowChange) assertManualEdit(current, existing)
       const board = current.boards.find((entry) => entry.id === existing.boardId)
       if (!board) throw new Error('Project board not found.')
@@ -916,8 +962,12 @@ export class ProjectBoardStore {
           assignedAgentId,
           taskPurpose,
           autoRun: 'autoRun' in changes ? changes.autoRun === true : card.autoRun,
+          model: 'model' in changes ? readString(changes.model, 200) : card.model,
+          reasoningEffort: 'reasoningEffort' in changes ? readOptionalEffort(changes.reasoningEffort) : card.reasoningEffort,
+          dependencyIds: 'dependencyIds' in changes ? readStringArray(changes.dependencyIds) : card.dependencyIds,
         }, 'status' in changes ? normalizeStatus(changes.status) : card.status, now)),
       }
+      assertCardDependencies(next)
       const updated = next.cards.find((card) => card.id === id)!
       if (workflowChange) {
         if (updated.status !== existing.status && updated.status === 'needs_input') {
@@ -941,6 +991,9 @@ export class ProjectBoardStore {
           const dependent = next.cards.find((card) => card.dependencyIds.includes(id) && ['working', 'done', 'review'].includes(card.status))
           if (dependent) throw new Error(`Reopen dependent card "${dependent.title}" first.`)
         }
+      }
+      if (existing.type === 'task' && existing.status === 'done' && updated.status !== 'done') {
+        next.comments = [{ id: randomUUID(), boardId: existing.boardId, cardId: id, runId: '', author: 'You', text: `Reopened task. Previous handoff: ${existing.summary || '(none)'}`, createdAtIso: now.toISOString() }, ...next.comments]
       }
       next = recalculateParent(next, existing.parentCardId, now)
       return next
@@ -1046,7 +1099,11 @@ export class ProjectBoardStore {
       if (!card) throw new Error('Board card not found.')
       if (card.type !== 'feature') throw new Error('Only features can start a Lead run; QA batches are not executable yet.')
       assertManualEdit(current, card)
-      const blocker = dependencyBlocker(current, card)
+      if (card.status === 'done') throw new Error('This feature is already done. Reopen it or create a follow-up feature.')
+      if (kind === 'plan' && current.cards.some((entry) => entry.parentCardId === cardId && (entry.status === 'working' || entry.status === 'done'))) {
+        throw new Error('This feature already has execution history. Continue its existing plan or reopen a task for repair.')
+      }
+      const blocker = kind === 'plan' ? '' : dependencyBlocker(current, card)
       if (blocker) throw new Error(blocker)
       if (current.runs.some((run) => run.cardId === cardId && run.status === 'running')) {
         throw new Error('This card already has a running agent.')
@@ -1079,7 +1136,72 @@ export class ProjectBoardStore {
     }).then((snapshot) => ({ snapshot, run: createdRun }))
   }
 
-  setRunThread(runId: string, threadId: string): Promise<ProjectBoardSnapshot> {
+  startBoardPlan(boardId: string, agentId: string, plan: string, sourceThreadId: string): Promise<{ snapshot: ProjectBoardSnapshot; run: ProjectBoardRun }> {
+    let run!: ProjectBoardRun
+    return this.mutate((current) => {
+      const board = current.boards.find((entry) => entry.id === boardId)
+      if (!board || !board.agentIds.includes(agentId)) throw new Error('Choose a coordinator enabled on this board.')
+      if (current.runs.some((entry) => entry.boardId === boardId && entry.status === 'running')) throw new Error('Wait for this board’s active run to finish.')
+      if (!readString(plan)) throw new Error('A project plan is required.')
+      const now = this.now().toISOString()
+      run = { id: randomUUID(), boardId, cardId: '', agentId, kind: 'board_plan', status: 'running', threadId: '', startedAtIso: now, finishedAtIso: '', summary: '', error: '' }
+      return {
+        ...current,
+        runs: [run, ...current.runs],
+        boards: current.boards.map((entry) => entry.id === boardId ? {
+          ...entry, plan: readString(plan), sourceThreadId: readString(sourceThreadId, 200), coordinatorAgentId: agentId, updatedAtIso: now,
+        } : entry),
+      }
+    }).then((snapshot) => ({ snapshot, run }))
+  }
+
+  saveBoardFeatures(boardId: string, result: ProjectBoardFeaturePlan, runId: string): Promise<ProjectBoardSnapshot> {
+    return this.mutate((current) => {
+      const run = current.runs.find((entry) => entry.id === runId && entry.boardId === boardId && entry.kind === 'board_plan' && entry.status === 'running')
+      const board = current.boards.find((entry) => entry.id === boardId)
+      if (!run || !board) throw new Error('Board planning run is no longer active.')
+      if (current.cards.some((card) => card.lastRunId === runId)) return current
+      if (!Array.isArray(result.features) || !result.features.length || result.features.length > 30) throw new Error('Provide between 1 and 30 feature cards.')
+      const ids = new Map<string, string>()
+      for (const feature of result.features) {
+        const key = readString(feature.key, 100)
+        if (!key || ids.has(key) || current.cards.some((card) => card.id === key)) throw new Error('Feature keys must be unique and cannot reuse existing card IDs.')
+        ids.set(key, randomUUID())
+      }
+      const now = this.now().toISOString()
+      const cards: ProjectBoardCard[] = result.features.map((feature) => {
+        if (!board.agentIds.includes(feature.agentId)) throw new Error('Every feature must choose an enabled agent.')
+        const title = readString(feature.title, 240)
+        if (!title) throw new Error('Every feature needs a title.')
+        return {
+          id: ids.get(readString(feature.key, 100))!, boardId, parentCardId: '', type: 'feature', taskPurpose: 'work', title,
+          description: readString(feature.description), acceptanceCriteria: readString(feature.acceptanceCriteria), status: 'backlog', priority: 'normal',
+          verificationPolicy: normalizeVerificationPolicy(feature.verificationPolicy), assignedAgentId: feature.agentId,
+          dependencyIds: readStringArray(feature.dependsOn).map((key) => ids.get(key) ?? key),
+          autoRun: false, model: '', reasoningEffort: '', planSummary: '', planStatus: 'none', toolSchemaVersion: 1, threadId: '', lastRunId: runId,
+          summary: '', progressNote: 'Review the proposed feature before starting', createdAtIso: now, updatedAtIso: now, completedAtIso: '',
+        }
+      })
+      const next = { ...current, cards: [...cards, ...current.cards] }
+      assertCardDependencies(next)
+      return next
+    })
+  }
+
+  completeFeaturePlan(featureId: string): Promise<ProjectBoardSnapshot> {
+    return this.mutate((current) => {
+      const feature = current.cards.find((card) => card.id === featureId)
+      if (!feature) throw new Error('Feature not found.')
+      if (feature.status === 'needs_input') return current
+      const ready = current.cards.some((card) => card.parentCardId === featureId)
+      return {
+        ...current,
+        cards: current.cards.map((card) => card.id === featureId ? cardWithStatus({ ...card, planStatus: ready ? 'ready' : 'none' }, ready ? 'backlog' : 'blocked', this.now(), ready ? 'Plan ready. Review the tasks, then Start work.' : 'No task plan was saved. Continue planning.') : card),
+      }
+    })
+  }
+
+  setRunThread(runId: string, threadId: string, toolSchemaVersion?: number): Promise<ProjectBoardSnapshot> {
     return this.mutate((current) => {
       const run = current.runs.find((entry) => entry.id === runId)
       if (!run) throw new Error('Feature run not found.')
@@ -1088,7 +1210,8 @@ export class ProjectBoardStore {
       return {
         ...current,
         runs: current.runs.map((entry) => entry.id === runId ? { ...entry, threadId } : entry),
-        cards: current.cards.map((card) => card.id === run.cardId ? { ...card, threadId, lastRunId: runId } : card),
+        cards: current.cards.map((card) => card.id === run.cardId ? { ...card, threadId, lastRunId: runId, toolSchemaVersion: toolSchemaVersion ?? card.toolSchemaVersion } : card),
+        boards: current.boards.map((board) => board.id === run.boardId && run.kind === 'board_plan' ? { ...board, planningThreadId: threadId } : board),
       }
     })
   }
@@ -1120,6 +1243,8 @@ export class ProjectBoardStore {
               ...card,
               status: 'working' as const,
               summary: readString(result.summary),
+              planSummary: readString(result.summary),
+              planStatus: 'ready' as const,
               lastRunId: runId,
               progressNote: `0/${tasks.length} tasks complete`,
               updatedAtIso: now.toISOString(),
@@ -1136,7 +1261,7 @@ export class ProjectBoardStore {
   updateTaskFromAgent(
     featureId: string,
     taskId: string,
-    action: 'start' | 'complete' | 'block',
+    action: 'start' | 'complete' | 'block' | 'reopen',
     payloadValue: unknown,
     runId = '',
   ): Promise<ProjectBoardSnapshot> {
@@ -1147,6 +1272,18 @@ export class ProjectBoardStore {
       if (!feature || !task) throw new Error('Task does not belong to this feature.')
       const payload = asRecord(payloadValue) ?? {}
       const now = this.now()
+      if (action === 'reopen') {
+        const reason = readString(payload.summary) || readString(payload.blocker)
+        if (!reason) throw new Error('A repair reason is required.')
+        const dependent = current.cards.find((card) => card.dependencyIds.includes(taskId) && ['working', 'done', 'review'].includes(card.status))
+        if (dependent) throw new Error(`Reopen dependent task "${dependent.title}" first.`)
+        if (task.status === 'working') throw new Error('Block the active task before reopening it.')
+        return recalculateParent({
+          ...current,
+          cards: current.cards.map((card) => card.id === taskId ? cardWithStatus(card, 'backlog', now, reason) : card),
+          comments: [{ id: randomUUID(), boardId: feature.boardId, cardId: taskId, runId, author: 'Lead', text: `Reopened: ${reason}\nPrevious handoff: ${task.summary || '(none)'}`, createdAtIso: now.toISOString() }, ...current.comments],
+        }, featureId, now)
+      }
       if (action === 'start' || action === 'complete') {
         const blocker = dependencyBlocker(current, feature) || dependencyBlocker(current, task) || verificationOrderingBlocker(current, task)
         if (blocker) throw new Error(blocker)
@@ -1325,7 +1462,7 @@ export class ProjectBoardStore {
       const error = readString(errorValue) || 'Agent run failed.'
       let next: ProjectBoardSnapshot = {
         ...current,
-        cards: current.cards.map((entry) => entry.id === run.cardId || (entry.parentCardId === run.cardId && entry.status === 'working')
+        cards: current.cards.map((entry) => run.cardId && (entry.id === run.cardId || (entry.parentCardId === run.cardId && entry.status === 'working'))
           ? cardWithStatus({ ...entry, summary: entry.summary || error }, 'blocked', now, error)
           : entry),
         runs: current.runs.map((entry) => entry.id === runId ? {
@@ -1355,7 +1492,7 @@ export class ProjectBoardStore {
           finishedAtIso: now.toISOString(),
           error: 'CodexUI restarted before this run finished.',
         } : run),
-        cards: current.cards.map((card) => interruptedCardIds.has(card.id) || (interruptedCardIds.has(card.parentCardId) && card.status === 'working')
+        cards: current.cards.map((card) => interruptedCardIds.has(card.id) || (card.parentCardId && interruptedCardIds.has(card.parentCardId) && card.status === 'working')
           ? cardWithStatus(card, 'blocked', now, 'CodexUI restarted; retry this card')
           : card),
       }
@@ -1389,7 +1526,7 @@ export class ProjectBoardStore {
   }
 
   private assertPublicCardFields(record: Record<string, unknown>, updating = false): void {
-    const allowed = new Set(['title', 'description', 'acceptanceCriteria', 'status', 'priority', 'verificationPolicy', 'assignedAgentId', 'taskPurpose', 'autoRun'])
+    const allowed = new Set(['title', 'description', 'acceptanceCriteria', 'status', 'priority', 'verificationPolicy', 'assignedAgentId', 'taskPurpose', 'autoRun', 'model', 'reasoningEffort', 'dependencyIds'])
     if (!updating) for (const field of ['boardId', 'parentCardId', 'type', 'dependencyIds']) allowed.add(field)
     const unknown = Object.keys(record).find((field) => !allowed.has(field))
     if (unknown) throw new Error(`Card field "${unknown}" is server-owned or cannot be changed here.`)

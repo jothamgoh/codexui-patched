@@ -42,12 +42,13 @@ function createFakeAppServer() {
   const calls = []
   const notifications = []
   let nextTurn = 1
+  let nextThread = 1
   return {
     calls,
     notifications,
     async rpc(method, params) {
       calls.push({ method, params })
-      if (method === 'thread/start') return { thread: { id: 'lead-thread' } }
+      if (method === 'thread/start') return { thread: { id: nextThread++ === 1 ? 'lead-thread' : `lead-thread-${nextThread - 1}` } }
       if (method === 'thread/resume') return { thread: { id: params.threadId } }
       if (method === 'turn/start') return { turn: { id: `lead-turn-${String(nextTurn++)}` } }
       return {}
@@ -488,4 +489,120 @@ test('app-server exit interrupts pending and active turns, releases locks, and r
     assert.equal(resume.params.approvalPolicy, 'on-request')
     assert.equal(resume.params.sandbox, 'workspace-write')
   }
+})
+
+
+test('plans read-only, preserves the reviewed task graph, and applies feature settings on each run', async (t) => {
+  const { appServer, feature, store } = await createHarness(t)
+  const service = new ProjectBoardService({ store, appServer, resolveExecutionSettings: async (settings) => {
+    if (settings.model === 'unavailable') throw new Error('Selected model is unavailable.')
+    return { model: settings.model || 'default-model', reasoningEffort: settings.reasoningEffort }
+  } })
+  await service.updateCard(feature.id, { model: 'feature-model', reasoningEffort: 'low', verificationPolicy: 'self' })
+  await service.startFeature(feature.id, { mode: 'plan' })
+  const planTurn = await waitFor(() => appServer.calls.find((call) => call.method === 'turn/start'), 'No planning turn')
+  assert.equal(planTurn.params.model, 'feature-model')
+  assert.equal(planTurn.params.effort, 'low')
+  assert.equal(planTurn.params.sandboxPolicy.type, 'readOnly')
+  assert.equal(planTurn.params.approvalPolicy, 'never')
+  assert.equal(service.isPlanningThread('lead-thread'), true)
+  assert.match(planTurn.params.input[0].text, /Plan this feature only/u)
+  assert.deepEqual(appServer.calls.find((call) => call.method === 'thread/start').params.dynamicTools.map((tool) => tool.name), ['project_board_update'])
+  await service.handleDynamicToolCall(toolCall('lead-thread', 'replace_plan', { plan: { summary: 'One deliberate implementation.', tasks: [
+    { key: 'build', title: 'Build once', description: 'Implement the reviewed plan.', acceptanceCriteria: 'Works.', agentId: 'builtin-engineer', taskPurpose: 'work', dependsOn: [] },
+  ] } }))
+  const task = (await store.read()).cards.find((card) => card.parentCardId === feature.id)
+  await assert.rejects(service.handleDynamicToolCall(toolCall('lead-thread', 'start_task', { taskId: task.id })), /read-only planning run/u)
+  await assert.rejects(service.updateCard(feature.id, { model: 'other-model' }), /run to stop/u)
+  await service.handleNotification({ method: 'turn/completed', params: { threadId: 'lead-thread', turn: { id: 'lead-turn-1', status: 'completed' } } })
+  let snapshot = await store.read()
+  assert.equal(snapshot.cards.find((card) => card.id === feature.id).planStatus, 'ready')
+  assert.equal(snapshot.cards.find((card) => card.id === feature.id).status, 'backlog')
+  assert.equal(appServer.calls.filter((call) => call.method === 'turn/start').length, 1)
+  await service.updateCard(feature.id, { model: 'unavailable' })
+  await assert.rejects(service.startFeature(feature.id, { allowWorkspaceWrite: true }), /unavailable/u)
+  assert.equal((await store.read()).runs.length, 1)
+  await service.updateCard(feature.id, { model: '', reasoningEffort: '' })
+  await service.startFeature(feature.id, { allowWorkspaceWrite: true })
+  const execution = await waitFor(() => appServer.calls.filter((call) => call.method === 'turn/start')[1], 'No execution turn')
+  assert.equal(execution.params.model, 'default-model')
+  assert.equal(execution.params.effort, 'high')
+  assert.equal(execution.params.sandboxPolicy.type, 'workspaceWrite')
+  assert.equal(service.isPlanningThread('lead-thread'), false)
+  assert.equal(appServer.calls.filter((call) => call.method === 'thread/start').length, 1)
+  snapshot = await store.read()
+  assert.equal(snapshot.cards.find((card) => card.parentCardId === feature.id).id, task.id)
+  await service.handleNotification({ method: 'turn/completed', params: { threadId: 'lead-thread', turn: { id: 'lead-turn-2', status: 'interrupted' } } })
+})
+
+test('imports a plan into linked feature cards once, scopes planner authority, and preserves unrelated work on failure', async (t) => {
+  const { appServer, board, feature, service, store } = await createHarness(t)
+  await service.startBoardPlan(board.id, { plan: 'Build a foundation, then the interface.', sourceThreadId: 'ordinary-chat', coordinatorAgentId: 'builtin-product' }, 'User and assistant agreed on a small release.')
+  const turn = await waitFor(() => appServer.calls.find((call) => call.method === 'turn/start'), 'No board planner')
+  assert.equal(turn.params.sandboxPolicy.type, 'readOnly')
+  assert.match(turn.params.input[0].text, /incomplete context from the linked planning chat/u)
+  assert.equal(await service.isManagedThread('ordinary-chat'), false)
+  assert.equal(await service.isManagedThread('lead-thread'), true)
+  await assert.rejects(service.handleDynamicToolCall(toolCall('ordinary-chat', 'save_features')), /not attached/u)
+  await assert.rejects(service.handleDynamicToolCall(toolCall('lead-thread', 'finish_feature')), /only save proposed feature cards/u)
+  await assert.rejects(service.handleDynamicToolCall({ ...toolCall('lead-thread', 'save_features'), turnId: 'stale-turn' }), /exact active Lead turn/u)
+  const features = [
+    { key: 'base', title: 'Shared foundation', description: 'Shared types.', acceptanceCriteria: 'Foundation checked.', agentId: 'builtin-engineer', verificationPolicy: 'self', dependsOn: [] },
+    { key: 'ui', title: 'Interface', description: 'Reuse the foundation.', acceptanceCriteria: 'Combined behavior checked.', agentId: 'builtin-lead', verificationPolicy: 'independent', dependsOn: ['base'] },
+  ]
+  const first = await service.handleDynamicToolCall(toolCall('lead-thread', 'save_features', { summary: 'Two features.', features }))
+  const second = await service.handleDynamicToolCall(toolCall('lead-thread', 'save_features', { summary: 'Retry.', features }))
+  assert.deepEqual(first, second)
+  let snapshot = await store.read()
+  assert.equal(snapshot.cards.filter((card) => card.type === 'feature').length, 3)
+  const base = snapshot.cards.find((card) => card.title === 'Shared foundation')
+  const ui = snapshot.cards.find((card) => card.title === 'Interface')
+  assert.deepEqual(ui.dependencyIds, [base.id])
+  assert.equal(ui.model, '')
+  assert.equal(ui.autoRun, false)
+  assert.equal(snapshot.boards[0].sourceThreadId, 'ordinary-chat')
+  assert.equal(snapshot.runs[0].kind, 'board_plan')
+  await service.handleNotification({ method: 'turn/completed', params: { threadId: 'lead-thread', turn: { id: 'lead-turn-1', status: 'completed' } } })
+  await service.startBoardPlan(board.id, { plan: 'Consider an optional follow-up.' })
+  await waitFor(() => appServer.calls.filter((call) => call.method === 'turn/start')[1], 'No resumed planner')
+  await service.handleNotification({ method: 'turn/completed', params: { threadId: 'lead-thread', turn: { id: 'lead-turn-2', status: 'failed' } } })
+  snapshot = await store.read()
+  assert.equal(snapshot.runs[0].status, 'failed')
+  assert.equal(snapshot.cards.find((card) => card.id === feature.id).status, 'backlog')
+  assert.equal(snapshot.cards.find((card) => card.id === base.id).status, 'backlog')
+  assert.equal(snapshot.cards.find((card) => card.id === ui.id).status, 'backlog')
+})
+
+test('runs only the approved ready queue and pauses at questions without answer-triggered restart', async (t) => {
+  const { appServer, board, feature, service, store } = await createHarness(t)
+  await service.updateCard(feature.id, { verificationPolicy: 'self' })
+  let snapshot = await service.createCard({ boardId: board.id, title: 'Dependent feature', dependencyIds: [feature.id], verificationPolicy: 'self' })
+  const second = snapshot.cards.find((card) => card.title === 'Dependent feature')
+  await service.startBoardQueue(board.id, { featureIds: [second.id, feature.id], allowWorkspaceWrite: true })
+  await waitFor(() => appServer.calls.find((call) => call.method === 'turn/start'), 'No first queue turn')
+  await service.createCard({ boardId: board.id, title: 'Unapproved later feature' })
+  await service.handleDynamicToolCall(toolCall('lead-thread', 'replace_plan', { plan: { summary: 'Build.', tasks: [
+    { key: 'build', title: 'Build foundation', description: 'Work.', acceptanceCriteria: 'Checked.', agentId: 'builtin-engineer', taskPurpose: 'work', dependsOn: [] },
+  ] } }))
+  const task = (await store.read()).cards.find((card) => card.parentCardId === feature.id)
+  await service.handleDynamicToolCall(toolCall('lead-thread', 'start_task', { taskId: task.id }))
+  await service.handleDynamicToolCall(toolCall('lead-thread', 'complete_task', { taskId: task.id, summary: 'Foundation built and checked.' }))
+  await service.handleDynamicToolCall(toolCall('lead-thread', 'finish_feature', { summary: 'Foundation ready.' }))
+  await service.handleNotification({ method: 'turn/completed', params: { threadId: 'lead-thread', turn: { id: 'lead-turn-1', status: 'completed' } } })
+  const nextTurn = await waitFor(() => appServer.calls.filter((call) => call.method === 'turn/start')[1], 'Dependent feature did not start')
+  assert.match(nextTurn.params.input[0].text, /Foundation built and checked/u)
+  assert.equal((await service.read()).queues[0].currentFeatureId, second.id)
+  await service.handleDynamicToolCall({ ...toolCall('lead-thread-2', 'ask_user', { question: 'Choose the final copy.' }), turnId: 'lead-turn-2' })
+  await service.handleNotification({ method: 'turn/completed', params: { threadId: 'lead-thread-2', turn: { id: 'lead-turn-2', status: 'completed' } } })
+  snapshot = await service.read()
+  assert.equal(snapshot.queues[0].status, 'paused')
+  await service.answerQuestion(snapshot.questions[0].id, { answer: 'Use concise copy.' })
+  await delay(60)
+  assert.equal(appServer.calls.filter((call) => call.method === 'turn/start').length, 2)
+  await service.startBoardQueue(board.id, { featureIds: [second.id], allowWorkspaceWrite: true })
+  await waitFor(() => appServer.calls.filter((call) => call.method === 'turn/start')[2], 'Queue did not resume explicitly')
+  await service.stopBoardQueue(board.id)
+  assert.equal((await service.read()).queues[0].status, 'paused')
+  await service.handleNotification({ method: 'codexui/appServer/exited', params: {} })
+  assert.equal((await store.read()).cards.find((card) => card.title === 'Unapproved later feature').threadId, '')
 })

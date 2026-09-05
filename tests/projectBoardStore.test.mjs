@@ -569,3 +569,34 @@ test('capacity and unsupported state reject writes without discarding durable da
     assert.equal(await readFile(stateFilePath, 'utf8'), original)
   }
 })
+
+
+test('edits feature dependencies without cycles and reopens repairs without losing handoffs', async (t) => {
+  const { store } = await createFixture(t)
+  const { board, feature } = await createBoardAndFeature(store)
+  let snapshot = await store.createCard({ boardId: board.id, title: 'Dependent interface', model: 'selected-model', reasoningEffort: 'medium' })
+  const second = snapshot.cards.find((card) => card.title === 'Dependent interface')
+  await store.updateCard(second.id, { dependencyIds: [feature.id] })
+  await assert.rejects(store.updateCard(feature.id, { dependencyIds: [second.id] }), /cycle/u)
+  await assert.rejects(store.updateCard(second.id, { dependencyIds: ['missing'] }), /Missing dependency/u)
+  await assert.rejects(store.updateCard(second.id, { reasoningEffort: 'invented' }), /Unknown reasoning/u)
+  await assert.rejects(store.startRun(second.id, 'builtin-lead', 'execute'), /waiting for dependency/u)
+  const plan = await store.startRun(second.id, 'builtin-lead', 'plan')
+  await store.completeRun(plan.run.id, 'Can plan before the foundation exists.')
+  snapshot = await store.replacePlan(feature.id, { summary: 'Build and verify.', tasks: [
+    planTask({ key: 'build', title: 'Build' }), planTask({ key: 'review', title: 'Review', agentRole: 'qa', dependsOn: ['build'] }),
+  ] })
+  const build = snapshot.cards.find((card) => card.title === 'Build')
+  const review = snapshot.cards.find((card) => card.title === 'Review')
+  for (const task of [build, review]) {
+    await store.updateTaskFromAgent(feature.id, task.id, 'start', {})
+    await store.updateTaskFromAgent(feature.id, task.id, 'complete', { summary: `${task.title} original evidence.` })
+  }
+  await assert.rejects(store.updateTaskFromAgent(feature.id, build.id, 'reopen', { summary: 'Repair integration.' }), /Reopen dependent task/u)
+  await store.updateTaskFromAgent(feature.id, review.id, 'reopen', { summary: 'Recheck after repairs.' })
+  snapshot = await store.updateTaskFromAgent(feature.id, build.id, 'reopen', { summary: 'Repair integration.' })
+  assert.equal(snapshot.cards.find((card) => card.id === build.id).status, 'backlog')
+  assert.equal(snapshot.cards.find((card) => card.id === build.id).summary, 'Build original evidence.')
+  assert.ok(snapshot.comments.some((comment) => comment.text.includes('Previous handoff: Build original evidence.')))
+  assert.equal(snapshot.cards.find((card) => card.id === second.id).model, 'selected-model')
+})

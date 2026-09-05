@@ -14,7 +14,7 @@ export type ProjectBoardVerificationPolicy = 'none' | 'self' | 'independent' | '
 export type ProjectBoardPriority = 'low' | 'normal' | 'high' | 'urgent'
 export type ProjectBoardAgentRole = 'lead' | 'product' | 'design' | 'engineering' | 'qa' | 'custom'
 export type ProjectBoardAgentSandbox = 'read-only' | 'workspace-write'
-export type ProjectBoardRunKind = 'plan' | 'execute'
+export type ProjectBoardRunKind = 'plan' | 'execute' | 'board_plan'
 export type ProjectBoardRunStatus = 'queued' | 'running' | 'succeeded' | 'failed' | 'interrupted'
 
 export type ProjectBoardAgent = {
@@ -40,6 +40,10 @@ export type ProjectBoard = {
   agentIds: string[]
   autoDispatch: boolean
   maxConcurrentRuns: number
+  plan: string
+  sourceThreadId: string
+  planningThreadId: string
+  coordinatorAgentId: string
   createdAtIso: string
   updatedAtIso: string
 }
@@ -68,6 +72,12 @@ export type ProjectBoardCard = {
   assignedAgentId: string
   dependencyIds: string[]
   autoRun: boolean
+  model: string
+  reasoningEffort: ReasoningEffort | ''
+  planSummary: string
+  planStatus: 'none' | 'ready'
+  /** Dynamic tool schema installed when the persistent chat was created. */
+  toolSchemaVersion: number
   threadId: string
   lastRunId: string
   summary: string
@@ -121,6 +131,7 @@ export type ProjectBoardSnapshot = {
   comments: ProjectBoardComment[]
   artifacts: ProjectBoardArtifact[]
   runs: ProjectBoardRun[]
+  queues?: ProjectBoardQueue[]
   schemaVersion: number
   version: number
   updatedAtIso: string
@@ -147,6 +158,8 @@ export type ProjectBoardCardCreateInput = {
   assignedAgentId?: string
   dependencyIds?: string[]
   autoRun?: boolean
+  model?: string
+  reasoningEffort?: ReasoningEffort | ''
 }
 
 export type ProjectBoardAgentCreateInput = {
@@ -176,4 +189,39 @@ export type ProjectBoardPlanTask = {
 export type ProjectBoardPlanResult = {
   summary: string
   tasks: ProjectBoardPlanTask[]
+}
+
+export type ProjectBoardQueue = {
+  boardId: string
+  status: 'running' | 'paused'
+  featureIds: string[]
+  currentFeatureId: string
+  reason: string
+}
+
+export type ProjectBoardFeaturePlan = {
+  summary: string
+  features: Array<{
+    key: string
+    title: string
+    description: string
+    acceptanceCriteria: string
+    agentId: string
+    verificationPolicy: ProjectBoardVerificationPolicy
+    /** Other proposed feature keys or existing feature IDs on this board. */
+    dependsOn: string[]
+  }>
+}
+
+export type ProjectBoardStartInput = {
+  allowWorkspaceWrite?: boolean
+  mode?: 'plan' | 'execute'
+}
+
+export type ProjectBoardPlanInput = {
+  plan: string
+  sourceThreadId?: string
+  coordinatorAgentId?: string
+  model?: string
+  reasoningEffort?: ReasoningEffort | ''
 }

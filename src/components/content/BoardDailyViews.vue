@@ -20,11 +20,12 @@
         <h4>Review & unblock <span>{{ attentionCards.length }}</span></h4>
         <article v-for="card in attentionCards" :key="card.id" class="daily-row" :data-attention-feature-id="card.id">
           <div class="daily-row-content">
-            <div class="daily-kicker"><span class="daily-status" :data-status="card.status">{{ card.status === 'review' ? 'Ready for review' : card.status === 'blocked' ? 'Blocked' : 'Needs input' }}</span><span>{{ agentName(card.assignedAgentId) }}</span></div>
+            <div class="daily-kicker"><span class="daily-status" :data-status="requestForCard(card) ? 'needs_input' : card.status">{{ requestForCard(card) ? requestLabel(card) : card.status === 'review' ? 'Ready for review' : card.status === 'blocked' ? 'Blocked' : 'Needs input' }}</span><span>{{ agentName(card.assignedAgentId) }}</span></div>
             <h5>{{ card.title }}</h5>
-            <p class="daily-reason">{{ card.progressNote || card.summary || (card.status === 'review' ? 'Review the result and choose the next step.' : 'Open the feature to review its latest run and decide how to continue.') }}</p>
+            <p class="daily-reason">{{ requestForCard(card) ? 'The Lead is waiting for you. Review the request in its chat to continue.' : card.progressNote || card.summary || (card.status === 'review' ? 'Review the result and choose the next step.' : 'Open the feature to review its latest run and decide how to continue.') }}</p>
           </div>
-          <Button type="button" variant="outline" @click="$emit('open-feature', card)">Open feature</Button>
+          <Button v-if="requestForCard(card)" type="button" variant="outline" @click="$emit('open-thread', card.threadId)">Review in Lead chat</Button>
+          <Button v-else type="button" variant="outline" @click="$emit('open-feature', card)">Open feature</Button>
         </article>
       </section>
     </template>
@@ -57,6 +58,7 @@ import { useDocumentVisibility, useNow } from '@vueuse/core'
 import { Check, CircleHelp, History, MessageSquare } from '@lucide/vue'
 import Button from '../ui/button/Button.vue'
 import type { ProjectBoardCard, ProjectBoardQuestion, ProjectBoardRun, ProjectBoardSnapshot } from '../../types/projectBoards'
+import type { UiServerRequest } from '../../types/codex'
 
 const props = defineProps<{
   view: 'needs-you' | 'runs'
@@ -64,6 +66,7 @@ const props = defineProps<{
   snapshot: ProjectBoardSnapshot
   questions: ProjectBoardQuestion[]
   attentionCards: ProjectBoardCard[]
+  pendingRequests?: UiServerRequest[]
 }>()
 const emit = defineEmits<{
   'open-feature': [card: ProjectBoardCard, questionId?: string]
@@ -85,6 +88,10 @@ function featureFor(cardId: string): ProjectBoardCard | undefined {
   return card?.parentCardId ? props.snapshot.cards.find((entry) => entry.id === card.parentCardId && entry.boardId === props.boardId) : card
 }
 function taskFor(cardId: string): ProjectBoardCard | undefined { return props.snapshot.cards.find((card) => card.id === cardId && card.boardId === props.boardId && card.parentCardId) }
+function requestForCard(card: ProjectBoardCard): UiServerRequest | undefined {
+  return card.threadId ? props.pendingRequests?.find((request) => request.threadId === card.threadId) : undefined
+}
+function requestLabel(card: ProjectBoardCard): string { return requestForCard(card)?.method.includes('requestUserInput') ? 'Answer needed' : 'Approval needed' }
 function agentName(id: string): string { return props.snapshot.agents.find((agent) => agent.id === id)?.name || 'Agent unavailable' }
 function questionAgent(question: ProjectBoardQuestion): string {
   const card = props.snapshot.cards.find((entry) => entry.id === question.cardId)

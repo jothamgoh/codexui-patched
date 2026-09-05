@@ -32,6 +32,7 @@ import {
   startThread,
   subscribeCodexNotifications,
   startThreadTurn,
+  buildThreadTurnInput,
   type AccountRateLimitsState,
   type PluginMentionParam,
   type RpcNotification,
@@ -1291,6 +1292,10 @@ export function useDesktopState() {
   const selectedThreadTokenUsage = computed<UiThreadTokenUsage | null>(
     () => threadTokenUsageByThreadId.value[selectedThreadId.value] ?? null,
   )
+  const pendingServerRequests = computed<UiServerRequest[]>(() => Object.entries(pendingServerRequestsByThreadId.value)
+    .filter(([scope]) => scope !== GLOBAL_SERVER_REQUEST_SCOPE)
+    .flatMap(([, requests]) => requests))
+  const selectedThreadActiveTurnId = computed(() => activeTurnIdByThreadId.value[selectedThreadId.value] || '')
   const selectedThreadServerRequests = computed<UiServerRequest[]>(() => {
     const rows: UiServerRequest[] = []
     const selected = selectedThreadId.value
@@ -2273,6 +2278,7 @@ export function useDesktopState() {
   }
 
   function shouldContinueThreadGoal(threadId: string): boolean {
+    if (boardManagedThreadIds.has(threadId)) return false
     if (!threadId) return false
     const goal = threadGoalByThreadId.value[threadId]
     const queue = queuedMessagesByThreadId.value[threadId] ?? []
@@ -4472,6 +4478,16 @@ export function useDesktopState() {
     }))
   }
 
+  async function prepareThreadMessageInput(threadId: string, payload: {
+    text: string; imageUrls: string[]; skills: Array<{ name: string; path: string }>;
+    fileAttachments: FileAttachment[]; responseTextAnnotations: ResponseTextAnnotation[];
+    plugins: PluginMentionParam[]; threads: ThreadMentionParam[];
+  }) {
+    const references = await resolveThreadMentions(threadId, payload.threads)
+    return buildThreadTurnInput(payload.text, payload.imageUrls, payload.skills, payload.fileAttachments,
+      payload.responseTextAnnotations, payload.plugins, references)
+  }
+
   async function processQueuedMessages(threadId: string): Promise<void> {
     const queue = queuedMessagesByThreadId.value[threadId]
     if (!queue || queue.length === 0) return
@@ -5049,6 +5065,9 @@ export function useDesktopState() {
     selectedThreadTokenUsage,
     selectedThreadScrollState,
     selectedThreadServerRequests,
+    pendingServerRequests,
+    selectedThreadActiveTurnId,
+    prepareThreadMessageInput,
     selectedLiveOverlay,
     selectedThreadId,
     availableModelIds,

@@ -30,7 +30,7 @@
           </button>
         </nav>
 
-        <SidebarThreadTree :groups="projectGroups" :project-display-name-by-id="projectDisplayNameById"
+        <SidebarThreadTree :groups="sidebarProjectGroups" :board-threads="boardThreads" :project-display-name-by-id="projectDisplayNameById"
           v-if="!isSidebarCollapsed"
           :pinned-thread-ids="pinnedThreadIds"
           :selected-thread-id="selectedThreadId" :is-loading="isLoadingThreads"
@@ -173,7 +173,7 @@
             </span>
           </template>
           <template #actions>
-            <Button v-if="route.name === 'thread' && selectedThreadId" type="button" variant="ghost" size="icon-sm" title="Turn this chat into a board" aria-label="Turn this chat into a board" @click="openChatBoardPlan"><SquareKanban /></Button>
+            <Button v-if="route.name === 'thread' && selectedThreadId && !selectedChatBoard" type="button" variant="ghost" size="icon-sm" title="Track on board" aria-label="Track on board" @click="openTrackFeature"><SquareKanban /></Button>
             <WorkspaceSummaryButton
               v-if="showWorkspaceSummary"
               :thread-id="selectedThreadId"
@@ -189,6 +189,8 @@
               :board-attention="projectBoardAttention"
               :board-thread-ids="boardManagedThreadIds"
               :board-activity-titles="boardActivityTitles"
+              :board-activity="boardActivity"
+              :pending-requests="pendingServerRequests"
               @select-thread="onSelectThread"
               @select-board-question="openProjectBoardQuestion"
             />
@@ -199,6 +201,7 @@
           <template v-if="isBoardsRoute">
             <ProjectBoardsHub
               :snapshot="projectBoardSnapshot"
+              :pending-requests="pendingServerRequests"
               :is-loading="isLoadingProjectBoards"
               :is-mutating="isMutatingProjectBoards"
               :error="projectBoardError"
@@ -216,6 +219,7 @@
                 createCard: onCreateProjectBoardCard, updateCard: updateProjectBoardCard,
                 deleteCard: deleteProjectBoardCard, addComment: onAddProjectBoardComment,
                 answerQuestion: onAnswerProjectBoardQuestion, startFeature: onStartProjectBoardFeature,
+                stopFeature: stopProjectBoardFeature,
                 startQueue: startProjectBoardQueue, stopQueue: stopProjectBoardQueue,
                 clearError: clearProjectBoardError,
               }"
@@ -278,6 +282,27 @@
           </template>
           <template v-else>
             <div class="content-grid">
+              <section v-if="selectedChatBoard" class="board-chat-context" aria-label="Tracked work">
+                <div class="board-chat-links">
+                  <SquareKanban aria-hidden="true" />
+                  <button type="button" class="board-chat-feature" @click="openLinkedFeature">{{ selectedChatFeature?.title || selectedChatBoard.name + ' · Planning' }}</button>
+                  <span class="board-chat-status">{{ selectedChatStatus }}</span>
+                  <button type="button" @click="openProjectBoard(selectedChatBoard.id)">View board</button>
+                </div>
+                <p v-if="projectBoardError" role="alert">{{ projectBoardError }} <button type="button" @click="clearProjectBoardError">Dismiss</button></p>
+                <p v-if="selectedChatQuestion"><button type="button" @click="openProjectBoardQuestion({ boardId: selectedChatBoard.id, featureId: selectedChatFeature!.id, questionId: selectedChatQuestion.id })">Answer needed: {{ selectedChatQuestion.prompt }}</button></p>
+                <p v-else-if="selectedChatNativeQuestion">Answer the request in this chat to continue.</p>
+                <p v-else-if="selectedChatRun?.error">{{ selectedChatRun.error }}</p>
+                <details v-if="selectedChatFeature && !selectedChatIsRunning" ref="boardChatOptionsRef" class="board-chat-options"><summary>{{ selectedChatFeature.status === 'done' ? 'Reopen to continue' : boardReplyMode === 'plan' ? 'Plan only' : 'Continue work' }}<span v-if="boardChatSendDisabled && !selectedChatQuestion && !selectedChatNativeQuestion"> · choose access</span></summary><div class="board-chat-reply-controls">
+                  <label v-if="canPlanChatFeature"><span>Next message</span><select v-model="boardReplyMode" aria-label="Lead reply mode"><option value="plan">Plan only</option><option value="execute">Continue work</option></select></label>
+                  <span v-else>Continue this feature</span>
+                  <label v-if="selectedChatFeature.status === 'done'"><input v-model="boardReplyReopen" type="checkbox" />Reopen feature</label>
+                  <label v-if="boardReplyMode === 'execute' && chatLeadNeedsWrite"><input v-model="boardReplyWrite" type="checkbox" />Allow workspace changes</label>
+                  <button type="button" @click="openLinkedFeature">Lead settings</button>
+                  <button v-if="selectedChatFeature.sourceThreadId || selectedChatBoard.sourceThreadId" type="button" @click="onSelectThread(selectedChatFeature.sourceThreadId || selectedChatBoard.sourceThreadId)">Original chat</button>
+                </div></details>
+                <p v-if="(selectedChatIsRunning || !selectedChatFeature) && (selectedChatFeature?.sourceThreadId || selectedChatBoard.sourceThreadId)" class="board-chat-source"><button type="button" @click="onSelectThread(selectedChatFeature?.sourceThreadId || selectedChatBoard.sourceThreadId)">Original chat</button></p>
+              </section>
               <div class="content-thread">
                 <ThreadConversation :messages="filteredMessages" :is-loading="isLoadingMessages"
                   :active-thread-id="composerThreadContextId" :scroll-state="selectedThreadScrollState"
@@ -302,13 +327,16 @@
                   @rollback="onRollback" />
               </div>
 
-              <div class="composer-with-queue">
+              <div class="composer-with-queue" @focusin="collapseBoardReplyOptions">
                 <QueuedMessages
                   :messages="selectedThreadQueuedMessages"
                   @steer="steerQueuedMessage"
                   @delete="removeQueuedMessage"
                 />
                 <ThreadComposer ref="threadComposerRef" :active-thread-id="composerThreadContextId"
+                  :submit-message="selectedChatBoard ? onSubmitBoardChatMessage : undefined"
+                  :send-disabled="Boolean(selectedChatBoard) && boardChatSendDisabled"
+                  :hide-model-settings="Boolean(selectedChatBoard)"
                   :cwd="composerCwd"
                   :models="availableModelIds"
                   :selected-model="selectedModelId" :selected-reasoning-effort="selectedReasoningEffort"
@@ -318,7 +346,7 @@
                   :show-context-usage="true"
                   :goal="selectedThreadGoal"
                   :turn-activity-label="composerTurnActivityLabel"
-                  :is-turn-in-progress="isSelectedThreadInProgress" :is-interrupting-turn="isInterruptingTurn"
+                  :is-turn-in-progress="isSelectedThreadInProgress" :is-interrupting-turn="isInterruptingTurn || Boolean(selectedChatFeature && isMutatingProjectBoards)"
                   :has-queue-above="selectedThreadQueuedMessages.length > 0"
                   @submit="onSubmitThreadMessage" @update:selected-model="onSelectModel"
                   @update:selected-reasoning-effort="onSelectReasoningEffort" @interrupt="onInterruptTurn"
@@ -338,6 +366,9 @@
     @close="closeChatSearch"
     @select="onSelectSearchThread"
   />
+  <TrackFeatureDialog v-model:open="trackFeatureOpen" :source-thread-id="trackSourceThreadId"
+    :initial-brief="trackInitialBrief" :boards="trackBoards" :agents="projectBoardSnapshot.agents"
+    :created-feature-id="trackCreatedFeatureId" :on-track="onTrackFeature" @plan-project="openTrackProjectPlan" />
   <BoardPlanDialog
     v-model:open="boardPlanDialogOpen"
     :board-id="boardPlanTargetId" :source-thread-id="boardPlanSourceThreadId"
@@ -359,7 +390,10 @@ import DesktopLayout from './components/layout/DesktopLayout.vue'
 import SidebarThreadTree from './components/sidebar/SidebarThreadTree.vue'
 import ContentHeader from './components/content/ContentHeader.vue'
 import ThreadConversation from './components/content/ThreadConversation.vue'
-import ThreadComposer from './components/content/ThreadComposer.vue'
+import ThreadComposer, { type SubmitPayload } from './components/content/ThreadComposer.vue'
+import TrackFeatureDialog from './components/content/TrackFeatureDialog.vue'
+import { useComposerDraftStore } from './stores/composerDrafts'
+import { collectProjectBoardActivity } from './utils/projectBoardActivity'
 import QueuedMessages from './components/content/QueuedMessages.vue'
 import NewThreadFolderPicker from './components/content/NewThreadFolderPicker.vue'
 import SkillsHub from './components/content/SkillsHub.vue'
@@ -399,9 +433,9 @@ import {
   type PluginMentionParam,
   type ThreadMentionParam,
 } from './api/codexGateway'
-import type { ReasoningEffort, ResponseTextAnnotation, ThreadScrollState, UiMessage, UiThread } from './types/codex'
+import type { ReasoningEffort, ResponseTextAnnotation, ThreadScrollState, UiMessage, UiThread, UiProjectGroup } from './types/codex'
 import type { AutomationDraft } from './types/automations'
-import type { ProjectBoardCardCreateInput, ProjectBoardCreateInput } from './types/projectBoards'
+import type { ProjectBoardCardCreateInput, ProjectBoardCreateInput, ProjectBoardStatus } from './types/projectBoards'
 
 const SIDEBAR_COLLAPSED_STORAGE_KEY = 'codex-web-local.sidebar-collapsed.v1'
 const SIDEBAR_TOOLS_OPEN_STORAGE_KEY = 'codex-web-local.sidebar-tools-open.v1'
@@ -416,6 +450,9 @@ const {
   selectedThreadTokenUsage,
   selectedThreadScrollState,
   selectedThreadServerRequests,
+  pendingServerRequests,
+  selectedThreadActiveTurnId,
+  prepareThreadMessageInput,
   selectedLiveOverlay,
   selectedThreadId,
   availableModelIds,
@@ -523,11 +560,79 @@ const {
   addComment: addProjectBoardComment,
   answerQuestion: answerProjectBoardQuestion,
   startFeature: startProjectBoardFeature,
+  stopFeature: stopProjectBoardFeature,
+  sendChatMessage: sendProjectBoardChatMessage,
   planBoard: planProjectBoard,
   startQueue: startProjectBoardQueue,
   stopQueue: stopProjectBoardQueue,
   clearError: clearProjectBoardError,
 } = useProjectBoards({ showBrowserNotifications: true })
+const composerDraftStore = useComposerDraftStore()
+const boardActivity = computed(() => collectProjectBoardActivity(projectBoardSnapshot.value))
+const boardPendingThreadIds = computed(() => new Set(pendingServerRequests.value.map((request) => request.threadId).filter(Boolean)))
+const boardThreads = computed(() => Object.fromEntries(boardActivity.value.filter((item) => item.threadId).map((item) => [item.threadId, {
+  boardId: item.boardId, featureId: item.featureId, title: item.title,
+  status: (boardPendingThreadIds.value.has(item.threadId) ? 'needs_input' : item.status === 'running' || item.status === 'paused' ? 'working' : item.status) as ProjectBoardStatus,
+}])))
+const sidebarProjectGroups = computed<UiProjectGroup[]>(() => {
+  const groups = projectGroups.value.map((group) => ({ ...group, threads: group.threads.map((thread) => boardThreads.value[thread.id]?.status === 'needs_input' ? { ...thread, inProgress: false } : thread) }))
+  const known = new Set(groups.flatMap((group) => group.threads.map((thread) => thread.id)))
+  for (const activity of boardActivity.value) {
+    if (!activity.threadId || known.has(activity.threadId)) continue
+    const board = projectBoardSnapshot.value.boards.find((entry) => entry.id === activity.boardId)
+    if (!board) continue
+    let group = groups.find((entry) => entry.threads.some((thread) => thread.cwd === board.projectPath) || entry.projectName === board.projectName)
+    if (!group) { group = { projectName: board.projectName, threads: [] }; groups.push(group) }
+    group.threads.unshift({ id: activity.threadId, title: activity.title, projectName: group.projectName, cwd: board.projectPath,
+      createdAtIso: activity.updatedAtIso, updatedAtIso: activity.updatedAtIso, preview: activity.summary,
+      inProgress: activity.status === 'running' && !boardPendingThreadIds.value.has(activity.threadId), unread: false, hasWorktree: false })
+    known.add(activity.threadId)
+  }
+  return groups
+})
+const selectedChatFeature = computed(() => projectBoardSnapshot.value.cards.find((card) => card.type === 'feature' && card.threadId && card.threadId === selectedThreadId.value))
+const selectedChatBoard = computed(() => projectBoardSnapshot.value.boards.find((board) => selectedChatFeature.value
+  ? board.id === selectedChatFeature.value.boardId : Boolean(board.planningThreadId) && board.planningThreadId === selectedThreadId.value))
+const selectedChatRun = computed(() => projectBoardSnapshot.value.runs.find((run) => run.threadId === selectedThreadId.value && selectedThreadId.value))
+const selectedChatIsRunning = computed(() => Boolean(selectedChatRun.value && ['running', 'queued'].includes(selectedChatRun.value.status)))
+const selectedChatQuestion = computed(() => projectBoardSnapshot.value.questions.find((question) => question.status === 'open' && Boolean(selectedChatFeature.value) && (question.cardId === selectedChatFeature.value?.id || projectBoardSnapshot.value.cards.some((card) => card.id === question.cardId && card.parentCardId === selectedChatFeature.value?.id))))
+const selectedChatNativeQuestion = computed(() => selectedThreadServerRequests.value.length > 0)
+const selectedChatStatus = computed(() => selectedChatQuestion.value || selectedChatNativeQuestion.value ? 'Needs you' : selectedChatIsRunning.value ? 'Working' : selectedChatFeature.value?.status === 'done' ? 'Done' : selectedChatFeature.value?.planStatus === 'ready' || (selectedChatRun.value?.kind === 'board_plan' && selectedChatRun.value.status === 'succeeded') ? 'Plan ready' : 'Paused')
+const canPlanChatFeature = computed(() => !projectBoardSnapshot.value.cards.some((card) => card.parentCardId === selectedChatFeature.value?.id && card.status !== 'backlog'))
+const chatLeadNeedsWrite = computed(() => {
+  const board = selectedChatBoard.value
+  return Boolean(board && projectBoardSnapshot.value.agents.some((agent) => board.agentIds.includes(agent.id) && agent.sandbox === 'workspace-write'))
+})
+const boardChatOptionsRef = ref<HTMLDetailsElement | null>(null)
+function collapseBoardReplyOptions(event: FocusEvent): void {
+  if (isMobile.value && event.target instanceof HTMLTextAreaElement && boardChatOptionsRef.value) boardChatOptionsRef.value.open = false
+}
+const boardReplyMode = ref<'plan' | 'execute'>('execute')
+const boardReplyWrite = ref(false)
+const boardReplyReopen = ref(false)
+watch([() => selectedThreadId.value, () => selectedChatRun.value?.id, () => selectedChatIsRunning.value], () => {
+  boardReplyWrite.value = false; boardReplyReopen.value = false
+  boardReplyMode.value = canPlanChatFeature.value && selectedChatRun.value?.kind === 'plan' && selectedChatFeature.value?.planStatus !== 'ready' ? 'plan' : 'execute'
+})
+const boardChatSendDisabled = computed(() => Boolean(selectedChatQuestion.value || selectedChatNativeQuestion.value)
+  || (selectedChatIsRunning.value ? !selectedThreadActiveTurnId.value : Boolean(selectedChatFeature.value && (
+    (selectedChatFeature.value.status === 'done' && !boardReplyReopen.value)
+    || (boardReplyMode.value === 'execute' && chatLeadNeedsWrite.value && !boardReplyWrite.value)))))
+const trackFeatureOpen = ref(false)
+const trackSourceThreadId = ref('')
+const trackProjectPath = ref('')
+const trackInitialBrief = ref('')
+const trackCreatedFeatureId = ref('')
+const trackBoards = computed(() => projectBoardSnapshot.value.boards.filter((board) => board.projectPath === trackProjectPath.value))
+const pendingLeadNavigation = ref<{ featureId: string; route: string } | null>(null)
+watch(() => projectBoardSnapshot.value, (snapshot) => {
+  const pending = pendingLeadNavigation.value
+  if (!pending) return
+  if (route.fullPath !== pending.route) { pendingLeadNavigation.value = null; return }
+  const feature = snapshot.cards.find((card) => card.id === pending.featureId)
+  if (feature?.threadId) { pendingLeadNavigation.value = null; onSelectThread(feature.threadId) }
+  else if (feature && !snapshot.runs.some((run) => run.cardId === feature.id && ['running', 'queued'].includes(run.status))) pendingLeadNavigation.value = null
+})
 const boardPlanDialogOpen = ref(false)
 const boardPlanTargetId = ref('')
 const boardPlanSourceThreadId = ref('')
@@ -669,7 +774,7 @@ const contentTitle = computed(() => {
   if (isMcpRoute.value) return 'MCPs'
   if (isPluginsRoute.value) return 'Plugins'
   if (isHomeRoute.value) return 'New thread'
-  return selectedThread.value?.title ?? 'Choose a thread'
+  return selectedChatFeature.value?.title || (selectedChatBoard.value ? `${selectedChatBoard.value.name} · Planning` : selectedThread.value?.title) || 'Choose a thread'
 })
 const filteredMessages = computed(() => {
   const recoveredConnectionFailureIds = findRecoveredConnectionFailureIds(messages.value)
@@ -931,7 +1036,67 @@ async function onAnswerProjectBoardQuestion(questionId: string, answer: string):
 
 async function onStartProjectBoardFeature(featureId: string, allowWorkspaceWrite: boolean, mode: 'plan' | 'execute' = 'execute'): Promise<void> {
   requestBrowserTurnNotificationsPermission()
-  await startProjectBoardFeature(featureId, allowWorkspaceWrite, mode)
+  const origin = route.fullPath
+  const snapshot = await startProjectBoardFeature(featureId, allowWorkspaceWrite, mode)
+  if (route.fullPath !== origin) return
+  const feature = snapshot.cards.find((card) => card.id === featureId)
+  if (feature?.threadId) onSelectThread(feature.threadId)
+  else pendingLeadNavigation.value = { featureId, route: origin }
+}
+
+function openLinkedFeature(): void {
+  if (!selectedChatBoard.value) return
+  if (selectedChatFeature.value) setProjectBoardFeature(selectedChatFeature.value.id, selectedChatBoard.value.id)
+  else openProjectBoard(selectedChatBoard.value.id)
+}
+
+async function onSubmitBoardChatMessage(payload: SubmitPayload): Promise<void> {
+  const threadId = selectedThreadId.value
+  if (!selectedChatBoard.value || boardChatSendDisabled.value) throw new Error('Resolve the request or choose how to continue before sending.')
+  const options = { expectedTurnId: selectedChatIsRunning.value ? selectedThreadActiveTurnId.value : undefined,
+    mode: boardReplyMode.value, allowWorkspaceWrite: boardReplyWrite.value, reopenAndSend: boardReplyReopen.value }
+  const prepared = await prepareThreadMessageInput(threadId, payload)
+  requestBrowserTurnNotificationsPermission()
+  try { await sendProjectBoardChatMessage(threadId, { ...prepared, ...options, clientUserMessageId: crypto.randomUUID() }) }
+  catch (error) { clearProjectBoardError(); throw error }
+}
+
+function openTrackFeature(): void {
+  clearProjectBoardError()
+  if (trackSourceThreadId.value !== selectedThreadId.value || !projectBoardSnapshot.value.cards.some((card) => card.id === trackCreatedFeatureId.value)) trackCreatedFeatureId.value = ''
+  trackSourceThreadId.value = selectedThreadId.value
+  trackProjectPath.value = selectedThread.value?.cwd || newThreadCwd.value
+  trackInitialBrief.value = composerDraftStore.draftFor(selectedThreadId.value).text.trim()
+    || [...messages.value].reverse().find((message) => message.role === 'user' && message.text.trim())?.text.slice(0, 12000) || ''
+  trackFeatureOpen.value = true
+}
+
+function openTrackProjectPlan(brief: string): void {
+  trackFeatureOpen.value = false
+  openChatBoardPlan()
+  if (brief.trim() && (brief !== trackInitialBrief.value || composerDraftStore.draftFor(trackSourceThreadId.value).text.trim())) boardPlanInitialText.value = brief
+}
+
+async function onTrackFeature(draft: ProjectBoardCardCreateInput): Promise<void> {
+  let boardId = draft.boardId
+  if (!boardId) {
+    const projectName = projectBoardProjectOptions.value.find((project) => project.path === trackProjectPath.value)?.name
+      || trackProjectPath.value.split('/').filter(Boolean).at(-1) || 'Project'
+    const snapshot = await ensureProjectBoard({ projectPath: trackProjectPath.value, projectName })
+    boardId = snapshot.boards.find((board) => board.projectPath === trackProjectPath.value && board.isDefault)?.id || ''
+    if (!boardId) throw new Error('Could not find the project board.')
+  }
+  if (!trackCreatedFeatureId.value) {
+    const previousIds = new Set(projectBoardSnapshot.value.cards.map((card) => card.id))
+    const snapshot = await createProjectBoardCard({ ...draft, boardId })
+    trackCreatedFeatureId.value = snapshot.cards.find((card) => !previousIds.has(card.id))?.id || ''
+    if (!trackCreatedFeatureId.value) throw new Error('Could not find the new feature.')
+  } else {
+    await updateProjectBoardCard(trackCreatedFeatureId.value, { title: draft.title || undefined, description: draft.description,
+      assignedAgentId: draft.assignedAgentId, model: draft.model, reasoningEffort: draft.reasoningEffort })
+  }
+  await onStartProjectBoardFeature(trackCreatedFeatureId.value, false, 'plan')
+  trackCreatedFeatureId.value = ''
 }
 
 function openChatBoardPlan(): void {
@@ -986,9 +1151,9 @@ function openPluginsHub(): void {
 
 function onSelectThread(threadId: string): void {
   if (!threadId) return
+  if (isMobile.value) setSidebarCollapsed(true)
   if (route.name === 'thread' && routeThreadId.value === threadId) return
   void router.push({ name: 'thread', params: { threadId } })
-  if (isMobile.value) setSidebarCollapsed(true)
 }
 
 async function onSelectSearchThread(thread: UiThread): Promise<void> {
@@ -1006,7 +1171,9 @@ function onArchiveThread(threadId: string): void {
 }
 
 function onRenameThread(payload: { threadId: string; name: string }): void {
-  void renameThread(payload.threadId, payload.name)
+  const feature = projectBoardSnapshot.value.cards.find((card) => card.type === 'feature' && card.threadId === payload.threadId)
+  if (feature) void updateProjectBoardCard(feature.id, { title: payload.name }).catch(() => {})
+  else void renameThread(payload.threadId, payload.name)
 }
 
 function onShortcutThreadsChange(threadIds: string[]): void {
@@ -1355,7 +1522,9 @@ function onSelectReasoningEffort(effort: ReasoningEffort | ''): void {
 }
 
 function onInterruptTurn(): void {
-  void interruptSelectedThreadTurn()
+  if (selectedChatFeature.value && selectedChatIsRunning.value) {
+    void stopProjectBoardFeature(selectedChatFeature.value.id, selectedChatRun.value?.id).catch(() => {})
+  } else void interruptSelectedThreadTurn()
 }
 
 function onRollback(payload: { turnIndex: number }): void {
@@ -1765,6 +1934,21 @@ async function submitFirstMessageForNewThread(
   @apply flex-1 min-h-0 flex flex-col gap-2.5;
   overscroll-behavior: none;
 }
+
+.board-chat-context { flex: 0 0 auto; margin: 0 12px; padding: 8px 10px; border: 1px solid var(--border-soft); border-radius: 10px; color: var(--text-secondary); font-size: 12px; }
+.board-chat-links, .board-chat-reply-controls { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+.board-chat-links svg { width: 14px; height: 14px; flex-shrink: 0; }
+.board-chat-links .board-chat-feature { flex: 1; min-width: 80px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; text-align: left; font-weight: 600; color: var(--text-primary); }
+.board-chat-context button { cursor: pointer; text-decoration: underline; text-underline-offset: 3px; }
+.board-chat-status { color: var(--text-tertiary); }
+.board-chat-context p[role="alert"] { white-space: normal; overflow-wrap: anywhere; }
+.board-chat-context p { margin: 5px 0 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.board-chat-reply-controls { margin-top: 6px; }
+.board-chat-options summary { cursor: pointer; padding: 5px 0; }
+.board-chat-reply-controls label { display: flex; align-items: center; gap: 6px; }
+.board-chat-reply-controls select { padding: 4px; background: var(--surface-elevated); border: 1px solid var(--border-soft); border-radius: 5px; }
+@media (max-width: 640px) { .board-chat-context { margin: 0 8px; padding: 0 8px; } .board-chat-context button, .board-chat-reply-controls label, .board-chat-options summary { min-height: 44px; }
+  .board-chat-options summary { display: flex; align-items: center; gap: 4px; } .board-chat-reply-controls select { min-height: 44px; font-size: 16px; } .board-chat-context p { margin: 0; } }
 
 .content-thread {
   @apply flex-1 min-h-0;

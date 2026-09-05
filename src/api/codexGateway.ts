@@ -900,6 +900,45 @@ function buildTextWithAttachments(
   return `${prefix}\n## My request for Codex:\n\n${prompt}\n`
 }
 
+export function buildThreadTurnInput(
+  text: string,
+  imageUrls: string[] = [],
+  skills: Array<{ name: string; path: string }> = [],
+  fileAttachments: FileAttachmentParam[] = [],
+  responseTextAnnotations: ResponseTextAnnotation[] = [],
+  pluginMentions: PluginMentionParam[] = [],
+  threadMentions: ResolvedThreadMentionParam[] = [],
+): { input: Array<Record<string, unknown>>; attachments: FileAttachmentParam[] } {
+  const finalText = buildTextWithAttachments(
+    text,
+    fileAttachments,
+    responseTextAnnotations,
+    pluginMentions,
+    threadMentions,
+  )
+  const input: Array<Record<string, unknown>> = [{ type: 'text', text: finalText }]
+  for (const imageUrl of imageUrls) {
+    const normalizedUrl = imageUrl.trim()
+    if (!normalizedUrl) continue
+    input.push({
+      type: 'image',
+      url: normalizedUrl,
+      image_url: normalizedUrl,
+    })
+  }
+  for (const skill of skills) {
+    input.push({ type: 'skill', name: skill.name, path: skill.path })
+  }
+  for (const plugin of pluginMentions) {
+    input.push({ type: 'mention', name: plugin.name, path: plugin.path })
+  }
+  for (const thread of threadMentions) {
+    input.push({ type: 'mention', name: thread.name, path: thread.path })
+  }
+  const attachments = fileAttachments.map((f) => ({ label: f.label, path: f.path, fsPath: f.fsPath }))
+  return { input, attachments }
+}
+
 export async function startThreadTurn(
   threadId: string,
   text: string,
@@ -914,35 +953,7 @@ export async function startThreadTurn(
   serviceTier?: string | null,
 ): Promise<void> {
   try {
-    const finalText = buildTextWithAttachments(
-      text,
-      fileAttachments,
-      responseTextAnnotations,
-      pluginMentions,
-      threadMentions,
-    )
-    const input: Array<Record<string, unknown>> = [{ type: 'text', text: finalText }]
-    for (const imageUrl of imageUrls) {
-      const normalizedUrl = imageUrl.trim()
-      if (!normalizedUrl) continue
-      input.push({
-        type: 'image',
-        url: normalizedUrl,
-        image_url: normalizedUrl,
-      })
-    }
-    if (skills) {
-      for (const skill of skills) {
-        input.push({ type: 'skill', name: skill.name, path: skill.path })
-      }
-    }
-    for (const plugin of pluginMentions) {
-      input.push({ type: 'mention', name: plugin.name, path: plugin.path })
-    }
-    for (const thread of threadMentions) {
-      input.push({ type: 'mention', name: thread.name, path: thread.path })
-    }
-    const attachments = fileAttachments.map((f) => ({ label: f.label, path: f.path, fsPath: f.fsPath }))
+    const { input, attachments } = buildThreadTurnInput(text, imageUrls, skills, fileAttachments, responseTextAnnotations, pluginMentions, threadMentions)
     const params: Record<string, unknown> = {
       threadId,
       input,

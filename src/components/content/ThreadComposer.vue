@@ -114,7 +114,7 @@
         </span>
       </div>
 
-      <div v-if="goal || isGoalEditorOpen" class="thread-composer-goal-card">
+      <div v-if="!submitMessage && (goal || isGoalEditorOpen)" class="thread-composer-goal-card">
         <div class="thread-composer-goal-header">
           <div class="thread-composer-goal-summary">
             <span class="thread-composer-goal-badge">Goal</span>
@@ -315,6 +315,7 @@
         />
       </div>
 
+      <p v-if="submitError" class="thread-composer-dictation-status" role="alert">{{ submitError }}</p>
       <p v-if="dictationStatus" class="thread-composer-dictation-status" role="status">
         {{ dictationStatus }}
         <button v-if="canRetryDictation" type="button" class="underline" @click="retryTranscription">Retry transcription</button>
@@ -356,6 +357,7 @@
           </div>
 
           <ComposerDropdown
+            v-if="!hideModelSettings"
             class="thread-composer-control thread-composer-control--model"
             :model-value="selectedModel"
             :options="modelOptions"
@@ -377,6 +379,7 @@
           />
 
           <ComposerDropdown
+            v-if="!hideModelSettings"
             class="thread-composer-control thread-composer-control--reasoning"
             :model-value="selectedReasoningEffort"
             :options="reasoningOptions"
@@ -468,7 +471,7 @@
     />
     <Teleport to="body">
       <div
-        v-if="pendingGoalReplacementObjective.length > 0"
+        v-if="!submitMessage && pendingGoalReplacementObjective.length > 0"
         class="thread-composer-goal-modal-backdrop"
         @click.self="cancelGoalReplacement"
       >
@@ -495,7 +498,7 @@
 </template>
 
 <script setup lang="ts">
-import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
+import { computed, nextTick, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue'
 import { Blocks, Check, MessageSquare, MessageSquareQuote, X } from '@lucide/vue'
 import type {
   ReasoningEffort,
@@ -558,6 +561,9 @@ const props = defineProps<{
   turnActivityLabel?: string
   disabled?: boolean
   hasQueueAbove?: boolean
+  submitMessage?: (payload: SubmitPayload) => Promise<void>
+  sendDisabled?: boolean
+  hideModelSettings?: boolean
 }>()
 
 export type FileAttachment = FileAttachmentParam
@@ -583,6 +589,10 @@ const emit = defineEmits<{
   'update:selected-reasoning-effort': [effort: ReasoningEffort | '']
 }>()
 
+const submittingThreadIds = reactive(new Set<string>())
+const isSubmitting = computed(() => submittingThreadIds.has(props.activeThreadId))
+const submitError = ref('')
+watch(() => props.activeThreadId, () => { submitError.value = '' })
 const composerDraftStore = useComposerDraftStore()
 const activeDraft = computed<ComposerDraftState>(() => composerDraftStore.draftFor(props.activeThreadId))
 const draft = computed({
@@ -678,7 +688,7 @@ const goalSlashCommand = computed<SkillItem>(() => ({
     : 'Set a goal Codex will keep working toward',
   path: GOAL_SLASH_COMMAND_PATH,
 }))
-const skillOptions = computed<SkillItem[]>(() => [goalSlashCommand.value, ...(props.skills ?? [])])
+const skillOptions = computed<SkillItem[]>(() => [...(props.submitMessage ? [] : [goalSlashCommand.value]), ...(props.skills ?? [])])
 const selectedSkillPaths = computed(() => selectedSkills.value.map((s) => s.path))
 const selectedPluginIds = computed(() => new Set(selectedPlugins.value.map((plugin) => plugin.id)))
 const selectedThreadMentionIds = computed(() => new Set(selectedThreads.value.map((thread) => thread.id)))
@@ -719,14 +729,14 @@ const composerMentionSuggestions = computed<ComposerMentionSuggestion[]>(() => [
   ...fileMentionSuggestions.value.map((file) => ({ kind: 'file' as const, file })),
 ])
 const canSubmit = computed(() => {
-  if (props.disabled) return false
+  if (props.disabled || props.sendDisabled || isSubmitting.value) return false
   if (!props.activeThreadId) return false
   return draft.value.trim().length > 0
     || selectedImages.value.length > 0
     || fileAttachments.value.length > 0
     || responseTextAnnotations.value.length > 0
 })
-const isInteractionDisabled = computed(() => props.disabled || !props.activeThreadId)
+const isInteractionDisabled = computed(() => props.disabled || isSubmitting.value || !props.activeThreadId)
 const dictationButtonLabel = computed(() => {
   if (dictationState.value === 'recording') return 'Stop dictation'
   if (dictationState.value === 'transcribing') return 'Transcribing'
@@ -849,12 +859,15 @@ const contextUsageToneClass = computed(() => {
   return 'is-normal'
 })
 
-function onSubmit(mode: 'steer' | 'queue' = 'steer'): void {
+async function onSubmit(mode: 'steer' | 'queue' = 'steer'): Promise<void> {
   if (dictationState.value !== 'idle' || isStartingDictation.value) return
-  if (tryHandleGoalSlashCommand()) return
+  if (!props.submitMessage && tryHandleGoalSlashCommand()) return
   const text = draft.value.trim()
   if (!canSubmit.value) return
-  emit('submit', {
+  const targetThreadId = props.activeThreadId
+  const submittedDraft = activeDraft.value
+  const submittedContent = JSON.stringify(submittedDraft)
+  const payload: SubmitPayload = {
     text,
     imageUrls: selectedImages.value.map((image) => image.url),
     fileAttachments: [...fileAttachments.value],
@@ -863,8 +876,18 @@ function onSubmit(mode: 'steer' | 'queue' = 'steer'): void {
     plugins: [...selectedPlugins.value],
     threads: [...selectedThreads.value],
     mode,
-  })
-  composerDraftStore.clearDraft(props.activeThreadId)
+  }
+  submitError.value = ''
+  if (props.submitMessage) {
+    submittingThreadIds.add(targetThreadId)
+    try { await props.submitMessage(payload) }
+    catch (error) {
+      if (props.activeThreadId === targetThreadId) submitError.value = error instanceof Error ? error.message : 'Message was not sent. Try again.'
+      return
+    } finally { submittingThreadIds.delete(targetThreadId) }
+  } else emit('submit', payload)
+  if (JSON.stringify(composerDraftStore.draftFor(targetThreadId)) === submittedContent) composerDraftStore.clearDraft(targetThreadId)
+  if (props.activeThreadId !== targetThreadId) return
   cancelRecording()
   isAttachMenuOpen.value = false
   isSlashMenuOpen.value = false
@@ -1458,6 +1481,7 @@ function isMarkdownFile(path: string): boolean {
 
 function onSlashSkillSelect(skill: SkillItem): void {
   if (skill.path === GOAL_SLASH_COMMAND_PATH) {
+    if (props.submitMessage) return
     draft.value = ''
     isSlashMenuOpen.value = false
     closeFileMention()
@@ -2305,6 +2329,8 @@ watch(
 .thread-composer-submit {
   @apply inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-full border-0 bg-zinc-900 text-white transition hover:bg-black disabled:cursor-not-allowed disabled:bg-zinc-200 disabled:text-zinc-500 sm:h-9 sm:w-9;
 }
+
+.thread-composer-submit:disabled { opacity: 0.45; }
 
 .thread-composer-submit-icon {
   @apply h-4.5 w-4.5 sm:h-5 sm:w-5;

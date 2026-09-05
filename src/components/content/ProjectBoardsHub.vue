@@ -134,7 +134,7 @@
               <button type="button" class="board-card-main" @click="selectCard(card)">
                 <div class="board-card-kicker">
                   <span>{{ card.type === 'qa_batch' ? 'QA batch' : priorityLabel(card.priority) }}</span>
-                  <span v-if="openQuestionFor(card)" class="needs-you-pill">Needs you</span>
+                  <span v-if="openQuestionFor(card) || requestForCard(card)" class="needs-you-pill">{{ requestForCard(card) ? nativeRequestLabel(card) : 'Needs you' }}</span>
                 </div>
                 <strong>{{ card.title }}</strong>
                 <p v-if="card.progressNote || card.description">{{ card.progressNote || card.description }}</p>
@@ -148,7 +148,7 @@
               </button>
               <label class="board-card-move" @click.stop>
                 <span class="sr-only">Move {{ card.title }}</span>
-                <select :value="card.status" :aria-label="`Move ${card.title}`" :disabled="cardIsLocked(card) || isMutating" @change="moveCardFromEvent(card, $event)">
+                <select :value="cardDisplayStatus(card)" :aria-label="`Move ${card.title}`" :disabled="cardIsLocked(card) || isMutating" @change="moveCardFromEvent(card, $event)">
                   <option v-for="status in moveStatuses" :key="status.value" :value="status.value" :disabled="status.value === 'needs_input'">{{ status.label }}</option>
                 </select>
                 <ChevronDown aria-hidden="true" />
@@ -162,7 +162,7 @@
       </div>
       </template>
       <BoardDailyViews v-else :key="activeView" :view="activeView" :board-id="activeBoard.id" :snapshot="snapshot"
-        :questions="openBoardQuestions" :attention-cards="attentionCards"
+        :questions="openBoardQuestions" :attention-cards="attentionCards" :pending-requests="pendingRequests"
         @open-feature="(card, questionId) => emit('select-feature', card.id, card.boardId, questionId)"
         @open-thread="threadId => emit('select-thread', threadId)" />
     </section>
@@ -174,7 +174,7 @@
           @interact-outside="keepDockedDetailOpen" @open-auto-focus="rememberFocus('detail')" @close-auto-focus="restoreFocus('detail', $event)">
           <header class="board-detail-header">
             <div>
-              <span>{{ selectedCard.type === 'qa_batch' ? 'QA batch' : statusLabel(selectedCard.status) }}</span>
+              <span>{{ selectedCard.type === 'qa_batch' ? 'QA batch' : requestForCard(selectedCard) ? nativeRequestLabel(selectedCard) : statusLabel(selectedCard.status) }}</span>
               <DialogTitle>{{ selectedCard.title }}</DialogTitle>
             </div>
             <Button type="button" variant="ghost" size="icon-sm" aria-label="Close feature" @click="closeCard">
@@ -195,9 +195,11 @@
                 <Play aria-hidden="true" /> {{ selectedCard.planStatus === 'ready' && !selectedTasks.some(task => task.status === 'done') ? 'Start work' : selectedCard.threadId ? 'Continue' : 'Plan & start' }}
               </Button>
               <Button v-if="canStartSelectedCard && !selectedTasks.some(task => task.status === 'working' || task.status === 'done')" type="button" variant="outline" :disabled="selectedRunIsActive || Boolean(selectedOpenQuestion) || isMutating" @click="planSelectedFeature"><Sparkles aria-hidden="true" />{{ selectedCard.planStatus === 'ready' ? 'Revise plan' : 'Plan first' }}</Button>
+              <Button v-if="selectedRunIsActive" type="button" variant="outline" :disabled="isMutating" @click="stopSelectedFeature"><LoaderCircle v-if="stoppingFeatureId === selectedCard.id" class="animate-spin" aria-hidden="true" /><Square v-else aria-hidden="true" />{{ stoppingFeatureId === selectedCard.id ? 'Stopping…' : 'Stop run' }}</Button>
               <Button v-if="selectedCard.threadId" type="button" variant="outline" @click="$emit('select-thread', selectedCard.threadId)">
                 <MessageSquare aria-hidden="true" /> Open Lead chat
               </Button>
+              <Button v-if="selectedCard.sourceThreadId" type="button" variant="ghost" @click="$emit('select-thread', selectedCard.sourceThreadId)">Original chat</Button>
               <Button type="button" variant="outline" :disabled="selectedRunIsActive" @click="openEditSelectedCard">
                 <Pencil aria-hidden="true" /> Edit
               </Button>
@@ -209,6 +211,8 @@
               </label>
             </div>
 
+            <section v-if="requestForCard(selectedCard)" class="needs-you-card" aria-label="Lead request"><strong>{{ nativeRequestLabel(selectedCard) }}</strong><p>The Lead is waiting for you. Open its chat to review the request, or stop this run.</p><Button type="button" variant="outline" @click="$emit('select-thread', selectedCard.threadId)">Review in Lead chat</Button></section>
+            <p v-if="!selectedRunIsActive && selectedRuns[0]?.error" class="detail-muted" role="status">{{ selectedRuns[0].error }}</p>
             <p v-if="dependencyLabel(selectedCard)" class="dependency-note">{{ dependencyLabel(selectedCard) }}</p>
             <section v-if="selectedCard.planSummary" class="detail-section"><h3>{{ selectedCard.planStatus === 'ready' ? 'Plan ready' : 'Plan' }}</h3><p class="detail-prewrap">{{ selectedCard.planSummary }}</p><p v-if="selectedCard.planStatus === 'ready'" class="detail-muted">Review the tasks below. Start work when you are ready, or revise the brief and plan again.</p></section>
             <p class="detail-muted">Lead settings: {{ selectedCard.model || agentFor(selectedCard.assignedAgentId)?.model || 'App default model' }} · {{ selectedCard.reasoningEffort || agentFor(selectedCard.assignedAgentId)?.reasoningEffort || 'Default' }} reasoning.</p>
@@ -291,9 +295,10 @@
           </div>
 
           <footer class="board-detail-footer">
-            <Button type="button" variant="ghost" class="danger-button" @click="deleteSelectedCard">
+            <Button type="button" variant="ghost" class="danger-button" :disabled="selectedRunIsActive || isMutating" @click="deleteSelectedCard">
               <Trash2 aria-hidden="true" /> Delete feature
             </Button>
+            <span v-if="selectedRunIsActive" class="detail-muted">Stop the run before deleting. Your code files are kept.</span>
           </footer>
         </DialogContent>
       </DialogPortal>
@@ -422,6 +427,7 @@ import {
   Play,
   Plus,
   Sparkles,
+  Square,
   Trash2,
   Users,
   X,
@@ -431,7 +437,7 @@ import Button from '../ui/button/Button.vue'
 import DictationField from './DictationField.vue'
 import BoardExecutionSettings from './BoardExecutionSettings.vue'
 import BoardDailyViews from './BoardDailyViews.vue'
-import type { ReasoningEffort } from '../../types/codex'
+import type { ReasoningEffort, UiServerRequest } from '../../types/codex'
 import type {
   ProjectBoard,
   ProjectBoardAgent,
@@ -461,6 +467,7 @@ type BoardActions = {
   startFeature: (featureId: string, allowWorkspaceWrite: boolean, mode?: 'plan' | 'execute') => Promise<unknown>
   startQueue: (boardId: string, featureIds: string[], allowWorkspaceWrite: boolean) => Promise<unknown>
   stopQueue: (boardId: string) => Promise<unknown>
+  stopFeature: (featureId: string, expectedRunId?: string) => Promise<unknown>
 }
 
 const props = defineProps<{
@@ -470,6 +477,7 @@ const props = defineProps<{
   actions: BoardActions
   error: string
   projects: ProjectOption[]
+  pendingRequests?: UiServerRequest[]
   initialBoardId?: string
   initialFeatureId?: string
   initialQuestionId?: string
@@ -599,9 +607,9 @@ const activeBoard = computed<ProjectBoard | null>(() => {
 const boardAgents = computed(() => props.snapshot.agents.filter((agent) => activeBoard.value?.agentIds.includes(agent.id)))
 const featureCards = computed(() => props.snapshot.cards.filter((card) => card.boardId === activeBoard.value?.id && !card.parentCardId))
 const openBoardQuestions = computed(() => props.snapshot.questions.filter((question) => question.boardId === activeBoard.value?.id && question.status === 'open').sort((a, b) => a.createdAtIso.localeCompare(b.createdAtIso)))
-const attentionCards = computed(() => featureCards.value.filter((card) => card.status === 'blocked' || card.status === 'review' || (card.status === 'needs_input' && !openQuestionFor(card))))
+const attentionCards = computed(() => featureCards.value.filter((card) => requestForCard(card) || card.status === 'blocked' || card.status === 'review' || (card.status === 'needs_input' && !openQuestionFor(card))))
 const attentionCount = computed(() => openBoardQuestions.value.length + attentionCards.value.length)
-const workingFeatureCount = computed(() => featureCards.value.filter((card) => card.status === 'working').length)
+const workingFeatureCount = computed(() => featureCards.value.filter((card) => cardDisplayStatus(card) === 'working').length)
 const completedFeatureCount = computed(() => featureCards.value.filter((card) => card.status === 'done').length)
 const dependencyCandidates = computed(() => featureCards.value.filter((card) => card.type === 'feature' && card.id !== editingCardId.value))
 const activeQueue = computed(() => props.snapshot.queues?.find((queue) => queue.boardId === activeBoard.value?.id))
@@ -639,7 +647,7 @@ watch(activeBoard, (board) => {
 
 function cardsForColumn(statuses: ProjectBoardStatus[]): ProjectBoardCard[] {
   const query = featureSearch.value.trim().toLowerCase()
-  return featureCards.value.filter((card) => statuses.includes(card.status) && (!query || `${card.title} ${card.description} ${agentFor(card.assignedAgentId)?.name || ''}`.toLowerCase().includes(query))).sort((a, b) => b.updatedAtIso.localeCompare(a.updatedAtIso))
+  return featureCards.value.filter((card) => statuses.includes(cardDisplayStatus(card)) && (!query || `${card.title} ${card.description} ${agentFor(card.assignedAgentId)?.name || ''}`.toLowerCase().includes(query))).sort((a, b) => b.updatedAtIso.localeCompare(a.updatedAtIso))
 }
 
 function navigateBoardView(event: KeyboardEvent, view: BoardView): void {
@@ -860,9 +868,28 @@ function addSelectedComment(): void {
   void submitMutation(() => props.actions.addComment(cardId, text), () => { if (selectedCard.value?.id === cardId) commentText.value = '' })
 }
 
+function requestForCard(card: ProjectBoardCard): UiServerRequest | undefined {
+  return card.threadId ? props.pendingRequests?.find((request) => request.threadId === card.threadId) : undefined
+}
+function cardDisplayStatus(card: ProjectBoardCard): ProjectBoardStatus {
+  return requestForCard(card) ? 'needs_input' : card.status
+}
+function nativeRequestLabel(card: ProjectBoardCard): string {
+  return requestForCard(card)?.method.includes('requestUserInput') ? 'Answer needed' : 'Approval needed'
+}
+const stoppingFeatureId = ref('')
+async function stopSelectedFeature(): Promise<void> {
+  const card = selectedCard.value
+  const run = selectedRuns.value.find((entry) => entry.status === 'running' || entry.status === 'queued')
+  if (!card || !run || props.isMutating) return
+  stoppingFeatureId.value = card.id
+  try { await submitMutation(() => props.actions.stopFeature(card.id, run.id)) }
+  finally { if (stoppingFeatureId.value === card.id) stoppingFeatureId.value = '' }
+}
+
 function deleteSelectedCard(): void {
   const card = selectedCard.value
-  if (!card || !window.confirm(`Delete “${card.title}” and all of its tasks?`)) return
+  if (!card || selectedRunIsActive.value || !window.confirm(`Delete “${card.title}” and its board history? Your code files and Lead chat are kept.`)) return
   void submitMutation(() => props.actions.deleteCard(card.id), closeCard)
 }
 

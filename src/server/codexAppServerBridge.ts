@@ -18,6 +18,7 @@ import { AutomationStore } from './automationStore'
 import { AUTOMATION_DYNAMIC_TOOL_SPEC, AutomationService } from './automationService'
 import { ProjectBoardStore } from './projectBoardStore'
 import { ProjectBoardService } from './projectBoardService'
+import { projectBoardThreadIds } from './projectBoardNotificationEvents'
 import { readProjectBoardModels, resolveProjectBoardExecutionSettings } from './projectBoardModels'
 import type { ProjectBoardSnapshot } from '../types/projectBoards'
 import { buildThreadReferenceSection, type ThreadReferenceMessage } from '../utils/threadReferences'
@@ -1703,6 +1704,13 @@ export function createCodexBridgeMiddleware(): CodexBridgeMiddleware {
         if (!body || typeof body.method !== 'string' || body.method.length === 0) {
           setJson(res, 400, { error: 'Invalid body: expected { method, params? }' })
           return
+        }
+        if (body.method === 'turn/start') {
+          const threadId = asRecord(body.params)?.threadId
+          if (typeof threadId === 'string' && projectBoardThreadIds(await projectBoardService.read()).has(threadId)) {
+            setJson(res, 409, { error: 'This Lead chat is managed by a project board. Refresh CodexUI and send from its linked chat controls to continue a tracked run.' })
+            return
+          }
         }
         const params =
           body.method === 'thread/start'

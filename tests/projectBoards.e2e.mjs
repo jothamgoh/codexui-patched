@@ -166,6 +166,18 @@ try {
   assert.equal(isolatedPushState.subscriptions.length, 0, 'Browser fixture must not load real push subscribers')
   const isolatedTelegram = await (await fetch(`${origin}/codex-api/telegram/config`)).json()
   assert.equal(isolatedTelegram.data.available, false, 'Browser fixture must not load Telegram credentials')
+  const directTurn = (threadId) => fetch(`${origin}/codex-api/rpc`, {
+    method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ method: 'turn/start', params: { threadId, input: [{ type: 'text', text: 'Fixture request must never execute.' }] } }),
+  })
+  const managedTurn = await directTurn('daily-run-thread')
+  assert.equal(managedTurn.status, 409, 'Old clients cannot start untracked turns in a board Lead chat')
+  assert.match((await managedTurn.json()).error, /linked chat controls/u)
+  // An intentionally invalid ID proves ordinary requests still reach native
+  // validation, without creating a chat, starting a model, or writing files.
+  const ordinaryTurn = await directTurn('fixture-invalid-unmanaged-thread')
+  assert.ok(ordinaryTurn.status >= 400 && ordinaryTurn.status !== 409)
+  assert.doesNotMatch((await ordinaryTurn.json()).error, /managed by a project board/u)
   browser = await chromium.launch({ headless: true })
   page = await browser.newPage({ viewport: { width: 1600, height: 1000 }, deviceScaleFactor: 1 })
   await page.route('**/codex-api/project-board-models', (route) => route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ data: { defaultModel: 'build-model', defaultReasoningEffort: 'high', models: [
@@ -540,7 +552,11 @@ try {
     return route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ result }) })
   })
   await page.route('**/codex-api/thread-resume-lite', (route) => route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ result: { thread: sourceThread, model: 'build-model', reasoningEffort: 'high' } }) }))
-  await page.route('**/codex-api/thread-page', (route) => route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ result: { thread: route.request().postDataJSON().threadId === childThread.id ? childThread : sourceThread, page: { startTurnIndex: 0, endTurnIndex: 1, totalTurns: 1, hasEarlier: false } } }) }))
+  await page.route('**/codex-api/thread-page', (route) => {
+    const threadId = route.request().postDataJSON().threadId
+    if (threadId !== sourceThread.id && threadId !== childThread.id) return route.fallback()
+    return route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ result: { thread: threadId === childThread.id ? childThread : sourceThread, page: { startTurnIndex: 0, endTurnIndex: 1, totalTurns: 1, hasEarlier: false } } }) })
+  })
   await page.goto(`${origin}/?chat-import-smoke=1#/thread/${sourceThread.id}`, { waitUntil: 'domcontentloaded' })
   await page.getByText(sourcePlan, { exact: true }).waitFor()
   await page.getByRole('link', { name: 'Open Design review subagent', exact: true }).click()
@@ -548,7 +564,10 @@ try {
   await page.getByText('The mobile design review is ready.', { exact: true }).waitFor()
   await page.goBack()
   await page.getByText(sourcePlan, { exact: true }).waitFor()
-  await page.getByRole('button', { name: 'Turn this chat into a board', exact: true }).click()
+  await page.getByRole('button', { name: 'Track on board', exact: true }).click()
+  const trackDialog = page.getByRole('dialog', { name: 'Track on board', exact: true })
+  await trackDialog.getByLabel('Feature brief', { exact: true }).fill(sourcePlan)
+  await trackDialog.getByRole('button', { name: 'Have a larger plan? Create several feature cards', exact: true }).click()
   const chatPlan = page.getByRole('dialog', { name: 'Turn this chat into a board', exact: true })
   assert.equal(await chatPlan.getByLabel('Goal or plan', { exact: true }).inputValue(), sourcePlan)
   await chatPlan.getByLabel('Board name', { exact: true }).fill('Plan from chat')
@@ -567,7 +586,8 @@ try {
   assert.equal(afterRetry.boards.filter((board) => board.name === 'Plan from chat').length, 1, 'Retry must reuse the created board')
   await page.keyboard.press('Escape')
 
-  // Existing Activity displays a board outcome and navigates directly to its card.
+  // Activity opens a completed feature's Lead result, including older history
+  // without a threadId when the current board snapshot can resolve its chat.
   const outcome = { id: 'project-board-completed:feature-done:smoke', kind: 'completed', boardId: 'board-1', featureId: 'feature-done', cardId: 'feature-done', occurredAt: now }
   const historyItem = { id: outcome.id, threadId: 'project-board:feature-done', turnId: outcome.id, status: 'completed', title: 'Feature completed', body: 'The feature is done. Open the board to review the result.', completedAt: now, readAt: null, projectBoard: outcome }
   await page.route('**/codex-api/push/history', (route) => route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ data: { items: [historyItem], unreadCount: 1, dismissals: [] } }) }))
@@ -578,8 +598,8 @@ try {
   await notificationCenter.getByText('Persistent board storage', { exact: true }).waitFor()
   await page.screenshot({ path: join(outputDirectory, 'project-board-activity-mobile.png'), fullPage: true })
   await notificationCenter.getByText('Persistent board storage', { exact: true }).click()
-  await page.waitForURL('**/#/board/board-1?feature=feature-done')
-  await detail.waitFor()
+  await page.waitForURL('**/#/thread/daily-run-thread')
+  await page.getByText('The saved storage run is ready to inspect.', { exact: true }).waitFor()
 
   // Phone pass with actual touch media queries, not just a narrow desktop window.
   // Opt into WebKit where the installed engine works. Speech/model output is stubbed.

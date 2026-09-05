@@ -110,8 +110,12 @@
         </div>
       </li>
 
-      <template v-for="message in visibleMessages" :key="message.id">
-        <li
+      <template v-for="(message, messageIndex) in visibleMessages" :key="message.id">
+        <ConversationItem
+          :eager="messageIndex >= visibleMessages.length - 20"
+          :pinned="isMessagePinned(message)"
+          :estimated-height="estimateMessageHeight(message)"
+          @resized="onMessageContentResize"
           class="conversation-item"
           :class="{ 'conversation-item-actionable': canForkMessage(message) || canRollbackMessage(message) }"
           :data-role="message.role"
@@ -305,7 +309,7 @@
             </div>
           </div>
         </div>
-        </li>
+        </ConversationItem>
         <li
           v-for="proposal in automationProposalsAfterMessage(message)"
           :key="`automation-proposal:${proposal.id}`"
@@ -537,6 +541,10 @@
             placeholder="Add an optional comment…"
             @keydown="onResponseAnnotationInputKeydown"
           />
+          <p v-if="responseAnnotationDictationStatus" class="response-dictation-status" role="status">
+            {{ responseAnnotationDictationStatus }}
+            <button v-if="canRetryResponseAnnotationDictation" type="button" class="underline" @click="retryResponseAnnotationTranscription">Retry transcription</button>
+          </p>
           <div class="response-annotation-actions">
             <div class="response-annotation-actions-leading">
               <Button
@@ -552,7 +560,7 @@
                 :aria-label="responseAnnotationDictationButtonLabel"
                 :aria-pressed="responseAnnotationDictationState === 'recording'"
                 :title="responseAnnotationDictationButtonLabel"
-                :disabled="responseAnnotationDictationState === 'transcribing'"
+                :disabled="responseAnnotationDictationState === 'transcribing' || isStartingResponseAnnotationDictation"
                 @click="toggleResponseAnnotationDictation"
               >
                 <span
@@ -577,7 +585,7 @@
               <Button type="button" variant="ghost" size="sm" @click="closeResponseAnnotationEditor">
                 Cancel
               </Button>
-              <Button type="submit" size="sm">
+              <Button type="submit" size="sm" :disabled="responseAnnotationDictationState !== 'idle' || isStartingResponseAnnotationDictation">
                 {{ editingResponseAnnotationId ? 'Save' : 'Add' }}
               </Button>
             </div>
@@ -650,6 +658,7 @@
 import '@fontsource-variable/inter'
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import markdownit from 'markdown-it'
+import ConversationItem from './ConversationItem.vue'
 import { MessageSquare, MessageSquarePlus, MessageSquareQuote } from '@lucide/vue'
 import { RouterLink } from 'vue-router'
 import {
@@ -741,9 +750,25 @@ md.renderer.rules.link_open = (tokens, idx, options, env, self) => {
   return defaultLinkOpenRenderer(tokens, idx, options, env, self)
 }
 
+const markdownCache = new Map<string, string>()
+let markdownCacheSize = 0
 function renderMarkdown(text: string): string {
   if (!text) return ''
-  return md.render(normalizeMarkdownText(text))
+  const cached = markdownCache.get(text)
+  if (cached !== undefined) return cached
+  const rendered = md.render(normalizeMarkdownText(text))
+  const size = text.length + rendered.length
+  if (size <= 500_000) {
+    while (markdownCache.size >= 100 || markdownCacheSize + size > 2_000_000) {
+      const oldest = markdownCache.keys().next().value
+      if (oldest === undefined) break
+      markdownCacheSize -= oldest.length + markdownCache.get(oldest)!.length
+      markdownCache.delete(oldest)
+    }
+    markdownCache.set(text, rendered)
+    markdownCacheSize += size
+  }
+  return rendered
 }
 
 function normalizeMarkdownText(text: string): string {
@@ -953,21 +978,32 @@ const responseTextAnnotations = computed(() =>
 function updateResponseAnnotation(annotationId: string, annotation: string): void {
   composerDraftStore.updateResponseAnnotation(props.activeThreadId, annotationId, annotation)
 }
+let responseAnnotationDictationTarget: { threadId: string; selection: CapturedResponseSelection; annotationId: string } | null = null
 const {
   state: responseAnnotationDictationState,
+  statusText: responseAnnotationDictationStatus,
+  isStarting: isStartingResponseAnnotationDictation,
+  canRetry: canRetryResponseAnnotationDictation,
+  retryTranscription: retryResponseAnnotationTranscription,
   isSupported: isResponseAnnotationDictationSupported,
   startRecording: startResponseAnnotationRecording,
   stopRecording: stopResponseAnnotationRecording,
   cancelRecording: cancelResponseAnnotationRecording,
 } = useDictation({
   onTranscript: (text) => {
-    if (!responseAnnotationEditor.value) return
-    responseAnnotationDraft.value = responseAnnotationDraft.value
-      ? `${responseAnnotationDraft.value}\n${text}`
-      : text
-    void nextTick(() => {
-      document.querySelector<HTMLTextAreaElement>('.response-annotation-input')?.focus()
-    })
+    const target = responseAnnotationDictationTarget
+    if (!target) return
+    if (target.threadId === props.activeThreadId && responseAnnotationEditor.value?.messageId === target.selection.messageId) {
+      responseAnnotationDraft.value = responseAnnotationDraft.value
+        ? `${responseAnnotationDraft.value}\n${text}` : text
+      void nextTick(() => document.querySelector<HTMLTextAreaElement>('.response-annotation-input')?.focus())
+    } else {
+      const annotations = composerDraftStore.draftFor(target.threadId).responseTextAnnotations
+      const existing = annotations.find((annotation) => annotation.id === target.annotationId)
+      if (existing) existing.annotation = existing.annotation ? `${existing.annotation}\n${text}` : text
+      else annotations.push({ id: target.annotationId, text: target.selection.text, sourceMessageId: target.selection.messageId, annotation: text })
+    }
+    responseAnnotationDictationTarget = null
   },
 })
 const responseAnnotationDictationButtonLabel = computed(() => {
@@ -1000,6 +1036,26 @@ const visibleMessages = computed(() => {
     !supersededAppMessageIds.has(message.id) && shouldDisplayMessage(message),
   )
 })
+function isMessagePinned(message: UiMessage): boolean {
+  return Boolean(message.mcpApp)
+    || message.commandExecution?.status === 'inProgress'
+    || message.toolCall?.status === 'inProgress'
+    || capturedResponseSelection.value?.messageId === message.id
+    || responseAnnotationEditor.value?.messageId === message.id
+    || responseTextAnnotations.value.some((annotation) => annotation.sourceMessageId === message.id)
+}
+
+function estimateMessageHeight(message: UiMessage): number {
+  if (message.messageType === 'worked') return 24
+  if (message.commandExecution || message.toolCall) return 40
+  return Math.max(48, Math.min(2000, Math.ceil(message.text.length / 70) * 24 + 32))
+}
+
+function onMessageContentResize(): void {
+  if (shouldLockToBottom()) scheduleBottomLock(3)
+  scheduleResponseAnnotationMarkerUpdate()
+}
+
 const automationProposalsByAnchorMessageId = computed(() => {
   const lastMessageIdByTurnId = new Map<string, string>()
   for (const message of visibleMessages.value) {
@@ -1257,6 +1313,7 @@ function openResponseAnnotationEditor(): void {
 }
 
 function closeResponseAnnotationEditor(): void {
+  responseAnnotationDictationTarget = null
   cancelResponseAnnotationRecording()
   responseAnnotationEditor.value = null
   editingResponseAnnotationId.value = null
@@ -1265,7 +1322,11 @@ function closeResponseAnnotationEditor(): void {
 }
 
 function onResponseAnnotationPopoverOpenChange(open: boolean): void {
-  if (!open && responseAnnotationEditor.value) closeResponseAnnotationEditor()
+  if (!open && responseAnnotationEditor.value
+    && responseAnnotationDictationState.value === 'idle'
+    && !isStartingResponseAnnotationDictation.value
+    && !canRetryResponseAnnotationDictation.value
+    && !responseAnnotationDraft.value.trim()) closeResponseAnnotationEditor()
 }
 
 function createResponseAnnotationId(): string {
@@ -1276,6 +1337,7 @@ function createResponseAnnotationId(): string {
 }
 
 function addResponseAnnotationToComposer(): void {
+  if (responseAnnotationDictationState.value !== 'idle' || isStartingResponseAnnotationDictation.value) return
   const selection = responseAnnotationEditor.value
   if (!selection) return
   const annotation = responseAnnotationDraft.value.trim()
@@ -1405,6 +1467,12 @@ function toggleResponseAnnotationDictation(): void {
     stopResponseAnnotationRecording()
     return
   }
+  const selection = responseAnnotationEditor.value
+  if (!selection) return
+  responseAnnotationDictationTarget = {
+    threadId: props.activeThreadId, selection,
+    annotationId: editingResponseAnnotationId.value ?? createResponseAnnotationId(),
+  }
   void startResponseAnnotationRecording()
 }
 
@@ -1420,6 +1488,7 @@ function onDocumentPointerDown(event: PointerEvent): void {
     hasCapturedSelection: capturedResponseSelection.value !== null,
   })
   if (action === 'close-editor') {
+    if (responseAnnotationDictationState.value !== 'idle' || isStartingResponseAnnotationDictation.value || canRetryResponseAnnotationDictation.value || responseAnnotationDraft.value.trim()) return
     closeResponseAnnotationEditor()
     return
   }
@@ -1994,9 +2063,27 @@ watch(
 
 watch(
   () => props.activeThreadId,
-  async () => {
+  async (_threadId, previousThreadId) => {
+    const selection = responseAnnotationEditor.value
+    if (previousThreadId && selection && (responseAnnotationDraft.value.trim() || responseAnnotationDictationState.value !== 'idle')) {
+      const target = responseAnnotationDictationTarget
+      const annotationId = editingResponseAnnotationId.value ?? target?.annotationId ?? createResponseAnnotationId()
+      const annotations = composerDraftStore.draftFor(previousThreadId).responseTextAnnotations
+      const annotation = { id: annotationId, text: selection.text, sourceMessageId: selection.messageId, annotation: responseAnnotationDraft.value.trim() }
+      const existing = annotations.findIndex((entry) => entry.id === annotationId)
+      if (existing >= 0) annotations.splice(existing, 1, annotation)
+      else annotations.push(annotation)
+    }
+    if (isStartingResponseAnnotationDictation.value) {
+      responseAnnotationDictationTarget = null
+      cancelResponseAnnotationRecording()
+    } else if (responseAnnotationDictationState.value === 'recording') stopResponseAnnotationRecording()
     modalImageUrl.value = ''
-    cancelResponseAnnotationRecording()
+    markdownCache.clear()
+    markdownCacheSize = 0
+    expandedCommandIds.value = new Set()
+    collapsingCommandIds.value = new Set()
+    prevCommandStatuses.value = {}
     responseAnnotationEditor.value = null
     editingResponseAnnotationId.value = null
     responseAnnotationDraft.value = ''
@@ -2101,6 +2188,11 @@ onBeforeUnmount(() => {
   }
 }
 
+.response-dictation-status {
+  @apply m-0 text-xs;
+  color: var(--text-secondary);
+}
+
 .conversation-loading {
   @apply m-0 px-3 sm:px-5 text-sm text-zinc-400 text-center py-6 animate-pulse;
 }
@@ -2133,7 +2225,7 @@ onBeforeUnmount(() => {
 }
 
 .conversation-item {
-  @apply m-0 w-full flex;
+  @apply m-0 w-full flex shrink-0;
 }
 
 .conversation-item-request {

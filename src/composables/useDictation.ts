@@ -1,4 +1,4 @@
-import { ref, onBeforeUnmount } from 'vue'
+import { computed, ref, onBeforeUnmount } from 'vue'
 import { createScreenWakeLockController } from '../utils/screenWakeLock'
 
 export type DictationState = 'idle' | 'recording' | 'transcribing'
@@ -8,6 +8,15 @@ export function useDictation(options: {
   onError?: (error: unknown) => void
 }) {
   const state = ref<DictationState>('idle')
+  const errorMessage = ref('')
+  const isStarting = ref(false)
+  const hasTranscript = ref(false)
+  const statusText = computed(() => errorMessage.value || (isStarting.value ? 'Opening microphone…'
+    : state.value === 'recording' ? 'Recording… Stop when you’re ready.'
+    : state.value === 'transcribing' ? 'Transcribing…'
+    : hasTranscript.value ? 'Ready — review your words before sending.' : ''))
+  const canRetry = ref(false)
+  let retryRecording: { chunks: Blob[]; mimeType: string } | null = null
   const isSupported = ref(typeof navigator !== 'undefined' && !!navigator.mediaDevices?.getUserMedia)
 
   let mediaRecorder: MediaRecorder | null = null
@@ -18,8 +27,12 @@ export function useDictation(options: {
   const screenWakeLock = createScreenWakeLockController()
 
   async function startRecording() {
-    if (state.value !== 'idle' || !isSupported.value) return
-
+    if (state.value !== 'idle' || isStarting.value || !isSupported.value) return
+    isStarting.value = true
+    errorMessage.value = ''
+    hasTranscript.value = false
+    canRetry.value = false
+    retryRecording = null
     const currentOperationId = operationId
     try {
       const requestedStream = await navigator.mediaDevices.getUserMedia({ audio: { channelCount: 1 } })
@@ -43,8 +56,12 @@ export function useDictation(options: {
       state.value = 'recording'
       void screenWakeLock.acquire()
     } catch (error) {
+      if (currentOperationId !== operationId) return
       cleanup()
+      errorMessage.value = error instanceof Error ? error.message : 'Could not open the microphone.'
       options.onError?.(error)
+    } finally {
+      isStarting.value = false
     }
   }
 
@@ -56,11 +73,15 @@ export function useDictation(options: {
 
   async function transcribe(recordedChunks: Blob[], mimeType: string) {
     if (recordedChunks.length === 0) {
+      errorMessage.value = 'No audio was recorded. Try recording again.'
       state.value = 'idle'
       return
     }
 
     state.value = 'transcribing'
+    errorMessage.value = ''
+    canRetry.value = false
+    retryRecording = { chunks: recordedChunks, mimeType }
     const blob = new Blob(recordedChunks, { type: mimeType })
     const currentOperationId = operationId
     const controller = new AbortController()
@@ -95,9 +116,17 @@ export function useDictation(options: {
       if (!response.ok) throw new Error(`Transcription failed: ${response.status}`)
       const data = (await response.json()) as { text?: string }
       const text = (data.text ?? '').trim()
-      if (currentOperationId === operationId && text.length > 0) options.onTranscript(text)
+      if (currentOperationId === operationId) {
+        if (!text) throw new Error('No speech was recognized. Retry or record again.')
+        options.onTranscript(text)
+        hasTranscript.value = true
+        retryRecording = null
+      }
     } catch (error) {
+      if (currentOperationId !== operationId) return
       if (!(error instanceof Error && error.name === 'AbortError')) {
+        errorMessage.value = error instanceof Error ? error.message : 'Could not transcribe audio.'
+        canRetry.value = retryRecording !== null
         options.onError?.(error)
       }
     } finally {
@@ -108,8 +137,17 @@ export function useDictation(options: {
     }
   }
 
+  function retryTranscription() {
+    if (state.value !== 'idle' || !retryRecording) return
+    return transcribe(retryRecording.chunks, retryRecording.mimeType)
+  }
+
   function cancelRecording() {
     operationId += 1
+    retryRecording = null
+    canRetry.value = false
+    errorMessage.value = ''
+    hasTranscript.value = false
     const recorder = mediaRecorder
     if (recorder) {
       recorder.ondataavailable = null
@@ -138,5 +176,5 @@ export function useDictation(options: {
 
   onBeforeUnmount(cancelRecording)
 
-  return { state, isSupported, startRecording, stopRecording, cancelRecording }
+  return { state, statusText, errorMessage, isStarting, canRetry, retryTranscription, isSupported, startRecording, stopRecording, cancelRecording }
 }

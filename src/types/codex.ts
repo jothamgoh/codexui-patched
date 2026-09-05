@@ -272,6 +272,7 @@ export type UiMessage = {
   responseAnnotations?: ResponseTextAnnotation[]
   orderKey?: string
   messageType?: string
+  phase?: 'commentary' | 'final_answer'
   rawPayload?: string
   isUnhandled?: boolean
   commandExecution?: CommandExecutionData

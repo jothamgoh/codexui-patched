@@ -76,6 +76,7 @@ import {
 import { compactNotificationText } from '../utils/notificationText'
 import type { CodexThreadAudience } from '../utils/codexThreadSource'
 import { MAX_THREAD_REFERENCE_COUNT } from '../utils/threadReferences'
+import { insertTurnSummaryMessages, sortMessagesByOrder } from '../utils/conversationMessages'
 
 function flattenThreads(groups: UiProjectGroup[]): UiThread[] {
   return groups.flatMap((group) => group.threads)
@@ -651,6 +652,7 @@ function areMessageFieldsEqual(first: UiMessage, second: UiMessage): boolean {
     areResponseAnnotationsEqual(first.responseAnnotations, second.responseAnnotations) &&
     first.orderKey === second.orderKey &&
     first.messageType === second.messageType &&
+    first.phase === second.phase &&
     first.rawPayload === second.rawPayload &&
     first.isUnhandled === second.isUnhandled &&
     areCommandExecutionsEqual(first.commandExecution, second.commandExecution) &&
@@ -676,7 +678,6 @@ function mergeMessages(
   options: { preserveMissing?: boolean } = {},
 ): UiMessage[] {
   const previousById = new Map(previous.map((message) => [message.id, message]))
-  const incomingById = new Map(incoming.map((message) => [message.id, message]))
 
   const mergedIncoming = incoming.map((incomingMessage) => {
     const previousMessage = previousById.get(incomingMessage.id)
@@ -691,25 +692,18 @@ function mergeMessages(
   }
 
   const incomingIdSet = new Set(mergedIncoming.map((message) => message.id))
-  const merged = [...mergedIncoming]
-
-  for (let previousIndex = 0; previousIndex < previous.length; previousIndex += 1) {
-    const previousMessage = previous[previousIndex]
-    if (incomingIdSet.has(previousMessage.id)) continue
-
-    let insertIndex = merged.length
-    for (let lookupIndex = previousIndex + 1; lookupIndex < previous.length; lookupIndex += 1) {
-      const anchorId = previous[lookupIndex]?.id
-      if (!anchorId || !incomingIdSet.has(anchorId)) continue
-      const anchorIndex = merged.findIndex((message) => message.id === anchorId)
-      if (anchorIndex >= 0) {
-        insertIndex = anchorIndex
-      }
-      break
+  const missingBeforeId = new Map<string, UiMessage[]>()
+  let missing: UiMessage[] = []
+  for (const message of previous) {
+    if (!incomingIdSet.has(message.id)) {
+      missing.push(message)
+    } else if (missing.length) {
+      missingBeforeId.set(message.id, missing)
+      missing = []
     }
-
-    merged.splice(insertIndex, 0, previousMessage)
   }
+  const merged = mergedIncoming.flatMap((message) => [...(missingBeforeId.get(message.id) ?? []), message])
+  merged.push(...missing)
 
   return areMessageArraysEqual(previous, merged) ? previous : merged
 }
@@ -760,7 +754,7 @@ function removeRedundantLiveAgentMessages(previous: UiMessage[], incoming: UiMes
   const incomingAssistantTexts = new Set(
     incoming
       .filter((message) => message.role === 'assistant')
-      .map((message) => normalizeMessageText(message.text))
+      .map((message) => `${message.turnId ?? ''}\u0000${normalizeMessageText(message.text)}`)
       .filter((text) => text.length > 0),
   )
 
@@ -772,7 +766,8 @@ function removeRedundantLiveAgentMessages(previous: UiMessage[], incoming: UiMes
     if (message.messageType !== 'agentMessage.live') return true
     const normalized = normalizeMessageText(message.text)
     if (normalized.length === 0) return false
-    return !incomingAssistantTexts.has(normalized)
+    return !incoming.some((item) => item.id === message.id)
+      && !incomingAssistantTexts.has(`${message.turnId ?? ''}\u0000${normalized}`)
   })
 
   return next.length === previous.length ? previous : next
@@ -797,29 +792,6 @@ function upsertMessage(previous: UiMessage[], nextMessage: UiMessage): UiMessage
   const next = [...previous]
   next.splice(existingIndex, 1, mergedMessage)
   return next
-}
-
-function compareMessageOrder(first: UiMessage, second: UiMessage): number {
-  const firstOrderKey = first.orderKey ?? ''
-  const secondOrderKey = second.orderKey ?? ''
-  if (!firstOrderKey && !secondOrderKey) {
-    return 0
-  }
-  if (firstOrderKey !== secondOrderKey) {
-    return firstOrderKey.localeCompare(secondOrderKey)
-  }
-  return first.id.localeCompare(second.id)
-}
-
-function sortMessagesByOrder(messages: UiMessage[]): UiMessage[] {
-  const next = messages
-    .map((message, index) => ({ message, index }))
-    .sort((first, second) => {
-      const byOrder = compareMessageOrder(first.message, second.message)
-      return byOrder !== 0 ? byOrder : first.index - second.index
-    })
-    .map((entry) => entry.message)
-  return areMessageArraysEqual(messages, next) ? messages : next
 }
 
 type TurnSummaryState = {
@@ -856,36 +828,10 @@ type TurnCompletedInfo = {
   startedAtMs?: number
 }
 
-const WORKED_MESSAGE_TYPE = 'worked'
-
 function parseIsoTimestamp(value: string): number | null {
   if (!value) return null
   const ms = new Date(value).getTime()
   return Number.isNaN(ms) ? null : ms
-}
-
-function formatTurnDuration(durationMs: number): string {
-  if (!Number.isFinite(durationMs) || durationMs <= 0) {
-    return '<1s'
-  }
-
-  const totalSeconds = Math.max(1, Math.round(durationMs / 1000))
-  const hours = Math.floor(totalSeconds / 3600)
-  const minutes = Math.floor((totalSeconds % 3600) / 60)
-  const seconds = totalSeconds % 60
-  const parts: string[] = []
-
-  if (hours > 0) {
-    parts.push(`${hours}h`)
-  }
-
-  if (minutes > 0 || hours > 0) {
-    parts.push(`${minutes}m`)
-  }
-
-  const displaySeconds = seconds > 0 || parts.length === 0 ? seconds : 0
-  parts.push(`${displaySeconds}s`)
-  return parts.join(' ')
 }
 
 function areTurnSummariesEqual(first?: TurnSummaryState, second?: TurnSummaryState): boolean {
@@ -911,57 +857,6 @@ function areTurnActivitiesEqual(first?: TurnActivityState, second?: TurnActivity
     if (first.details[index] !== second.details[index]) return false
   }
   return true
-}
-
-function buildTurnSummaryMessage(summary: TurnSummaryState): UiMessage {
-  return {
-    id: `turn-summary:${summary.turnId}`,
-    role: 'system',
-    text: `Worked for ${formatTurnDuration(summary.durationMs)}`,
-    messageType: WORKED_MESSAGE_TYPE,
-    turnId: summary.turnId,
-  }
-}
-
-function findLastAssistantMessageIndex(messages: UiMessage[]): number {
-  for (let index = messages.length - 1; index >= 0; index -= 1) {
-    if (messages[index].role === 'assistant') {
-      return index
-    }
-  }
-  return -1
-}
-
-function findLastAssistantMessageIndexForTurn(messages: UiMessage[], turnId: string): number {
-  for (let index = messages.length - 1; index >= 0; index -= 1) {
-    const message = messages[index]
-    if (message.role === 'assistant' && message.turnId === turnId) {
-      return index
-    }
-  }
-  return -1
-}
-
-function insertTurnSummaryMessages(messages: UiMessage[], summaries: TurnSummaryState[]): UiMessage[] {
-  if (summaries.length === 0) return messages
-
-  const next = messages.filter((message) => message.messageType !== WORKED_MESSAGE_TYPE)
-  let didInsert = false
-
-  for (const summary of summaries) {
-    const summaryMessage = buildTurnSummaryMessage(summary)
-    let insertIndex = findLastAssistantMessageIndexForTurn(next, summary.turnId)
-
-    if (insertIndex < 0 && summaries.length === 1) {
-      insertIndex = findLastAssistantMessageIndex(next)
-    }
-    if (insertIndex < 0) continue
-
-    next.splice(insertIndex, 0, summaryMessage)
-    didInsert = true
-  }
-
-  return didInsert ? next : messages
 }
 
 function omitKey<TValue>(record: Record<string, TValue>, key: string): Record<string, TValue> {
@@ -1321,6 +1216,7 @@ export function useDesktopState() {
   const threadOrder = ref<string[]>(loadThreadOrder())
   const loadedVersionByThreadId = ref<Record<string, string>>({})
   const loadedMessagesByThreadId = ref<Record<string, boolean>>({})
+  const recentMessageThreadIds: string[] = []
   const paginationByThreadId = ref<Record<string, ThreadPaginationState>>({})
   const loadingEarlierByThreadId = ref<Record<string, boolean>>({})
   const earlierLoadErrorByThreadId = ref<Record<string, string>>({})
@@ -1363,6 +1259,7 @@ export function useDesktopState() {
   const liveItemIndexByItemKey = new Map<string, number>()
   const liveItemCounterByTurnKey = new Map<string, number>()
   const inProgressReconcileTimerByThreadId = new Map<string, number>()
+  let boardManagedThreadIds = new Set<string>()
   const browserNotifiedTurnKeys = new Set<string>()
   const browserNotifiedTurnOrder: string[] = []
   const audienceByThreadId = new Map<string, Exclude<CodexThreadAudience, 'unknown'>>()
@@ -1449,7 +1346,13 @@ export function useDesktopState() {
 
   function setSelectedThreadId(nextThreadId: string): void {
     if (selectedThreadId.value === nextThreadId) return
+    const previousThreadId = selectedThreadId.value
     selectedThreadId.value = nextThreadId
+    if (previousThreadId) {
+      trimInactiveMessageCache(previousThreadId)
+      rememberMessageCache(previousThreadId)
+    }
+    if (nextThreadId) rememberMessageCache(nextThreadId)
     saveSelectedThreadId(nextThreadId)
     activeReasoningItemId = ''
     shouldAutoScrollOnNextAgentEvent = false
@@ -2366,6 +2269,38 @@ export function useDesktopState() {
     saveThreadScrollStateMap(scrollStateByThreadId.value)
   }
 
+  function trimInactiveMessageCache(threadId: string): void {
+    const previous = persistedMessagesByThreadId.value[threadId] ?? []
+    const firstRetainedTurn = Math.max(0, maxPersistedTurnIndex(threadId) - THREAD_MESSAGE_PAGE_SIZE + 1)
+    const retained = previous.filter((message) => message.turnIndex === undefined || message.turnIndex >= firstRetainedTurn)
+    if (retained.length === previous.length) return
+    persistedMessagesByThreadId.value = { ...persistedMessagesByThreadId.value, [threadId]: retained }
+    const pagination = paginationByThreadId.value[threadId]
+    if (pagination) paginationByThreadId.value = {
+      ...paginationByThreadId.value,
+      [threadId]: { ...pagination, startTurnIndex: firstRetainedTurn, hasEarlier: firstRetainedTurn > 0 },
+    }
+  }
+
+  function rememberMessageCache(threadId: string): void {
+    const previousIndex = recentMessageThreadIds.indexOf(threadId)
+    if (previousIndex >= 0) recentMessageThreadIds.splice(previousIndex, 1)
+    recentMessageThreadIds.push(threadId)
+    while (recentMessageThreadIds.length > 4) {
+      const evicted = recentMessageThreadIds.shift()!
+      if (evicted === selectedThreadId.value) continue
+      // Optimistic submissions must remain until acknowledged, even in an inactive chat.
+      if (persistedMessagesByThreadId.value[evicted]?.some((message) => message.id.startsWith('optimistic-'))) continue
+      persistedMessagesByThreadId.value = omitKey(persistedMessagesByThreadId.value, evicted)
+      liveAgentMessagesByThreadId.value = omitKey(liveAgentMessagesByThreadId.value, evicted)
+      liveCommandsByThreadId.value = omitKey(liveCommandsByThreadId.value, evicted)
+      liveToolMessagesByThreadId.value = omitKey(liveToolMessagesByThreadId.value, evicted)
+      loadedMessagesByThreadId.value = omitKey(loadedMessagesByThreadId.value, evicted)
+      loadedVersionByThreadId.value = omitKey(loadedVersionByThreadId.value, evicted)
+      paginationByThreadId.value = omitKey(paginationByThreadId.value, evicted)
+    }
+  }
+
   function setPersistedMessagesForThread(threadId: string, nextMessages: UiMessage[]): void {
     const orderedMessages = sortMessagesByOrder(nextMessages)
     const previous = persistedMessagesByThreadId.value[threadId] ?? []
@@ -2374,6 +2309,7 @@ export function useDesktopState() {
       ...persistedMessagesByThreadId.value,
       [threadId]: orderedMessages,
     }
+    rememberMessageCache(threadId)
   }
 
   function setOptimisticMessageType(threadId: string, messageId: string, messageType: string): void {
@@ -2410,7 +2346,12 @@ export function useDesktopState() {
   }
 
   function maxPersistedTurnIndex(threadId: string): number {
-    const persisted = persistedMessagesByThreadId.value[threadId] ?? []
+    const persisted = [
+      ...(persistedMessagesByThreadId.value[threadId] ?? []),
+      ...(liveAgentMessagesByThreadId.value[threadId] ?? []),
+      ...(liveCommandsByThreadId.value[threadId] ?? []),
+      ...(liveToolMessagesByThreadId.value[threadId] ?? []),
+    ]
     let maxIndex = -1
     for (const message of persisted) {
       if (typeof message.turnIndex === 'number' && Number.isFinite(message.turnIndex)) {
@@ -2435,10 +2376,13 @@ export function useDesktopState() {
   }
 
   function getRealtimeTurnIndex(threadId: string, turnId: string): number {
+    const persistedTurnIndex = persistedTurnIndexForTurnId(threadId, turnId)
+    if (persistedTurnIndex !== null) {
+      liveTurnIndexByTurnId.set(turnId, persistedTurnIndex)
+      return persistedTurnIndex
+    }
     const existing = liveTurnIndexByTurnId.get(turnId)
     if (typeof existing === 'number') return existing
-
-    const persistedTurnIndex = persistedTurnIndexForTurnId(threadId, turnId)
     const nextIndex = persistedTurnIndex ?? maxPersistedTurnIndex(threadId) + 1
     liveTurnIndexByTurnId.set(turnId, nextIndex)
     return nextIndex
@@ -2455,7 +2399,10 @@ export function useDesktopState() {
 
   function nextRealtimeItemIndex(threadId: string, turnId: string): number {
     const key = realtimeTurnKey(threadId, turnId)
-    const next = (liveItemCounterByTurnKey.get(key) ?? -1) + 1
+    const persistedMax = (persistedMessagesByThreadId.value[threadId] ?? [])
+      .filter((message) => message.turnId === turnId)
+      .reduce((max, message) => Math.max(max, Number(message.orderKey?.split(':')[1] ?? -1)), -1)
+    const next = Math.max(liveItemCounterByTurnKey.get(key) ?? -1, persistedMax) + 1
     liveItemCounterByTurnKey.set(key, next)
     return next
   }
@@ -2465,6 +2412,9 @@ export function useDesktopState() {
   }
 
   function getRealtimeItemOrderKey(threadId: string, turnId: string, itemId: string): string {
+    const persistedKey = (persistedMessagesByThreadId.value[threadId] ?? [])
+      .find((message) => message.id === itemId)?.orderKey
+    if (persistedKey) return persistedKey
     const itemKey = realtimeItemKey(threadId, itemId)
     let itemIndex = liveItemIndexByItemKey.get(itemKey)
     if (typeof itemIndex !== 'number') {
@@ -2979,7 +2929,12 @@ export function useDesktopState() {
     notifyBrowserAboutCompletedTurn(completedTurn, notification)
   }
 
+  function setBoardManagedThreadIds(ids: string[]): void {
+    boardManagedThreadIds = new Set(ids.filter(Boolean))
+  }
+
   function notifyBrowserAboutCompletedTurn(completedTurn: TurnCompletedInfo, notification: RpcNotification): void {
+    if (boardManagedThreadIds.has(completedTurn.threadId)) return
     if (!shouldShowBrowserTurnNotification()) return
 
     const status = readTurnCompletionStatus(notification)
@@ -3135,6 +3090,7 @@ export function useDesktopState() {
         role: 'assistant',
         text,
         messageType: 'agentMessage.live',
+        phase: item.phase === 'final_answer' || item.phase === 'commentary' ? item.phase : undefined,
       }
     }
 
@@ -4934,6 +4890,7 @@ export function useDesktopState() {
     liveItemIndexByItemKey.clear()
     liveItemCounterByTurnKey.clear()
     persistedMessagesByThreadId.value = {}
+    recentMessageThreadIds.length = 0
     paginationByThreadId.value = {}
     loadingEarlierByThreadId.value = {}
     earlierLoadErrorByThreadId.value = {}
@@ -4986,6 +4943,7 @@ export function useDesktopState() {
   }
 
   return {
+    setBoardManagedThreadIds,
     projectGroups,
     projectDisplayNameById,
     selectedThread,

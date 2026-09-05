@@ -373,6 +373,7 @@ function toUiMessages(item: ThreadItem): UiMessage[] {
         role: 'assistant',
         text,
         messageType: itemType,
+        phase: rawItem.phase === 'final_answer' || rawItem.phase === 'commentary' ? rawItem.phase : undefined,
       },
     ]
   }

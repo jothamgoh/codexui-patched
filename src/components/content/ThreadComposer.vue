@@ -315,6 +315,10 @@
         />
       </div>
 
+      <p v-if="dictationStatus" class="thread-composer-dictation-status" role="status">
+        {{ dictationStatus }}
+        <button v-if="canRetryDictation" type="button" class="underline" @click="retryTranscription">Retry transcription</button>
+      </p>
       <div class="thread-composer-controls">
         <div class="thread-composer-option-strip">
           <div ref="attachMenuRootRef" class="thread-composer-attach">
@@ -413,7 +417,7 @@
             :aria-label="dictationButtonLabel"
             :aria-pressed="dictationState === 'recording'"
             :title="dictationButtonLabel"
-            :disabled="isInteractionDisabled || dictationState === 'transcribing'"
+            :disabled="isInteractionDisabled || dictationState === 'transcribing' || isStartingDictation"
             @click="toggleDictation"
           >
             <span v-if="dictationState === 'transcribing'" class="thread-composer-mic-spinner" aria-hidden="true" />
@@ -437,7 +441,7 @@
             type="button"
             :aria-label="isTurnInProgress ? 'Send steering message' : 'Send message'"
             :title="isTurnInProgress ? 'Steer' : 'Send'"
-            :disabled="!canSubmit"
+            :disabled="!canSubmit || dictationState !== 'idle' || isStartingDictation"
             @click="onSubmit('steer')"
           >
             <IconTablerArrowUp class="thread-composer-submit-icon" />
@@ -618,7 +622,7 @@ const responseTextAnnotations = computed({
 })
 
 let dictationDraftThreadId = ''
-const { state: dictationState, isSupported: isDictationSupported, startRecording, stopRecording } = useDictation({
+const { state: dictationState, statusText: dictationStatus, isStarting: isStartingDictation, canRetry: canRetryDictation, retryTranscription, isSupported: isDictationSupported, startRecording, stopRecording, cancelRecording } = useDictation({
   onTranscript: (text) => {
     const targetDraft = composerDraftStore.draftFor(dictationDraftThreadId || props.activeThreadId)
     targetDraft.text = targetDraft.text ? `${targetDraft.text}\n${text}` : text
@@ -846,6 +850,7 @@ const contextUsageToneClass = computed(() => {
 })
 
 function onSubmit(mode: 'steer' | 'queue' = 'steer'): void {
+  if (dictationState.value !== 'idle' || isStartingDictation.value) return
   if (tryHandleGoalSlashCommand()) return
   const text = draft.value.trim()
   if (!canSubmit.value) return
@@ -860,6 +865,7 @@ function onSubmit(mode: 'steer' | 'queue' = 'steer'): void {
     mode,
   })
   composerDraftStore.clearDraft(props.activeThreadId)
+  cancelRecording()
   isAttachMenuOpen.value = false
   isSlashMenuOpen.value = false
   closeFileMention()
@@ -2040,6 +2046,11 @@ watch(
 
 .thread-composer-input:disabled {
   @apply bg-zinc-100 text-zinc-500 cursor-not-allowed;
+}
+
+.thread-composer-dictation-status {
+  @apply m-0 px-1 text-xs;
+  color: var(--text-secondary);
 }
 
 .thread-composer-controls {

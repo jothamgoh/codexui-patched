@@ -5,6 +5,20 @@ description: "Use when implementing or changing user-visible behavior/UI in this
 
 # Codex App Parity Skill
 
+## Findings: Composable board agents (2026-09-05)
+
+- Integrated `26.901.31953` chunks `subagents-5f95f3a1e0e2.js` and
+  `subagent-row-c294c1bf8d3d.js` represent native descendants by thread identity;
+  the thumbnail uses `name || agentNickname || preview` and runtime status.
+  Agent labels are presentation, so board assignment uses an exact profile ID.
+- Durable board profiles and prompt editing have no exact native board
+  counterpart. They remain an intentional extension using existing Reka
+  dialogs, theme surfaces, focus restoration, and form components.
+- Installed Codex CLI `0.153.1` supports `turn/start.additionalContext` with
+  `kind: application` for per-turn developer context. An already loaded
+  `thread/resume` may ignore configuration overrides; test current-profile
+  behavior with the real runtime instead of relying only on fake RPC arguments.
+
 Use this skill for any feature work or user-visible behavior/UI change in this repository.
 Do not use it for purely internal refactors that do not affect behavior.
 

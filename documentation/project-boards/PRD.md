@@ -15,8 +15,8 @@ create a second agent runtime.
 - One default board per project directory, with optional additional boards.
 - Feature cards with a brief, acceptance criteria, priority, dependencies, and
   verification policy. A feature may own tasks and one persistent Lead chat.
-- Built-in Lead, Product, Design, Engineer, and QA profiles; custom profiles and
-  a board roster. Use specialists only when they help the task.
+- Reusable agents with editable prompts and a board roster. Lead, Product,
+  Design, Engineer, and QA are starter profiles. Use specialists when useful.
 - Native Codex execution with a bounded board-update tool. The server validates
   transitions and owns execution IDs; model prose is not workflow truth.
 - Durable questions, answers, comments, artifacts, and compact run history.
@@ -43,6 +43,19 @@ progress notes, and completion evidence are server-owned. Deleting cards must
 not leave another card referring to a missing dependency.
 
 ## Execution
+
+Lead is a responsibility for a feature. Any enabled agent can coordinate it;
+specialty labels do not grant exclusive capabilities. Users can create as many
+profiles as they need, including several with the same specialty. Execution
+still obeys native Codex concurrency/depth limits and the shared-project writer
+constraint. Nested delegation uses native Codex, without another runtime or a
+mandatory hierarchy editor.
+
+Plans assign tasks by exact agent ID. Each task states whether its purpose is
+work or verification, independently of the agent's specialty. An unavailable
+assigned agent requires re-enabling or reassignment; do not silently substitute
+another agent. A fresh verifier may reuse the same profile; changing its name
+alone is not evidence of independence.
 
 Starting a feature creates or resumes its Lead chat in the project directory.
 The Lead proposes the smallest useful task graph and works through eligible
@@ -78,14 +91,14 @@ repository instructions still govern those actions.
 |---|---|
 | `none` | No separate verification task; use for explicitly low-risk work. |
 | `self` | The Lead/implementer records meaningful checks for the completed feature. |
-| `independent` | A QA task verifies the delivered implementation after its dependencies finish. |
+| `independent` | A verification task checks the delivered feature in fresh context after all work tasks. |
 | `batch` | Work stays in Review awaiting combined verification. |
 
 Small related edits may share one feature-level verification task. Tests after
 every edit or specialist handoff are unnecessary. Validate sooner when a
 dependent task needs a verified result, the risk is material, or failures would
-be hard to isolate later. Independent QA must depend on all implementation work
-it certifies, so QA done before implementation cannot satisfy completion.
+be hard to isolate later. Final verification must depend on all work it certifies,
+including research/design work, so an earlier review cannot satisfy completion.
 
 Cross-feature automated batch QA is deferred. The form creates features, without
 a QA-batch type selector. Existing `qa_batch` records remain readable but cannot
@@ -94,6 +107,21 @@ feature in Review is not evidence that combined QA passed. Prefer one larger
 feature with a final verification task for related changes.
 
 ## UI behavior
+
+The Agent library separates saved profiles from current-board membership.
+Checkbox changes save immediately. Creating an agent enables it on the current
+board only. Search supports a growing roster. Users can edit a custom prompt or
+customize a starter into a named copy, see save feedback, and retain a draft after
+failed saves or closing the dialog. Switching profiles must not discard edits.
+On mobile, choosing Edit brings the editor into view. Assigned-agent access is
+locked with an explanation and a copy action; ordinary prompt edits remain easy.
+
+The Instructions field is the agent's reusable prompt, combined with the task
+brief and board coordination instructions. Saved profile changes apply on the
+next feature start/continuation, not halfway through a running task. Each turn
+explicitly identifies the current profile so resumed chats do not retain an old
+coordinator's identity. Native subagents receive their selected profile through
+the coordinator's delegation brief; they are not independent always-on services.
 
 Project, board, and selected feature must agree with the URL. Switching project
 or board clears stale details. A feature from another board is never displayed
@@ -138,3 +166,29 @@ authentication boundary documented in repository `AGENTS.md` remains required.
 - Existing-chat conversion, saved views, workflow templates, and portfolio views.
 
 These are not an ordered roadmap or requirements for the current release.
+
+## Reference products and design choices
+
+Reviewed the official documentation and Squad's public interactive demo on
+2026-09-05. These inform the design; they are not implementation dependencies.
+
+- [Hermes profiles](https://hermes-agent.nousresearch.com/docs/user-guide/profiles/)
+  provide per-agent instructions/configuration. Its
+  [Kanban](https://hermes-agent.nousresearch.com/docs/user-guide/features/kanban)
+  separates durable tasks/handoffs from temporary delegation. Adopt that
+  distinction without copying its process dispatcher or storage framework.
+- [Hermes delegation](https://hermes-agent.nousresearch.com/docs/user-guide/features/delegation)
+  supports configurable nested orchestration. Its temporary children receive
+  explicit briefs, unlike persistent named profiles.
+- [OpenClaw agents](https://docs.openclaw.ai/concepts/multi-agent) have their own
+  instruction files and state;
+  [delegation](https://docs.openclaw.ai/tools/subagents) targets configured IDs
+  with allowed targets and depth limits. Adopt explicit identity and bounded
+  composition, without adding a separate workspace/auth store per profile.
+- [Squad](https://squad.so/resources/docs/what-is-mchq) organizes work around
+  teammates, missions, decisions, runs, and docs. Its
+  [roster](https://squad.so/resources/docs/meet-squad) has a designated Lead and
+  specialist levels; it does not establish arbitrary interchangeable Leads.
+  The public demo exposes a roomy per-agent notes/personality editor and current
+  work. Adopt clear ownership, editable prompts, and focused decisions while
+  keeping CodexUI's existing theme, dialogs, and chat model.

@@ -2,9 +2,11 @@
 
 Updated: 2026-09-05
 
-Status: implementation complete, source pushed, local checks and source CI
-passed. Production restart is pending explicit authorization to disconnect the
-hosting session. No restart or real Lead/subagent dogfood was performed.
+Status: baseline released through `75ceef3`, CI passed, and the user-authorized
+one-shot Terminal restart completed. Local bridge and board API returned HTTP
+200; the public URL redirects to the authenticated gateway. The composable-agent
+and prompt-editor follow-up is implemented and locally verified, ready for its
+commit/push/CI and authorized production restart.
 
 ## Goal and scope
 
@@ -17,6 +19,53 @@ requirement.
 This continuation reviewed the original five board documents, repository
 architecture and deployment instructions, existing store/transport/UI patterns,
 local app-server schemas, and the installed integrated Codex UI patterns.
+The follow-up also reviewed official OpenClaw and Hermes agent/profile/delegation
+documentation and Squad's documentation plus public interactive profile/prompt
+editor demo. Sources and adopted choices are recorded in `PRD.md`.
+
+## Composability and prompt-editor follow-up
+
+The user clarified that any reusable agent should be able to lead and delegate,
+with a custom prompt and a polished interface. Current changes:
+
+- Exact agent IDs replace role-based selection in new plans; verification is a
+  task purpose, independent of the profile's specialty.
+- Disabled/missing assigned agents require reassignment or re-enabling.
+- Per-turn application context identifies the current coordinator; native
+  resume overrides alone may be ignored by an already loaded Codex thread.
+- Searchable profile library, editable prompts, starter copies, draft/save
+  states, mobile focus, and explicit current-board membership. Creating an agent
+  no longer enables it on unrelated boards.
+- Focused regression additions protect assignment/purpose compatibility.
+  The integrated smoke covers creating/editing/copying a prompt and selecting a
+  custom agent to lead. A separate disposable real-runtime check passed.
+
+Follow-up verification: `npm run check:project-boards` passed with 181 tests
+(17 focused board tests), type-check/frontend/CLI build, and browser smoke.
+Only two new test cases were added; related assertions extend existing flows.
+The first browser pass found ambiguous select labels and a prompt field whose
+shared textarea sizing ignored its rows. Fixed explicit labels/editor height,
+then inspected desktop, dark, and mobile screenshots. Mobile retains the close
+control while scrolling the editor. The final grouped pass is green.
+
+The real-runtime probe used installed app-server `0.153.1` with disposable
+read-only state/project and an isolated home. A custom coordinator assigned two
+tasks by exact ID, used a real native child for fresh verification, and finished
+the feature. Editing its prompt changed the observed marker from PROFILE_ALPHA
+to PROFILE_BETA on the same chat: one thread/start, one thread/resume, two
+completed runs. The probe also confirmed the native child's model/effort.
+The temporary auth symlink was removed and the process stopped. No production
+board data or global configuration was changed. This verifies a small read-only
+delegation and prompt-update flow, not parallel writers or deep nested trees.
+
+The probe exposed a missing handoff detail: replace_plan returned a count without
+generated task IDs. It now returns the saved assignments/dependencies so work can
+start directly; the final grouped tests include this response.
+
+Legacy records remain readable. Old verification plans missing dependencies on
+research/design/product work can block under the stricter final-feature check;
+replan rather than rewriting historical evidence. Existing native chats retain
+their original dynamic-tool schema; legacy role arguments remain supported.
 
 ## Completed work
 
@@ -74,11 +123,12 @@ Final local command: `npm run check:project-boards` — PASS.
   helper uses ignored stdin for commands without input and reports Git's exit
   status for early pipe closure. This does not change application behavior or
   add tests. `npm test` (179 passed) and `npm run build` passed again after the
-  helper fix; inspect the latest commit's CI for the final release result.
+  helper fix. Final baseline [CI passed](https://github.com/jothamgoh/codexui-patched/actions/runs/33962943770)
+  for `75ceef3`.
 
-The smoke tests real browser/server persistence and development events. Service
-orchestration uses a fake adapter. This does **not** prove that a real Codex
-Lead/subagent session has completed; do not describe it as real-agent E2E.
+The automated browser smoke tests persistence/development events; service unit
+tests use a fake adapter. The separate follow-up probe above is the real native
+execution evidence. Keep those scopes distinct.
 
 ## Commits
 
@@ -87,8 +137,10 @@ Lead/subagent session has completed; do not describe it as real-agent E2E.
 - `8c5721a`: bounded Lead execution, lifecycle handling, and service tests.
 - `92f10ba`: integrated board UI, notifications, development transport, and smoke.
 - `5a1e44e`: simplified requirements, delivery/test plans, and handoff evidence.
-- The following test-helper commit fixes the CI stdin race described above;
-  it does not change application behavior.
+- `75ceef3`: fixes the CI stdin race without changing application behavior.
+- `0bc76ee`: exact profile assignment, task purpose, and current-board membership.
+- `83b28dd`: current coordinator context on native turns and useful plan IDs.
+- `12e47b1`: searchable prompt editor, starter copies, and responsive UX.
 
 ## Native app comparison
 
@@ -100,17 +152,13 @@ The parity skill records the inspected areas and reusable findings.
 
 ## Exact next step
 
-The configured production metadata health check returned HTTP 200 before
-release. This confirms the old service is reachable, not that the new backend
-has been activated. The production build is ready in `dist/` and `dist-cli/`.
-
-1. Obtain explicit authorization for the hosting-session disconnect, then launch
-   exactly one independent Terminal restart using the machine-local instructions.
-   Do not restart the hosting service from its own Codex process or add a retry
-   wrapper/scheduled helper.
-2. After reconnecting, verify the configured local/public health checks.
-3. Dogfood one small real feature in a safe project with an implementation task
-   and a combined verification task. Record useful feedback as board cards.
+1. Local checks, screenshots, and real-runtime verification are complete.
+   Review, scan, commit discrete changes, push, and verify CI.
+2. The user has authorized the hosting-session disconnect. After the new backend
+   build and release checks pass, use exactly one independent Terminal restart
+   for this release. Never use a retry wrapper or scheduled helper.
+3. Verify local/public health after reconnecting. Choose further work from actual
+   usage, keeping validation at the feature boundary.
 
 ## Deliberately deferred
 

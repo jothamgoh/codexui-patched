@@ -32,6 +32,10 @@ Keep related assertions in a few realistic scenarios:
 - **Execution:** build a native Lead thread with existing tools retained, bind
   mutations to its exact active turn, record run provenance, and complete the
   task/question/verification flow through a fake adapter.
+- **Composition:** route two profiles with the same specialty by exact ID;
+  reject unavailable assignments; verify task purpose survives profile edits;
+  apply current coordinator instructions on a continued chat. Preserve legacy
+  records without fabricating verification evidence.
 - **Failure:** failed turn, app-server exit, interrupted restart, duplicate or
   stale events, and bounded continuation cannot strand a project lock or imply
   success. Write execution requires explicit consent.
@@ -52,6 +56,8 @@ Chromium. The pre-seeded fixture tests the real browser/server persistence path:
 - Notification center opens the exact question; answering resolves it.
 - Project switching and board/feature/query changes do not leak stale details.
 - Failed saves retain form input; dialog keyboard behavior works.
+- Custom prompts can be created, edited, saved, and selected to lead; starter
+  customization is a copy. The agent editor is readable on desktop and mobile.
 - Start explains shared workspace-write access, without executing a real Lead.
 - Ordinary chat navigation still works.
 - Dark/light surfaces are readable and narrow layouts contain horizontal scroll.

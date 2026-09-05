@@ -69,6 +69,17 @@ honestly in `PROGRESS.md`.
 
 ## Next development cycle
 
-Dogfood one feature with implementation followed by a combined verification
-step. Record actual friction as board cards. Choose the next enhancement from
-that evidence rather than rebuilding the old full-MVP checklist.
+The user clarified that agents should compose and each should have its own
+editable prompt. Finish this as one coherent feature:
+
+1. Route plans by exact profile ID and classify verification on tasks.
+2. Apply the selected profile on every turn, including resumed chats.
+3. Make profile creation/editing/copying clear, preserve drafts, and scope new
+   roster membership to the current board. Keep the editor usable on mobile.
+4. Run the grouped check, then one bounded real-runtime dogfood in disposable
+   state. Record what native execution actually proves, including prompt edits.
+5. Review, scan, commit, push, verify CI, and use the authorized one-shot restart
+   handoff. Keep machine-specific details outside the repository.
+
+Use native Codex for agent trees; durable nested specialist runs, a global agent
+chat/memory service, and visual organization charts remain separate future work.

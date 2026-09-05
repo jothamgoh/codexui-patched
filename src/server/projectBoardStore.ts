@@ -341,6 +341,7 @@ function normalizeRun(value: unknown): ProjectBoardRun | null {
     kind,
     createdCardIds: readStringArray(record.createdCardIds),
     status: allowedStatuses.has(rawStatus) ? rawStatus as ProjectBoardRun['status'] : 'failed',
+    stoppedByUser: record.stoppedByUser === true ? true : undefined,
     threadId: readString(record.threadId, 200),
     requestedModel: record.requestedModel === undefined ? undefined : readString(record.requestedModel, 200),
     requestedReasoningEffort: REASONING_EFFORTS.has(requestedReasoningEffort) ? requestedReasoningEffort : undefined,
@@ -1059,7 +1060,10 @@ export class ProjectBoardStore {
     return this.mutate((current) => {
       const target = current.cards.find((card) => card.id === id)
       if (!target) throw new Error('Board card not found.')
-      assertManualEdit(current, target)
+      const familyIds = new Set(featureCards(current, target).map((card) => card.id))
+      if (current.runs.some((run) => familyIds.has(run.cardId) && (run.status === 'running' || run.status === 'queued'))) {
+        throw new Error('Stop running work before deleting this card.')
+      }
       const ids = new Set([id])
       let changed = true
       while (changed) {
@@ -1521,7 +1525,7 @@ export class ProjectBoardStore {
     })
   }
 
-  failRun(runId: string, errorValue: unknown, status: 'failed' | 'interrupted' = 'failed'): Promise<ProjectBoardSnapshot> {
+  failRun(runId: string, errorValue: unknown, status: 'failed' | 'interrupted' = 'failed', stoppedByUser = false): Promise<ProjectBoardSnapshot> {
     return this.mutate((current) => {
       const run = current.runs.find((entry) => entry.id === runId)
       if (!run || run.status !== 'running') return current
@@ -1536,6 +1540,7 @@ export class ProjectBoardStore {
         runs: current.runs.map((entry) => entry.id === runId ? {
           ...entry,
           status,
+          stoppedByUser: stoppedByUser || undefined,
           finishedAtIso: now.toISOString(),
           error,
         } : entry),

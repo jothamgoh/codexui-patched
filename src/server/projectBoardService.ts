@@ -41,6 +41,12 @@ type ActiveFeatureRun = {
   sourceContext: string
   finishing: boolean
   message?: ManagedBoardMessage
+  stopping?: boolean
+  turnReady?: Promise<void>
+  resolveTurnReady?: () => void
+  stopPromise?: Promise<ProjectBoardSnapshot>
+  nativeTurnEnded?: boolean
+  interruptAcknowledged?: boolean
 }
 
 type ManagedBoardMessage = {
@@ -339,6 +345,8 @@ export class ProjectBoardService {
   private readonly activeFeatureIds = new Set<string>()
   private readonly activeProjectPaths = new Set<string>()
   private readonly autoContinuationsByFeatureId = new Map<string, number>()
+  private readonly featureStartEpochs = new Map<string, number>()
+  private readonly featureStopEpochs = new Map<string, number>()
 
   constructor(options: ProjectBoardServiceOptions) {
     this.resolveExecutionSettings = options.resolveExecutionSettings ?? (async (settings) => settings)
@@ -448,6 +456,139 @@ export class ProjectBoardService {
     return this.startFeatureRun(featureId, false, record.allowWorkspaceWrite === true, record.mode === 'plan' ? 'plan' : 'execute')
   }
 
+  async stopFeature(featureId: string, input: unknown = {}): Promise<ProjectBoardSnapshot> {
+    const observedStartEpoch = this.featureStartEpochs.get(featureId) ?? 0
+    const snapshot = await this.store.read()
+    const feature = snapshot.cards.find((card) => card.id === featureId && card.type === 'feature')
+    if (!feature) throw new Error('Feature not found.')
+    const expectedRunId = readString(asRecord(input)?.expectedRunId)
+    // A delayed Stop from an older chat must never interrupt its replacement.
+    const context = [...this.activeRunsById.values()].find((run) => run.featureId === featureId)
+    if (expectedRunId && (feature.lastRunId !== expectedRunId || (context && context.runId !== expectedRunId)
+      || (this.featureStartEpochs.get(featureId) ?? 0) !== observedStartEpoch)) return this.read()
+    this.featureStopEpochs.set(featureId, this.featureStartEpochs.get(featureId) ?? 0)
+    this.featureStartEpochs.set(featureId, (this.featureStartEpochs.get(featureId) ?? 0) + 1)
+    this.workspaceWriteByFeatureId.delete(featureId)
+    this.autoContinuationsByFeatureId.delete(featureId)
+    this.pauseQueue(feature.boardId, 'Feature stopped. Start the remaining work again when ready.')
+    if (context && !context.finishing) {
+      if (!context.stopPromise) {
+        context.stopping = true
+        context.stopPromise = this.stopFeatureContext(context)
+      }
+      return context.stopPromise
+    }
+    // A start may have saved its run but not registered its native context yet.
+    // The epoch check prevents that pending start from dispatching a turn.
+    if (!context) {
+      for (const run of snapshot.runs.filter((run) => run.cardId === featureId && run.status === 'running')) {
+        this.publish(await this.store.failRun(run.id, 'Stopped by you before the Lead started.', 'interrupted', true))
+      }
+    }
+    return this.publish(await this.store.read())
+  }
+
+  private async stopFeatureContext(context: ActiveFeatureRun): Promise<ProjectBoardSnapshot> {
+    try {
+      if (context.turnReady && !context.turnId) await context.turnReady
+      if (this.activeRunsById.get(context.runId) !== context || context.finishing) return this.read()
+      if (context.turnReady && !context.turnId) throw new Error('The Lead turn could not be identified. Try Stop again once its current status is available.')
+      if (context.turnId && !context.nativeTurnEnded && !context.interruptAcknowledged) {
+        await this.appServer.rpc('turn/interrupt', { threadId: context.threadId, turnId: context.turnId })
+        context.interruptAcknowledged = true
+      }
+      if (context.turnId && !context.nativeTurnEnded) {
+        const response = asRecord(await this.appServer.rpc('thread/turns/list', { threadId: context.threadId, limit: 1, itemsView: 'notLoaded' }))
+        const turn = Array.isArray(response?.data) ? asRecord(response.data[0]) : null
+        if (!context.nativeTurnEnded && (readString(turn?.id) !== context.turnId || !['completed', 'failed', 'interrupted'].includes(readString(turn?.status)))) {
+          throw new Error('The Lead is still stopping. Try Stop again before starting or deleting work.')
+        }
+        context.nativeTurnEnded = true
+      }
+      if (context.turnReady) await this.interruptFeatureDescendants(context.threadId)
+      if (this.activeRunsById.get(context.runId) === context && !context.finishing) {
+        context.error = 'Stopped by you. Completed files and handoffs are preserved.'
+        await this.finishFeatureTurn(context, 'interrupted')
+      }
+      return this.read()
+    } catch (error) {
+      if (this.activeRunsById.get(context.runId) !== context || context.finishing) return this.read()
+      context.stopping = (Boolean(context.turnReady) && !context.turnId) || context.nativeTurnEnded === true || context.interruptAcknowledged === true
+      context.stopPromise = undefined
+      throw error
+    }
+  }
+
+  private async interruptFeatureDescendants(threadId: string): Promise<void> {
+    for (let sweep = 0; sweep < 3; sweep += 1) {
+      const threads = new Map<string, Record<string, unknown>>()
+      const cursors = new Set<string>()
+      let cursor = ''
+      do {
+        const response = asRecord(await this.appServer.rpc('thread/list', {
+          ancestorThreadId: threadId, sourceKinds: ['subAgentThreadSpawn'], archived: false, limit: 100,
+          ...(cursor ? { cursor } : {}),
+        }))
+        if (!Array.isArray(response?.data)) throw new Error('Could not verify the Lead’s subagents. Stop again before deleting this feature.')
+        for (const value of response.data) {
+          const thread = asRecord(value)
+          if (!thread || !readString(thread.id) || !['active', 'idle', 'notLoaded', 'systemError'].includes(readString(asRecord(thread.status)?.type))) {
+            throw new Error('Subagent discovery is incomplete. Stop again before deleting this feature.')
+          }
+          threads.set(readString(thread.id), thread)
+        }
+        cursor = readString(response.nextCursor)
+        if (cursor && (cursors.has(cursor) || cursors.size >= 20)) throw new Error('Subagent discovery is incomplete. Stop again before deleting this feature.')
+        cursors.add(cursor)
+      } while (cursor)
+      const listedThreads = [...threads.values()]
+      const belongsToLead = async (thread: Record<string, unknown>): Promise<boolean> => {
+        const seen = new Set<string>()
+        for (let depth = 0; depth < 32; depth += 1) {
+          const source = asRecord(thread.source)
+          const spawned = asRecord(asRecord(source?.subAgent ?? source?.subagent)?.thread_spawn)
+          const parentId = readString(spawned?.parent_thread_id) || readString(thread.parentThreadId)
+          if (!parentId) {
+            if (typeof thread.source === 'string' && ['cli', 'vscode', 'exec', 'mcp'].includes(thread.source)) return false
+            throw new Error('Could not verify a subagent’s owner. Stop again before deleting this feature.')
+          }
+          if (parentId === threadId) return true
+          if (seen.has(parentId)) break
+          seen.add(parentId)
+          let parent = threads.get(parentId)
+          if (!parent) {
+            parent = asRecord(asRecord(await this.appServer.rpc('thread/read', { threadId: parentId, includeTurns: false }))?.thread) ?? undefined
+            if (!parent || readString(parent.id) !== parentId) throw new Error('Could not verify a subagent’s parent. Stop again before deleting this feature.')
+            threads.set(parentId, parent)
+          }
+          thread = parent
+        }
+        throw new Error('Subagent ownership is incomplete. Stop again before deleting this feature.')
+      }
+      let interrupted = false
+      for (const thread of listedThreads) {
+        if (asRecord(thread.status)?.type !== 'active' || !await belongsToLead(thread)) continue
+        const childId = readString(thread.id)
+        const latestTurn = async () => {
+          const response = asRecord(await this.appServer.rpc('thread/turns/list', { threadId: childId, limit: 1, itemsView: 'notLoaded' }))
+          if (!Array.isArray(response?.data) || !response.data.length) throw new Error('A subagent is still starting. Stop again before deleting this feature.')
+          const turn = asRecord(response.data[0])
+          if (!readString(turn?.id) || !['inProgress', 'completed', 'failed', 'interrupted'].includes(readString(turn?.status))) {
+            throw new Error('A subagent’s current state could not be verified. Stop again before deleting this feature.')
+          }
+          return turn!
+        }
+        const turn = await latestTurn()
+        if (turn.status !== 'inProgress') continue
+        try { await this.appServer.rpc('turn/interrupt', { threadId: childId, turnId: turn.id }) }
+        catch (error) { if ((await latestTurn())?.status === 'inProgress') throw error }
+        interrupted = true
+      }
+      if (!interrupted) return
+    }
+    throw new Error('Some subagents are still stopping. Stop again before deleting this feature.')
+  }
+
   async sendChatMessage(threadId: string, value: unknown): Promise<ProjectBoardSnapshot> {
     const record = asRecord(value) ?? {}
     if (record.mode !== undefined && record.mode !== 'plan' && record.mode !== 'execute') throw new Error('Unknown feature start mode.')
@@ -459,7 +600,7 @@ export class ProjectBoardService {
     const active = [...this.activeRunsById.values()].find((run) => run.threadId === threadId)
     const expectedTurnId = readString(record.expectedTurnId)
     if (active) {
-      if (active.finishing || !active.turnId || expectedTurnId !== active.turnId) throw new Error('The Lead turn changed or is still starting. Wait for its current status, then send again.')
+      if (active.finishing || active.stopping || !active.turnId || expectedTurnId !== active.turnId) throw new Error('The Lead turn changed or is still starting. Wait for its current status, then send again.')
       await this.appServer.rpc('turn/steer', {
         threadId, expectedTurnId, input: message.input, clientUserMessageId: message.clientUserMessageId,
       })
@@ -620,6 +761,12 @@ export class ProjectBoardService {
 
   private async startFeatureRun(featureId: string, continuation: boolean, allowWorkspaceWrite: boolean, kind: 'plan' | 'execute' = 'execute', queue?: ProjectBoardQueue, message?: ManagedBoardMessage): Promise<ProjectBoardSnapshot> {
     const generation = this.processGeneration
+    if (this.activeFeatureIds.has(featureId)) throw new Error('This feature is already running.')
+    const startEpoch = (this.featureStartEpochs.get(featureId) ?? 0) + 1
+    this.featureStartEpochs.set(featureId, startEpoch)
+    const assertNotStopped = () => {
+      if ((this.featureStartEpochs.get(featureId) ?? 0) !== startEpoch) throw new Error('This feature was stopped before the Lead started.')
+    }
     const snapshot = await this.store.read()
     const feature = snapshot.cards.find((card) => card.id === featureId)
     const board = snapshot.boards.find((entry) => entry.id === feature?.boardId)
@@ -633,6 +780,7 @@ export class ProjectBoardService {
       throw new Error('Project folder is unavailable. Choose an existing directory before starting.')
     }
     if (generation !== this.processGeneration) throw new Error('Codex app-server exited. Select Start to retry this feature.')
+    assertNotStopped()
     if (this.activeFeatureIds.has(featureId)) throw new Error('This feature is already running.')
     if (this.activeProjectPaths.has(projectPath)) {
       throw new Error('Another feature is running in this project. Let it finish before starting this one.')
@@ -650,6 +798,7 @@ export class ProjectBoardService {
     if (!lead) throw new Error('Add an agent to this board before starting.')
 
     const settings = await this.resolveExecutionSettings({ model: feature.model || lead.model, reasoningEffort: feature.reasoningEffort || lead.reasoningEffort })
+    assertNotStopped()
     // Turning continuation off also cancels a start already awaiting model metadata.
     if (continuation && !this.workspaceWriteByFeatureId.has(featureId)) return this.read()
     if (queue && (queue.status !== 'running' || this.queues.get(queue.boardId) !== queue || queue.currentFeatureId !== featureId)) {
@@ -661,9 +810,10 @@ export class ProjectBoardService {
     this.activeProjectPaths.add(projectPath)
     try {
       const { snapshot: startedSnapshot, run } = await this.store.startRun(feature.id, lead.id, kind, projectBoardFeatureFingerprint(feature), settings, message?.reopenAndSend)
-      if (generation !== this.processGeneration) {
-        this.publish(await this.store.failRun(run.id, 'Codex app-server exited while this run was starting.', 'interrupted'))
-        throw new Error('Codex app-server exited. Select Start to retry this feature.')
+      if (generation !== this.processGeneration || (this.featureStartEpochs.get(featureId) ?? 0) !== startEpoch) {
+        const reason = generation !== this.processGeneration ? 'Codex app-server exited while this run was starting.' : 'This feature was stopped before the Lead started.'
+        this.publish(await this.store.failRun(run.id, reason, 'interrupted', generation === this.processGeneration && (this.featureStopEpochs.get(featureId) ?? 0) >= startEpoch))
+        throw new Error(reason)
       }
       if (!continuation) this.autoContinuationsByFeatureId.delete(feature.id)
       if (kind === 'execute') this.workspaceWriteByFeatureId.set(feature.id, allowWorkspaceWrite)
@@ -715,7 +865,7 @@ export class ProjectBoardService {
       return dynamicToolText(JSON.stringify(agent))
     }
     const activeRun = [...this.activeRunsById.values()].find((run) => run.threadId === threadId)
-    if (!activeRun || activeRun.finishing || activeRun.boardId !== board.id || activeRun.featureId !== (feature?.id ?? '')
+    if (!activeRun || activeRun.finishing || activeRun.stopping || activeRun.boardId !== board.id || activeRun.featureId !== (feature?.id ?? '')
       || !activeRun.turnId || readString(params.turnId) !== activeRun.turnId) {
       throw new Error('Board updates require the exact active Lead turn. Start or resume the feature from its board.')
     }
@@ -806,6 +956,11 @@ export class ProjectBoardService {
     const notificationTurnId = readTurnId(notification.params)
     if (notification.method === 'turn/started' && !context.turnId) {
       context.turnId = notificationTurnId
+      context.resolveTurnReady?.()
+      if (context.stopping && !context.stopPromise) {
+        context.stopPromise = this.stopFeatureContext(context)
+        await context.stopPromise
+      }
       return
     }
     if (!context.turnId || notificationTurnId !== context.turnId) return
@@ -833,12 +988,23 @@ export class ProjectBoardService {
 
     const turn = asRecord(params?.turn)
     context.error ||= readString(asRecord(turn?.error)?.message)
+    if (context.stopping) {
+      context.nativeTurnEnded = true
+      context.resolveTurnReady?.()
+      // A cancellation can finish after the initial Stop response. Complete the
+      // already requested cleanup then, rather than leaving a finished Lead running.
+      if (!context.stopPromise) {
+        context.stopPromise = this.stopFeatureContext(context)
+        await context.stopPromise
+      }
+      return
+    }
     await this.finishFeatureTurn(context, readString(turn?.status) || 'failed')
   }
 
   private async executeFeature(context: ActiveFeatureRun, continuation: boolean): Promise<void> {
     const assertActive = () => {
-      if (this.activeRunsById.get(context.runId) !== context || context.finishing) throw new Error('The Lead run was interrupted.')
+      if (this.activeRunsById.get(context.runId) !== context || context.finishing || context.stopping) throw new Error('The Lead run was interrupted.')
     }
     try {
       let snapshot = await this.store.read()
@@ -890,6 +1056,7 @@ export class ProjectBoardService {
       }
       context.threadId = threadId
       const currentFeature = snapshot.cards.find((card) => card.id === feature?.id) ?? feature
+      context.turnReady = new Promise<void>((resolve) => { context.resolveTurnReady = resolve })
       const startedTurn = await this.appServer.rpc('turn/start', {
         threadId,
         clientUserMessageId: context.message?.clientUserMessageId || randomUUID(),
@@ -926,8 +1093,13 @@ export class ProjectBoardService {
       const turnId = readTurnId(startedTurn)
       if (!turnId || (context.turnId && context.turnId !== turnId)) throw new Error('Codex did not return the expected Lead turn.')
       context.turnId = turnId
+      context.resolveTurnReady?.()
     } catch (error) {
+      context.resolveTurnReady?.()
       if (this.activeRunsById.get(context.runId) !== context || context.finishing) return
+      // Stop owns cancellation once requested, including a late/failed native
+      // start response. It must verify the turn before releasing project locks.
+      if (context.stopping) return
       context.finishing = true
       this.pauseQueue(context.boardId, 'A run failed. Review the feature chat, then start the queue again.')
       try {
@@ -946,7 +1118,7 @@ export class ProjectBoardService {
       if (turnStatus !== 'completed') {
         this.pauseQueue(context.boardId, 'A run failed or was interrupted. Review the feature, then start the queue again.')
         this.workspaceWriteByFeatureId.delete(context.featureId)
-        this.publish(await this.store.failRun(context.runId, context.error || `Codex turn ended with status ${turnStatus}.`, turnStatus === 'interrupted' ? 'interrupted' : 'failed'))
+        this.publish(await this.store.failRun(context.runId, context.error || `Codex turn ended with status ${turnStatus}.`, turnStatus === 'interrupted' ? 'interrupted' : 'failed', context.stopping === true))
         return
       }
       if (context.kind === 'board_plan') {
@@ -990,6 +1162,7 @@ export class ProjectBoardService {
 
   private releaseContext(context: ActiveFeatureRun): void {
     if (this.activeRunsById.get(context.runId) !== context) return
+    context.resolveTurnReady?.()
     this.activeRunsById.delete(context.runId)
     this.activeFeatureIds.delete(context.featureId)
     this.activeProjectPaths.delete(context.projectPath)

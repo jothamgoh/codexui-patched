@@ -974,7 +974,22 @@ class AppServerProcess {
   private emitNotification(notification: { method: string; params: unknown }): void {
     const turnId = readNestedString(notification.params, 'turn', 'id')
     if (notification.method === 'turn/started') this.reviewMutationGate.markTurnStarted(turnId)
-    if (notification.method === 'turn/completed') this.reviewMutationGate.markTurnCompleted(turnId)
+    if (notification.method === 'turn/completed') {
+      this.reviewMutationGate.markTurnCompleted(turnId)
+      const threadId = asRecord(notification.params)?.threadId
+      if (typeof threadId === 'string' && turnId) {
+        for (const request of this.pendingServerRequests.values()) {
+          const params = asRecord(request.params)
+          if (params?.threadId !== threadId || params.turnId !== turnId) continue
+          this.pendingServerRequests.delete(request.id)
+          // The native turn ended; clear its UI request without answering or
+          // approving anything, and leave other turns' requests untouched.
+          this.emitNotification({ method: 'server/request/resolved', params: {
+            id: request.id, method: request.method, threadId, mode: 'cancelled', resolvedAtIso: new Date().toISOString(),
+          } })
+        }
+      }
+    }
     for (const listener of this.notificationListeners) {
       listener(notification)
     }
@@ -2023,6 +2038,12 @@ export function createCodexBridgeMiddleware(): CodexBridgeMiddleware {
 
       if (req.method === 'POST' && url.pathname === '/codex-api/project-board-cards') {
         setJson(res, 200, { data: await projectBoardService.createCard(await readJsonBody(req)) })
+        return
+      }
+
+      const stopProjectBoardCardMatch = url.pathname.match(/^\/codex-api\/project-board-cards\/([^/]+)\/stop$/u)
+      if (req.method === 'POST' && stopProjectBoardCardMatch) {
+        setJson(res, 200, { data: await projectBoardService.stopFeature(decodeURIComponent(stopProjectBoardCardMatch[1]), await readJsonBody(req)) })
         return
       }
 

@@ -12,6 +12,7 @@ import {
   getProjectBoards,
   isProjectBoardSnapshot,
   startProjectBoardFeature,
+  stopProjectBoardFeature,
   sendProjectBoardChatMessage,
   planProjectBoard,
   startProjectBoardQueue,
@@ -220,6 +221,8 @@ export function useProjectBoards(options: UseProjectBoardsOptions = {}) {
       mutate(() => answerProjectBoardQuestion(questionId, input)),
     startFeature: (featureId: string, allowWorkspaceWrite = false, mode: 'plan' | 'execute' = 'execute') =>
       mutate(() => startProjectBoardFeature(featureId, allowWorkspaceWrite, mode)),
+    stopFeature: (featureId: string, expectedRunId?: string) =>
+      mutate(() => stopProjectBoardFeature(featureId, expectedRunId)),
     sendChatMessage: (threadId: string, input: ProjectBoardChatMessageInput) =>
       mutate(() => sendProjectBoardChatMessage(threadId, input)),
     planBoard: (boardId: string, input: ProjectBoardPlanInput) =>

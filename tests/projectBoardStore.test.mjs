@@ -582,7 +582,7 @@ test('public edits cannot forge ownership, bypass live workflow, or finish with 
   assert.equal(task.lastRunId, run.id)
   await assert.rejects(store.updateCard(task.id, { status: 'done' }), /feature run to stop/u)
   await assert.rejects(store.updateCard(task.id, { taskPurpose: 'verification' }), /feature run to stop/u)
-  await assert.rejects(store.deleteCard(task.id), /feature run to stop/u)
+  await assert.rejects(store.deleteCard(task.id), /Stop running work/u)
   await store.updateTaskFromAgent(feature.id, task.id, 'start', {}, run.id)
   await store.updateTaskFromAgent(feature.id, task.id, 'complete', { summary: 'Implemented and checked.' }, run.id)
   snapshot = await store.addComment(task.id, 'Handoff recorded.', 'Lead', run.id, feature.id)

@@ -231,6 +231,10 @@ export function startProjectBoardFeature(featureId: string, allowWorkspaceWrite 
   )
 }
 
+export function stopProjectBoardFeature(featureId: string, expectedRunId?: string): Promise<ProjectBoardSnapshot> {
+  return requestProjectBoardSnapshot(projectBoardPath(`project-board-cards/${encodeURIComponent(featureId)}/stop`), jsonRequest('POST', { expectedRunId }))
+}
+
 export function planProjectBoard(boardId: string, input: ProjectBoardPlanInput): Promise<ProjectBoardSnapshot> {
   return requestProjectBoardSnapshot(projectBoardPath(`project-boards/${encodeURIComponent(boardId)}/plan`), jsonRequest('POST', input))
 }

@@ -46,6 +46,7 @@ function createFakeAppServer() {
   const notifications = []
   let nextTurn = 1
   let nextThread = 1
+  const latestTurns = new Map()
   return {
     calls,
     notifications,
@@ -53,7 +54,17 @@ function createFakeAppServer() {
       calls.push({ method, params })
       if (method === 'thread/start') return { thread: { id: nextThread++ === 1 ? 'lead-thread' : `lead-thread-${nextThread - 1}` } }
       if (method === 'thread/resume') return { thread: { id: params.threadId } }
-      if (method === 'turn/start') return { turn: { id: `lead-turn-${String(nextTurn++)}` } }
+      if (method === 'turn/start') {
+        const turn = { id: `lead-turn-${String(nextTurn++)}`, status: 'inProgress' }
+        latestTurns.set(params.threadId, turn)
+        return { turn }
+      }
+      if (method === 'turn/interrupt') {
+        const turn = latestTurns.get(params.threadId)
+        if (turn?.id === params.turnId) turn.status = 'interrupted'
+      }
+      if (method === 'thread/list') return { data: [], nextCursor: null }
+      if (method === 'thread/turns/list') return { data: latestTurns.has(params.threadId) ? [latestTurns.get(params.threadId)] : [] }
       return {}
     },
     publishLocalNotification(method, params) {
@@ -106,6 +117,172 @@ function toolCall(threadId, action, fields = {}) {
     arguments: { action, ...fields },
   }
 }
+
+test('Stop interrupts only the current run, preserves handoffs, and permits deleting its unanswered questions', async (t) => {
+  const { appServer, feature, service, store } = await createHarness(t)
+  const started = await service.startFeature(feature.id, { allowWorkspaceWrite: true })
+  await waitFor(() => appServer.calls.find((call) => call.method === 'turn/start'), 'No Lead turn')
+  await service.handleDynamicToolCall(toolCall('lead-thread', 'ask_user', { question: 'A decision we no longer need.' }))
+  await assert.rejects(service.deleteCard(feature.id), /Stop running work/u)
+  const rpc = appServer.rpc.bind(appServer)
+  let rejectInterrupt = true
+  appServer.rpc = async (method, params) => {
+    if (method === 'turn/interrupt' && rejectInterrupt) throw new Error('Interrupt unavailable.')
+    return rpc(method, params)
+  }
+  await assert.rejects(service.stopFeature(feature.id, { expectedRunId: started.runs[0].id }), /Interrupt unavailable/u)
+  assert.equal((await store.read()).runs[0].status, 'running')
+  rejectInterrupt = false
+  const stopped = await service.stopFeature(feature.id, { expectedRunId: started.runs[0].id })
+  assert.equal(stopped.runs[0].status, 'interrupted')
+  assert.equal((await store.read()).runs[0].stoppedByUser, true, 'Explicit Stop is persisted separately from an unexpected failure')
+  assert.equal(stopped.questions[0].status, 'open', 'Stopping must not invent an answer')
+  assert.deepEqual(appServer.calls.find((call) => call.method === 'turn/interrupt').params, { threadId: 'lead-thread', turnId: 'lead-turn-1' })
+  await service.stopFeature(feature.id, { expectedRunId: started.runs[0].id })
+  await service.handleNotification({ method: 'turn/completed', params: { threadId: 'lead-thread', turn: { id: 'lead-turn-1', status: 'completed' } } })
+  assert.equal((await store.read()).runs[0].status, 'interrupted')
+  assert.equal(appServer.calls.filter((call) => call.method === 'turn/interrupt').length, 1)
+  const deleted = await service.deleteCard(feature.id)
+  assert.equal(deleted.cards.some((card) => card.id === feature.id), false)
+  assert.equal(deleted.questions.length, 0)
+})
+
+test('Stop cancels pending metadata and thread creation, and waits for a pending native turn identity', async (t) => {
+  for (const stage of ['model', 'thread/start', 'turn/start']) {
+    const { appServer, feature, store } = await createHarness(t)
+    let release
+    let waiting = false
+    const rpc = appServer.rpc.bind(appServer)
+    appServer.rpc = async (method, params) => {
+      const result = await rpc(method, params)
+      if (method === stage) {
+        waiting = true
+        return new Promise((resolve) => { release = () => resolve(result) })
+      }
+      return result
+    }
+    const service = new ProjectBoardService({ store, appServer, resolveExecutionSettings: async (settings) => {
+      if (stage !== 'model') return settings
+      waiting = true
+      return new Promise((resolve) => { release = () => resolve(settings) })
+    } })
+    const starting = service.startFeature(feature.id, { allowWorkspaceWrite: true })
+    const startResult = starting.then((value) => value, (error) => error)
+    await waitFor(() => waiting, `No pending ${stage}`)
+    const stopping = service.stopFeature(feature.id)
+    if (stage === 'turn/start') {
+      await delay()
+      assert.equal(appServer.calls.some((call) => call.method === 'turn/interrupt'), false)
+      await service.handleNotification({ method: 'turn/started', params: { threadId: 'lead-thread', turn: { id: 'lead-turn-1' } } })
+    }
+    await stopping
+    release()
+    const result = await startResult
+    await delay()
+    if (stage === 'model') assert.match(result.message, /stopped before/u)
+    else {
+      assert.equal((await store.read()).runs[0].status, 'interrupted')
+      assert.equal((await store.read()).runs[0].stoppedByUser, true)
+    }
+    assert.equal(appServer.calls.filter((call) => call.method === 'turn/start').length, stage === 'turn/start' ? 1 : 0)
+    assert.equal(appServer.calls.filter((call) => call.method === 'turn/interrupt').length, stage === 'turn/start' ? 1 : 0)
+  }
+})
+
+test('a failed pending start response cannot release Stop ownership before the native turn is identified', async (t) => {
+  const { appServer, feature, service, store } = await createHarness(t)
+  const rpc = appServer.rpc.bind(appServer)
+  let rejectStart
+  appServer.rpc = async (method, params) => {
+    const response = await rpc(method, params)
+    if (method === 'turn/start') return new Promise((_, reject) => { rejectStart = reject })
+    return response
+  }
+  await service.startFeature(feature.id, { allowWorkspaceWrite: true })
+  await waitFor(() => rejectStart, 'No pending native turn')
+  const stopping = service.stopFeature(feature.id)
+  await delay()
+  rejectStart(new Error('Start response unavailable.'))
+  await assert.rejects(stopping, /Lead turn could not be identified/u)
+  assert.equal((await store.read()).runs[0].status, 'running')
+  await assert.rejects(service.deleteCard(feature.id), /Stop running work/u)
+  await service.handleNotification({ method: 'turn/started', params: { threadId: 'lead-thread', turn: { id: 'lead-turn-1' } } })
+  assert.equal((await store.read()).runs[0].status, 'interrupted')
+  assert.equal((await store.read()).runs[0].stoppedByUser, true)
+  assert.deepEqual(appServer.calls.find((call) => call.method === 'turn/interrupt').params, { threadId: 'lead-thread', turnId: 'lead-turn-1' })
+})
+
+test('a delayed Stop snapshot and replay cannot cancel a replacement run', async (t) => {
+  const { appServer, board, feature, service, store } = await createHarness(t)
+  await service.updateBoard(board.id, { autoDispatch: false })
+  await service.startFeature(feature.id, { allowWorkspaceWrite: true })
+  await waitFor(() => appServer.calls.find((call) => call.method === 'turn/start'), 'No first run')
+  await service.handleNotification({ method: 'turn/completed', params: { threadId: 'lead-thread', turn: { id: 'lead-turn-1', status: 'completed' } } })
+  const previousRunId = (await store.read()).cards.find((card) => card.id === feature.id).lastRunId
+  const read = store.read.bind(store)
+  let releaseSnapshot
+  let holdRead = true
+  store.read = async () => {
+    const snapshot = await read()
+    if (!holdRead) return snapshot
+    holdRead = false
+    return new Promise((resolve) => { releaseSnapshot = () => resolve(snapshot) })
+  }
+  const stopping = service.stopFeature(feature.id, { expectedRunId: previousRunId })
+  await waitFor(() => releaseSnapshot, 'No held Stop snapshot')
+  await service.startFeature(feature.id, { allowWorkspaceWrite: true })
+  await waitFor(() => appServer.calls.filter((call) => call.method === 'turn/start')[1], 'No replacement')
+  releaseSnapshot()
+  await stopping
+  await service.stopFeature(feature.id, { expectedRunId: previousRunId })
+  assert.equal(appServer.calls.filter((call) => call.method === 'turn/interrupt').length, 0)
+  assert.equal((await store.read()).runs[0].status, 'running')
+})
+
+test('Stop retains project ownership until the Lead and its proven descendants have ended', async (t) => {
+  const { appServer, board, feature, service, store } = await createHarness(t)
+  await service.startFeature(feature.id, { allowWorkspaceWrite: true })
+  await waitFor(() => appServer.calls.find((call) => call.method === 'turn/start'), 'No Lead')
+  const rpc = appServer.rpc.bind(appServer)
+  const child = (id, parent) => ({ id, status: { type: 'active' }, source: { subAgent: { thread_spawn: { parent_thread_id: parent } } } })
+  const children = [child('child', 'lead-thread'), child('grandchild', 'child'), child('unrelated', 'other-root')]
+  let rootStillRunning = true
+  let rejectChild = true
+  let invalidChildStatus = false
+  const interruptedChildren = new Set()
+  appServer.rpc = async (method, params) => {
+    if (method === 'thread/list') return { data: children, nextCursor: null }
+    if (method === 'thread/read') return { thread: { id: params.threadId, source: 'vscode' } }
+    if (method === 'turn/interrupt' && params.threadId !== 'lead-thread') {
+      if (rejectChild) throw new Error('Child interruption failed.')
+      interruptedChildren.add(params.threadId)
+      return {}
+    }
+    if (method === 'thread/turns/list') {
+      if (params.threadId === 'lead-thread') return { data: [{ id: 'lead-turn-1', status: rootStillRunning ? 'inProgress' : 'interrupted' }] }
+      if (invalidChildStatus) return { data: [{}] }
+      return { data: [{ id: `${params.threadId}-turn`, status: interruptedChildren.has(params.threadId) ? 'interrupted' : 'inProgress' }] }
+    }
+    return rpc(method, params)
+  }
+  await assert.rejects(service.stopFeature(feature.id), /Lead is still stopping/u)
+  await assert.rejects(service.deleteCard(feature.id), /Stop running work/u)
+  const otherSnapshot = await service.createCard({ boardId: board.id, title: 'Another feature' })
+  const other = otherSnapshot.cards.find((card) => card.title === 'Another feature')
+  await assert.rejects(service.startFeature(other.id, { allowWorkspaceWrite: true }), /Another feature is running/u)
+  rootStillRunning = false
+  await assert.rejects(service.handleNotification({ method: 'turn/completed', params: { threadId: 'lead-thread', turn: { id: 'lead-turn-1', status: 'interrupted' } } }), /Child interruption failed/u)
+  assert.equal((await store.read()).runs[0].status, 'running')
+  rejectChild = false
+  invalidChildStatus = true
+  await assert.rejects(service.stopFeature(feature.id), /subagent’s current state could not be verified/u)
+  assert.equal((await store.read()).runs[0].status, 'running', 'Unknown child state must keep the project lock')
+  invalidChildStatus = false
+  const stopped = await service.stopFeature(feature.id)
+  assert.equal(stopped.runs[0].status, 'interrupted')
+  assert.deepEqual([...interruptedChildren], ['child', 'grandchild'])
+  assert.equal(appServer.calls.filter((call) => call.method === 'turn/interrupt' && call.params.threadId === 'lead-thread').length, 1)
+})
 
 test('managed replies steer the exact Lead turn and preserve native input without falling back', async (t) => {
   const { appServer, feature, service, store } = await createHarness(t)
@@ -579,6 +756,7 @@ test('app-server exit interrupts pending and active turns, releases locks, and r
     releaseTurn?.()
     let snapshot = await store.read()
     assert.equal(snapshot.runs[0].status, 'interrupted')
+    assert.equal(snapshot.runs[0].stoppedByUser, undefined, 'Unexpected process exit must still alert the user')
     assert.equal(snapshot.cards.find((card) => card.id === feature.id).status, 'blocked')
     await assert.rejects(service.handleDynamicToolCall(toolCall('lead-thread', 'comment', { comment: 'Late write' })), /exact active Lead turn/u)
     await assert.rejects(service.startFeature(feature.id), /Confirm workspace-write access/u)

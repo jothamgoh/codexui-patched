@@ -119,6 +119,7 @@ export type ProjectBoardRun = {
   kind: ProjectBoardRunKind
   createdCardIds: string[]
   status: ProjectBoardRunStatus
+  stoppedByUser?: boolean
   threadId: string
   // Launch request settings, not independently observed runtime telemetry. Absent on legacy runs.
   requestedModel?: string

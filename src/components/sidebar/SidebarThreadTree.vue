@@ -1,11 +1,12 @@
 <template>
-  <section class="thread-tree-root">
+  <section ref="treeRootRef" class="thread-tree-root">
     <section v-if="pinnedThreads.length > 0" class="pinned-section">
       <span class="pinned-section-label">Pinned</span>
       <ul class="thread-list">
         <li v-for="(thread, index) in pinnedThreads" :key="thread.id" class="thread-row-item">
           <SidebarMenuRow
             class="thread-row"
+            :data-thread-id="thread.id"
             :data-active="thread.id === selectedThreadId"
             :data-pinned="isPinned(thread.id)"
             :data-thread-dragging="isThreadDragging(thread.id)"
@@ -37,17 +38,19 @@
               @keydown.enter.prevent="commitThreadRename(thread)"
               @keydown.escape.prevent="cancelThreadRename"
             />
-            <button v-else class="thread-main-button" type="button" :title="getThreadTitleTooltip(thread)" @click="onSelect(thread.id)" @keydown="onThreadKeyDown($event, thread.id, 'pinned', '')">
+            <button v-else class="thread-main-button" :class="{ 'thread-main-button--board': boardThreads?.[thread.id] }" type="button" :title="getThreadTitleTooltip(thread)" @click="onSelect(thread.id)" @keydown="onThreadKeyDown($event, thread.id, 'pinned', '')">
               <span class="thread-row-title-wrap">
                 <span class="thread-row-title">{{ getThreadDisplayTitle(thread) }}</span>
+                <FolderKanban v-if="boardThreads?.[thread.id]" class="thread-row-board-icon" aria-hidden="true" />
                 <IconTablerGitFork v-if="thread.hasWorktree" class="thread-row-worktree-icon" title="Worktree thread" />
               </span>
+              <span v-if="isMobile && boardThreads?.[thread.id]" class="thread-board-mobile-status">Board · {{ getThreadStatusLabel(thread) }}</span>
             </button>
             <template #right>
               <kbd v-if="showShortcutHints && getShortcutLabel(thread.id)" class="thread-shortcut-hint">
                 {{ getShortcutLabel(thread.id) }}
               </kbd>
-              <span v-else-if="getThreadStatusLabel(thread)" class="thread-status-label" :data-state="getThreadState(thread)">
+              <span v-else-if="getThreadStatusLabel(thread)" class="thread-status-label" :data-state="getThreadStatusState(thread)">
                 {{ getThreadStatusLabel(thread) }}
               </span>
               <span v-else class="thread-row-time">{{ formatRelative(thread.updatedAtIso || thread.createdAtIso) }}</span>
@@ -140,6 +143,7 @@
       <li v-for="(thread, index) in globalThreads" :key="thread.id" class="thread-row-item">
         <SidebarMenuRow
           class="thread-row"
+          :data-thread-id="thread.id"
           :data-active="thread.id === selectedThreadId"
           :data-pinned="isPinned(thread.id)"
           :data-thread-dragging="isThreadDragging(thread.id)"
@@ -175,17 +179,19 @@
             @keydown.enter.prevent="commitThreadRename(thread)"
             @keydown.escape.prevent="cancelThreadRename"
           />
-          <button v-else class="thread-main-button" type="button" :title="getThreadTitleTooltip(thread)" @click="onSelect(thread.id)" @keydown="onThreadKeyDown($event, thread.id, 'global', '')">
+          <button v-else class="thread-main-button" :class="{ 'thread-main-button--board': boardThreads?.[thread.id] }" type="button" :title="getThreadTitleTooltip(thread)" @click="onSelect(thread.id)" @keydown="onThreadKeyDown($event, thread.id, 'global', '')">
             <span class="thread-row-title-wrap">
               <span class="thread-row-title">{{ getThreadDisplayTitle(thread) }}</span>
+              <FolderKanban v-if="boardThreads?.[thread.id]" class="thread-row-board-icon" aria-hidden="true" />
               <IconTablerGitFork v-if="thread.hasWorktree" class="thread-row-worktree-icon" title="Worktree thread" />
             </span>
+            <span v-if="isMobile && boardThreads?.[thread.id]" class="thread-board-mobile-status">Board · {{ getThreadStatusLabel(thread) }}</span>
           </button>
           <template #right>
             <kbd v-if="showShortcutHints && getShortcutLabel(thread.id)" class="thread-shortcut-hint">
               {{ getShortcutLabel(thread.id) }}
             </kbd>
-            <span v-else-if="getThreadStatusLabel(thread)" class="thread-status-label" :data-state="getThreadState(thread)">
+            <span v-else-if="getThreadStatusLabel(thread)" class="thread-status-label" :data-state="getThreadStatusState(thread)">
               {{ getThreadStatusLabel(thread) }}
             </span>
             <span v-else class="thread-row-time">{{ formatRelative(thread.updatedAtIso || thread.createdAtIso) }}</span>
@@ -305,6 +311,7 @@
             <li v-for="(thread, index) in visibleThreads(group)" :key="thread.id" class="thread-row-item">
               <SidebarMenuRow
                 class="thread-row"
+                :data-thread-id="thread.id"
                 :data-active="thread.id === selectedThreadId"
                 :data-pinned="isPinned(thread.id)"
                 :data-thread-dragging="isThreadDragging(thread.id)"
@@ -340,17 +347,19 @@
                   @keydown.enter.prevent="commitThreadRename(thread)"
                   @keydown.escape.prevent="cancelThreadRename"
                 />
-                <button v-else class="thread-main-button" type="button" :title="getThreadTitleTooltip(thread)" @click="onSelect(thread.id)" @keydown="onThreadKeyDown($event, thread.id, 'project', group.projectName)">
+                <button v-else class="thread-main-button" :class="{ 'thread-main-button--board': boardThreads?.[thread.id] }" type="button" :title="getThreadTitleTooltip(thread)" @click="onSelect(thread.id)" @keydown="onThreadKeyDown($event, thread.id, 'project', group.projectName)">
                   <span class="thread-row-title-wrap">
                     <span class="thread-row-title">{{ getThreadDisplayTitle(thread) }}</span>
+                    <FolderKanban v-if="boardThreads?.[thread.id]" class="thread-row-board-icon" aria-hidden="true" />
                     <IconTablerGitFork v-if="thread.hasWorktree" class="thread-row-worktree-icon" title="Worktree thread" />
                   </span>
+                  <span v-if="isMobile && boardThreads?.[thread.id]" class="thread-board-mobile-status">Board · {{ getThreadStatusLabel(thread) }}</span>
                 </button>
                 <template #right>
                   <kbd v-if="showShortcutHints && getShortcutLabel(thread.id)" class="thread-shortcut-hint">
                     {{ getShortcutLabel(thread.id) }}
                   </kbd>
-                  <span v-else-if="getThreadStatusLabel(thread)" class="thread-status-label" :data-state="getThreadState(thread)">
+                  <span v-else-if="getThreadStatusLabel(thread)" class="thread-status-label" :data-state="getThreadStatusState(thread)">
                     {{ getThreadStatusLabel(thread) }}
                   </span>
                   <span v-else class="thread-row-time">{{ formatRelative(thread.updatedAtIso || thread.createdAtIso) }}</span>
@@ -399,11 +408,13 @@
 <script setup lang="ts">
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import type { ComponentPublicInstance } from 'vue'
+import { FolderKanban } from '@lucide/vue'
 import { useMobile } from '../../composables/useMobile'
 import { useRelativeTimeClock } from '../../composables/useRelativeTimeClock'
 import { getThreadSummary } from '../../api/codexGateway'
 import type { SetThreadPinnedIntent } from '../../utils/pinnedThreads'
 import type { UiProjectGroup, UiThread } from '../../types/codex'
+import type { ProjectBoardStatus } from '../../types/projectBoards'
 import { formatCompactRelativeTime } from '../../utils/relativeTime'
 import IconTablerArchive from '../icons/IconTablerArchive.vue'
 import IconTablerChevronDown from '../icons/IconTablerChevronDown.vue'
@@ -424,6 +435,7 @@ const props = defineProps<{
   isLoading: boolean
   searchQuery: string
   showShortcutHints: boolean
+  boardThreads?: Record<string, { boardId: string; featureId: string; title: string; status: ProjectBoardStatus }>
 }>()
 
 const { isMobile } = useMobile()
@@ -491,6 +503,7 @@ type ThreadDropTarget = {
 const DRAG_START_THRESHOLD_PX = 4
 const PROJECT_GROUP_EXPANDED_GAP_PX = 6
 const expandedProjects = ref<Record<string, boolean>>({})
+const treeRootRef = ref<HTMLElement | null>(null)
 const collapsedProjects = ref<Record<string, boolean>>({})
 const pinnedThreadIds = computed(() => normalizeThreadIdArray(props.pinnedThreadIds))
 const archiveConfirmThreadId = ref('')
@@ -611,7 +624,7 @@ function threadMatchesSearch(thread: UiThread): boolean {
   if (!isSearchActive.value) return true
   const q = normalizedSearchQuery.value
   return (
-    thread.title.toLowerCase().includes(q) ||
+    getThreadDisplayTitle(thread).toLowerCase().includes(q) ||
     thread.preview.toLowerCase().includes(q)
   )
 }
@@ -796,19 +809,30 @@ function normalizeThreadLabel(value: string): string {
 }
 
 function getThreadDisplayTitle(thread: UiThread): string {
-  return normalizeThreadLabel(thread.title) || normalizeThreadLabel(thread.preview) || `Chat ${thread.id.slice(0, 8)}`
+  return normalizeThreadLabel(props.boardThreads?.[thread.id]?.title || thread.title) || normalizeThreadLabel(thread.preview) || `Chat ${thread.id.slice(0, 8)}`
 }
 
 function getThreadTitleTooltip(thread: UiThread): string {
   const title = getThreadDisplayTitle(thread)
+  const boardThread = props.boardThreads?.[thread.id]
+  if (boardThread) return `${title}\n${boardThread.featureId ? 'Board feature' : 'Board planning'} · ${getThreadStatusLabel(thread)}`
   const preview = normalizeThreadLabel(thread.preview)
   return preview && preview !== title ? `${title}\n${preview}` : title
 }
 
-function getThreadStatusLabel(thread: UiThread): 'Running' | 'Unread' | '' {
+function getThreadStatusLabel(thread: UiThread): string {
+  const status = props.boardThreads?.[thread.id]?.status
+  if (status === 'needs_input') return 'Needs you'
   if (thread.inProgress) return 'Running'
+  if (status) return { backlog: 'Backlog', working: 'Paused', review: 'Review', blocked: 'Blocked', done: 'Done' }[status]
   if (thread.unread) return 'Unread'
   return ''
+}
+
+function getThreadStatusState(thread: UiThread): string {
+  const status = props.boardThreads?.[thread.id]?.status
+  if (status === 'needs_input') return status
+  return thread.inProgress ? 'working' : status === 'working' ? 'paused' : status || getThreadState(thread)
 }
 
 function cacheVisiblePinnedThreads(): void {
@@ -1564,6 +1588,33 @@ function getThreadState(thread: UiThread): 'working' | 'unread' | 'idle' {
 }
 
 watch(
+  () => {
+    const group = props.groups.find((entry) => entry.threads.some((thread) => thread.id === props.selectedThreadId))
+    return `${props.selectedThreadId}\u0000${group?.projectName ?? ''}`
+  },
+  () => {
+    const threadId = props.selectedThreadId
+    const thread = threadById.value.get(threadId) ?? pinnedThreadById.value[threadId]
+    if (!thread) return
+    // Reveal a newly opened chat without changing saved ordering or repeatedly
+    // overriding a project the user subsequently collapses.
+    if (!threadMatchesStatus(thread)) threadStatusFilter.value = 'all'
+    const group = props.groups.find((entry) => entry.threads.some((entry) => entry.id === threadId))
+    if (group && !isPinned(threadId)) {
+      if (isCollapsed(group.projectName)) collapsedProjects.value = { ...collapsedProjects.value, [group.projectName]: false }
+      if (projectThreads(group).findIndex((entry) => entry.id === threadId) >= 5) {
+        expandedProjects.value = { ...expandedProjects.value, [group.projectName]: true }
+      }
+    }
+    void nextTick(() => {
+      if (props.selectedThreadId !== threadId) return
+      treeRootRef.value?.querySelector<HTMLElement>(`[data-thread-id="${CSS.escape(threadId)}"]`)?.scrollIntoView({ block: 'nearest' })
+    })
+  },
+  { immediate: true },
+)
+
+watch(
   () => props.groups.map((group) => group.projectName),
   (projectNames) => {
     const dragProjectName = activeProjectDrag.value?.projectName ?? pendingProjectDrag.value?.projectName ?? ''
@@ -1884,6 +1935,36 @@ onBeforeUnmount(() => {
   color: var(--accent-strong);
 }
 
+.thread-status-label[data-state='needs_input'],
+.thread-status-label[data-state='review'] {
+  background: var(--accent-soft);
+  border-color: color-mix(in srgb, var(--accent) 40%, transparent);
+  color: var(--accent-strong);
+}
+
+.thread-status-label[data-state='blocked'],
+.thread-status-label[data-state='paused'] {
+  background: var(--surface-muted);
+  border-color: var(--border-strong);
+  color: var(--text-primary);
+}
+
+.thread-status-label[data-state='done'],
+.thread-status-label[data-state='backlog'] {
+  border-color: var(--border-subtle);
+  color: var(--text-secondary);
+}
+
+.thread-row-board-icon {
+  @apply size-3 shrink-0;
+  color: var(--text-secondary);
+}
+
+.thread-board-mobile-status {
+  @apply text-[10px] leading-4;
+  color: var(--text-secondary);
+}
+
 .thread-row-worktree-icon {
   @apply w-3 h-3 text-zinc-500 shrink-0;
 }
@@ -1926,6 +2007,10 @@ onBeforeUnmount(() => {
 
   .thread-main-button {
     @apply min-h-8;
+  }
+
+  .thread-main-button--board {
+    @apply flex-col items-start;
   }
 
   .thread-row-title-wrap {

@@ -211,7 +211,7 @@ function normalizeDismissal(value: unknown): StoredNotificationDismissal | null 
 function resolveStateFile(): string {
   const configured = readString(process.env[STATE_FILE_ENV])
   if (configured) return resolve(configured)
-  return join(homedir(), '.codex', 'codexui-web-push.json')
+  return join(readString(process.env.CODEX_HOME) || join(homedir(), '.codex'), 'codexui-web-push.json')
 }
 
 function readEnvironmentVapidKeys(): PushState['vapid'] | null {

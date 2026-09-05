@@ -36,8 +36,11 @@ export type TelegramTurnNotifier = {
   handleRequest: (req: IncomingMessage, res: ServerResponse, next: () => void) => void
 }
 
-const TELEGRAM_PREFERENCE_FILE = join(homedir(), '.codex', 'codexui-telegram-notifications.json')
 const MAX_REQUEST_BODY_BYTES = 16 * 1024
+
+function telegramPreferenceFile(): string {
+  return join(normalizeEnvValue(process.env.CODEX_HOME) || join(homedir(), '.codex'), 'codexui-telegram-notifications.json')
+}
 
 function asRecord(value: unknown): Record<string, unknown> | null {
   if (!value || typeof value !== 'object' || Array.isArray(value)) return null
@@ -91,7 +94,7 @@ function isExplicitlyDisabled(): boolean {
 
 function readPersistedEnabledPreference(): boolean | null {
   try {
-    const parsed = JSON.parse(readFileSync(TELEGRAM_PREFERENCE_FILE, 'utf8')) as unknown
+    const parsed = JSON.parse(readFileSync(telegramPreferenceFile(), 'utf8')) as unknown
     const record = asRecord(parsed)
     return typeof record?.enabled === 'boolean' ? record.enabled : null
   } catch {
@@ -100,14 +103,15 @@ function readPersistedEnabledPreference(): boolean | null {
 }
 
 function writeEnabledPreference(enabled: boolean): void {
-  mkdirSync(dirname(TELEGRAM_PREFERENCE_FILE), { recursive: true })
-  const temporaryPath = `${TELEGRAM_PREFERENCE_FILE}.${process.pid.toString()}.tmp`
+  const preferenceFile = telegramPreferenceFile()
+  mkdirSync(dirname(preferenceFile), { recursive: true })
+  const temporaryPath = `${preferenceFile}.${process.pid.toString()}.tmp`
   writeFileSync(
     temporaryPath,
     `${JSON.stringify({ version: 1, enabled, updatedAt: new Date().toISOString() }, null, 2)}\n`,
     { encoding: 'utf8', mode: 0o600 },
   )
-  renameSync(temporaryPath, TELEGRAM_PREFERENCE_FILE)
+  renameSync(temporaryPath, preferenceFile)
 }
 
 function setJson(res: ServerResponse, statusCode: number, payload: unknown): void {

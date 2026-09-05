@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict'
-import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
+import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { createRequire } from 'node:module'
@@ -124,7 +124,7 @@ test('notifies authoritative board outcomes, not successful intermediate lead tu
 test('board delivery reuses the durable inbox and device/Telegram preferences with redacted exact links', async (t) => {
   const temporary = await mkdtemp(join(tmpdir(), 'codexui-board-notifications-'))
   const previousFetch = globalThis.fetch
-  const envNames = ['CODEXUI_WEB_PUSH_STATE_FILE', 'CODEXUI_WEB_PUSH_PUBLIC_KEY', 'CODEXUI_WEB_PUSH_PRIVATE_KEY', 'CODEXUI_TELEGRAM_BOT_TOKEN', 'CODEXUI_TELEGRAM_CHAT_ID', 'CODEXUI_PUBLIC_BASE_URL', 'CODEXUI_TELEGRAM_NOTIFICATIONS']
+  const envNames = ['CODEX_HOME', 'CODEXUI_WEB_PUSH_STATE_FILE', 'CODEXUI_WEB_PUSH_PUBLIC_KEY', 'CODEXUI_WEB_PUSH_PRIVATE_KEY', 'CODEXUI_TELEGRAM_BOT_TOKEN', 'CODEXUI_TELEGRAM_CHAT_ID', 'CODEXUI_PUBLIC_BASE_URL', 'CODEXUI_TELEGRAM_NOTIFICATIONS']
   const previousEnv = Object.fromEntries(envNames.map((key) => [key, process.env[key]]))
   t.after(async () => {
     globalThis.fetch = previousFetch
@@ -136,7 +136,12 @@ test('board delivery reuses the durable inbox and device/Telegram preferences wi
     await rm(temporary, { recursive: true, force: true })
   })
   const stateFile = join(temporary, 'push.json')
+  const isolatedHome = join(temporary, 'isolated-codex')
+  const hostHome = join(temporary, '.codex')
+  await mkdir(isolatedHome)
+  await mkdir(hostHome)
   Object.assign(process.env, {
+    CODEX_HOME: isolatedHome,
     CODEXUI_WEB_PUSH_STATE_FILE: stateFile,
     CODEXUI_WEB_PUSH_PUBLIC_KEY: '',
     CODEXUI_WEB_PUSH_PRIVATE_KEY: '',
@@ -160,8 +165,10 @@ test('board delivery reuses the durable inbox and device/Telegram preferences wi
   let textSource = await readFile(new URL('../src/utils/notificationText.ts', import.meta.url), 'utf8')
   textSource = textSource.replace("'markdown-it'", JSON.stringify(pathToFileURL(require.resolve('markdown-it')).href))
   const textModule = `data:text/javascript;base64,${Buffer.from(ts.transpileModule(textSource, { compilerOptions: { module: ts.ModuleKind.ES2022, target: ts.ScriptTarget.ES2022 } }).outputText).toString('base64')}`
+  const osStub = `data:text/javascript,${encodeURIComponent(`export const homedir = () => ${JSON.stringify(temporary)}`)}`
   const { createWebPushTurnNotifier } = await importModule('../src/server/webPushTurnNotifier.ts', [
     ["'web-push'", JSON.stringify(pushStub)],
+    ["'node:os'", JSON.stringify(osStub)],
     ['../utils/notificationText', textModule],
     ['../utils/projectBoardNotifications', utilityModuleUrl],
   ])
@@ -190,7 +197,6 @@ test('board delivery reuses the durable inbox and device/Telegram preferences wi
 
   const telegramSent = []
   globalThis.fetch = async (_url, options) => { telegramSent.push(JSON.parse(options.body)); return { ok: true } }
-  const osStub = `data:text/javascript,${encodeURIComponent(`export const homedir = () => ${JSON.stringify(temporary)}`)}`
   const { createTelegramTurnNotifier } = await importModule('../src/server/telegramTurnNotifier.ts', [
     ["'node:os'", JSON.stringify(osStub)],
     ['../utils/projectBoardNotifications', utilityModuleUrl],
@@ -202,5 +208,23 @@ test('board delivery reuses the durable inbox and device/Telegram preferences wi
   assert.match(telegramSent[0].text, /https:\/\/example\.test\/#\/board\/b%20%2F%201\?feature=f-1&question=q\+%2F\+1/u)
   process.env.CODEXUI_TELEGRAM_NOTIFICATIONS = 'false'
   createTelegramTurnNotifier().handleProjectBoardNotification({ ...event, id: 'other' })
+  assert.equal(telegramSent.length, 1)
+
+  // A separate CODEX_HOME must never inherit the host's subscribers or preferences.
+  const hostPush = JSON.stringify(stored)
+  await writeFile(join(hostHome, 'codexui-web-push.json'), hostPush)
+  await writeFile(join(isolatedHome, 'codexui-web-push.json'), JSON.stringify({ ...stored, subscriptions: [], history: [] }))
+  process.env.CODEXUI_WEB_PUSH_STATE_FILE = ''
+  const isolatedPush = createWebPushTurnNotifier()
+  await isolatedPush.handleProjectBoardNotification({ ...event, id: 'isolated-run' })
+  assert.equal(globalThis.__boardPushDeliveries.length, 2)
+  assert.equal(await readFile(join(hostHome, 'codexui-web-push.json'), 'utf8'), hostPush)
+  assert.equal(JSON.parse(await readFile(join(isolatedHome, 'codexui-web-push.json'), 'utf8')).history[0].id, 'isolated-run')
+  await writeFile(join(hostHome, 'codexui-telegram-notifications.json'), JSON.stringify({ enabled: true }))
+  await writeFile(join(isolatedHome, 'codexui-telegram-notifications.json'), JSON.stringify({ enabled: false }))
+  process.env.CODEXUI_TELEGRAM_NOTIFICATIONS = 'true'
+  const isolatedTelegram = createTelegramTurnNotifier()
+  assert.equal(isolatedTelegram.enabled, false)
+  isolatedTelegram.handleProjectBoardNotification({ ...event, id: 'isolated-run' })
   assert.equal(telegramSent.length, 1)
 })

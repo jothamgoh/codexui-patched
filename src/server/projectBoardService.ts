@@ -1,4 +1,5 @@
 import { randomUUID } from 'node:crypto'
+import { projectBoardBatchCompletedNotification } from '../utils/projectBoardNotifications'
 import { realpath, stat } from 'node:fs/promises'
 import type {
   ProjectBoard,
@@ -330,7 +331,7 @@ export class ProjectBoardService {
   private readonly appServer: RpcClient
   private readonly prepareThreadStartParams: (params: unknown) => Record<string, unknown>
   private readonly resolveExecutionSettings: NonNullable<ProjectBoardServiceOptions['resolveExecutionSettings']>
-  private readonly queues = new Map<string, ProjectBoardQueue & { allowWorkspaceWrite: boolean; approved: Record<string, string> }>()
+  private readonly queues = new Map<string, ProjectBoardQueue & { id: string; allowWorkspaceWrite: boolean; approved: Record<string, string> }>()
   private readonly queuePumping = new Set<string>()
   private readonly activeRunsById = new Map<string, ActiveFeatureRun>()
   private readonly workspaceWriteByFeatureId = new Map<string, boolean>()
@@ -553,7 +554,7 @@ export class ProjectBoardService {
     if (snapshot.agents.some((agent) => board.agentIds.includes(agent.id) && agent.sandbox === 'workspace-write') && record.allowWorkspaceWrite !== true) {
       throw new Error('Confirm workspace-write access before starting the selected features.')
     }
-    this.queues.set(boardId, { boardId, status: 'running', featureIds, currentFeatureId: '', reason: '', allowWorkspaceWrite: record.allowWorkspaceWrite === true, approved })
+    this.queues.set(boardId, { id: randomUUID(), boardId, status: 'running', featureIds, currentFeatureId: '', reason: '', allowWorkspaceWrite: record.allowWorkspaceWrite === true, approved })
     await this.advanceBoardQueue(boardId)
     return this.publish(await this.store.read())
   }
@@ -593,6 +594,7 @@ export class ProjectBoardService {
       if (!remaining.length) {
         this.pauseQueue(boardId, 'All selected features are done.')
         this.publish(snapshot)
+        this.appServer.publishLocalNotification('codexui/projectBoards/batchCompleted', projectBoardBatchCompletedNotification(boardId, queue.id, new Date().toISOString()))
         return
       }
       if (remaining.some((feature) => !feature || projectBoardFeatureFingerprint(feature) !== queue.approved[feature.id])) {

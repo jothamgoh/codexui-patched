@@ -20,10 +20,44 @@ create a second agent runtime.
 - Native Codex execution with a bounded board-update tool. The server validates
   transitions and owns execution IDs; model prose is not workflow truth.
 - Durable questions, answers, comments, artifacts, and compact run history.
-- Needs You in the notification center, with exact board/feature/question links.
-  Browser notifications require permission and an open connected CodexUI page.
+- Existing Activity, Web Push, and Telegram deliver questions, completed
+  features, project plan results, and failures through current preferences.
+  Closed-browser delivery requires configured Web Push/Telegram and a running
+  server; generic Lead-turn completion alerts are suppressed.
 - A responsive five-lane board and feature details using the current Vue,
   Tailwind, and Reka UI components.
+
+## From a plan to delivery
+
+Start from a normal planning chat using Turn this chat into a board, or choose
+Plan features on a board. The editable brief includes a bounded recent source
+excerpt and a link back to the chat. A read-only coordinator creates distinct
+feature cards with dependencies; planning itself does not start implementation.
+Retries retain drafts and reuse a board already created by that attempt.
+
+For a feature, Plan first saves a read-only task plan and returns it for review.
+Start work resumes that same Lead chat. Plan & start remains the direct path
+for a clear brief. Completed task history is preserved during targeted repair;
+new chats support reopening affected tasks before fresh verification.
+
+Run selected features advances approved dependency-ready cards sequentially.
+It pauses for questions, failure, review, or changed approved scope. New cards
+do not join the selection automatically. Selection and continuation consent are
+session-scoped; after restart, review partial work and select remaining cards.
+Continue within features controls the existing bounded continuation behavior;
+it is distinct from selecting a cross-feature queue.
+
+Features optionally override their Lead's model and reasoning effort. Defaults
+inherit the selected profile; available choices come from advertised runtime
+capabilities and unsupported explicit settings fail visibly. Each run retains
+its resolved requested settings after profile edits. These are launch requests,
+not independently observed specialist telemetry.
+
+Shared groundwork belongs in one prerequisite feature, or one larger feature
+when edits are tightly coupled. The coordinator sees compact sibling scope and
+dependency outcomes, and can retrieve full cards/profiles when needed. This
+helps planning but is not automatic semantic overlap detection. Queue
+advancement is event-driven and consumes no LLM polling turns.
 
 ## States
 
@@ -130,8 +164,20 @@ Failed saves preserve user input and display the server's reason.
 
 Desktop feature details dock beside the board. Narrow layouts use a modal
 surface with focus trapping, Escape dismissal, and focus restoration. Forms
-use accessible dialogs. Board scrolling stays inside the lane area; controls,
-empty states, and forms remain usable on narrow screens and in both themes.
+use accessible dialogs. Horizontal board scrolling stays inside the lane area;
+on phones, the whole board page can scroll vertically so controls do not hide
+the cards. Controls, empty states, and forms remain usable in both themes.
+
+Board text fields offer the existing Codex microphone/transcription path:
+names, briefs, acceptance criteria, plans, prompts, answers, comments, and
+search. Text inserts into the selected field and stays editable. Saving waits
+for recording/transcription or retained retry/overflow text to be resolved;
+stopping speech never submits the form. Native text fields remain available
+for ordinary keyboard and OS dictation input.
+
+Squad-inspired overview counts emphasize attention and completion; cards show
+clear ownership and a short status line. Feature search helps larger boards.
+These are presentation improvements over the existing durable state.
 
 The installed Codex desktop app supplies nearby interaction and theme patterns;
 it has no equivalent durable project board. The board is a deliberate CodexUI
@@ -157,13 +203,15 @@ authentication boundary documented in repository `AGENTS.md` remains required.
 
 ## Deferred until dogfooding establishes a need
 
-- Closed-browser Web Push/Telegram Needs You delivery and reminder policies.
+- Reminder policies and digests beyond existing notification delivery.
 - Rich live specialist telemetry and separate durable specialist runs.
-- Automatic batch membership, result fan-out, partial reopen, and waivers.
+- Automatic batch membership, result fan-out, and waivers.
 - Multiple concurrent features/worktrees, leases, or live restart reconciliation.
 - Multi-tab conflict resolution, project identity across directory moves, and
   immutable agent-profile snapshots.
-- Existing-chat conversion, saved views, workflow templates, and portfolio views.
+- Saved views, project workflow templates, portfolio views, and provider/account
+  rotation. Chat plan import is supported; it does not convert a historical
+  ordinary chat into a board-authorized execution thread.
 
 These are not an ordered roadmap or requirements for the current release.
 
@@ -192,3 +240,18 @@ Reviewed the official documentation and Squad's public interactive demo on
   The public demo exposes a roomy per-agent notes/personality editor and current
   work. Adopt clear ownership, editable prompts, and focused decisions while
   keeping CodexUI's existing theme, dialogs, and chat model.
+
+- Rechecked [Squad's public demo](https://squad.so/) and
+  [board guide](https://squad.so/resources/docs/missions-board): adopt visible
+  ownership, concise work status, attention/completion counts, and readable
+  detail panels. Do not imitate advertised integrations or account features
+  that CodexUI does not implement.
+- [Orca's orchestration guide](https://github.com/stablyai/orca/blob/main/skill-guides/orchestration.md)
+  supports optional coordination, compact context, explicit attempt outcomes,
+  durable questions, and concrete handoffs. Its skill file is a discovery stub;
+  the full guide and completion/question/receipt source were inspected.
+  Retain native Codex orchestration and add requested settings to run history.
+  Orca's [documentation](https://github.com/stablyai/orca/blob/main/docs/site/content/docs/cli/orchestration.mdx)
+  calls orchestration experimental; do not describe it as proof of reliability.
+  Durable retry receipts across completed HTTP attempts remain a possible
+  future resilience improvement, not a new framework requirement.

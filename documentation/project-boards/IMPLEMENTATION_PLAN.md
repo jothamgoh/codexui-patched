@@ -1,93 +1,71 @@
-# Project Boards implementation plan
+# Project Boards implementation
 
-Scope revised: 2026-09-05. Finish the current workflow before adding framework
-features. `PROGRESS.md` owns completion status and evidence.
+Scope revised: 2026-09-05. PROGRESS.md owns release status and actual evidence.
 
-## Architecture to keep
+## Architecture
 
 | Module | Responsibility |
 |---|---|
-| `src/types/projectBoards.ts` | Shared records and public inputs. |
-| `src/server/projectBoardStore.ts` | Validation, serialized transitions, persistence. |
-| `src/server/projectBoardService.ts` | Lead threads, bounded tool, lifecycle, continuation. |
-| `src/server/codexAppServerBridge.ts` | Existing HTTP and app-server event integration. |
-| `src/api/projectBoards.ts` | Browser API calls. |
-| `src/composables/useProjectBoards.ts` | Snapshot, mutations, event refresh. |
-| `src/components/content/ProjectBoardsHub.vue` | Boards, cards, detail, forms, roster. |
-| `src/utils/projectBoardNotifications.ts` | Redacted notification and exact deep link. |
+| types/projectBoards.ts | Shared records and inputs. |
+| server/projectBoardStore.ts | Serialized validation, transitions, persistence, handoffs. |
+| server/projectBoardService.ts | Native Lead/planner runs, bounded tools, dependency queue, lifecycle. |
+| server/projectBoardModels.ts | Advertised model capabilities and execution validation. |
+| server/codexAppServerBridge.ts | HTTP, bounded source-chat context, app-server events. |
+| server/turnNotificationRouter.ts | Board outcomes through existing durable notification sinks. |
+| api/projectBoards.ts and composables/useProjectBoards.ts | Browser requests, snapshots, live updates. |
+| components/content/ProjectBoardsHub.vue | Cards, dependencies, profiles, feature planning, queue controls. |
+| components/content/BoardPlanDialog.vue | Chat/board plan entry with preserved retries. |
+| components/content/BoardExecutionSettings.vue | Inherited or explicit supported model/reasoning settings. |
+| components/content/DictationField.vue | Reusable speech insertion, retry, overflow review, and manual-save state. |
+| api/subAgentActivity.ts and components/content/SubAgentActivityCard.vue | Shared native activity normalization and child-chat presentation. |
 
-Reuse the existing Vue/Reka components, Express bridge, native threads/turns,
-notification transport, and approval UI. Do not split out generic dispatch,
-route, audit, or policy frameworks without a concrete need.
+All paths are under src/. Reuse Vue/Reka, Express, native threads/turns, existing
+notification history/delivery, and native approvals. There is no second runtime,
+database migration, generic policy layer, or LLM polling dispatcher.
 
-## Delivery groups
+## Implemented delivery groups
 
-### 1. Reliable state and execution
+1. Durable state and native execution: exact agent IDs, current prompts on every
+   turn, atomic completion/dependency/QA guards, question provenance, canonical
+   project locks, interruption recovery, and explicit workspace-write consent.
+2. Chat reliability: stable turn/final ordering, heavy-content windowing, cache
+   limits, transcription retry, and original-chat draft preservation.
+3. Planning and delivery: project plan import, read-only feature planning,
+   model/effort overrides, visible dependencies, compact handoffs, history-aware
+   task repair, and an explicitly selected sequential queue.
+4. Notification integration: meaningful committed outcomes use existing Activity,
+   Web Push, Telegram, preferences, and deduplication; interrupted runs notify once.
+5. Everyday usability: voice in board fields, readable subagent activity,
+   requested run settings, board overview/search, and phone/touch layouts.
 
-- Keep public card input separate from server-owned execution/progress fields.
-- Apply manual transitions and feature completion atomically with dependency,
-  active-run, question, and QA checks.
-- Require QA to follow implementation; reject missing/deleted dependencies and
-  capacity overflow.
-- Bind dynamic writes to the active thread/turn/run.
-- Interrupt runs and release project locks on app-server exit and restart.
-- Require explicit workspace-write authorization and retain native approval
-  behavior. Describe shared sandbox limits honestly in the Lead prompt.
-- Keep QA-batch execution unavailable until it has a complete useful workflow.
+Context reads are compact by default. New native chats expose lazy read_agent
+and read_card; legacy chats keep their existing tool schema and compatibility
+context. A completed planner save is idempotent within its run. Queue approval
+freezes selected card scope and is checked again atomically before execution.
 
-Store and service changes may proceed together with agreed method signatures.
-Use focused behavioral tests after this group stabilizes; do not rerun all
-repository tests after each internal edit.
+## Development and verification
 
-### 2. Usable integrated board
+Work on coherent groups and agree API contracts before parallel implementation.
+Validate earlier only when downstream work needs a proven dependency or a
+failure needs isolation. Preserve unrelated changes and commit discrete tasks.
 
-- Keep project/board route selection consistent and clear stale feature detail.
-- Select the exact linked question and preserve inputs after failed mutations.
-- Use theme tokens and existing accessible dialogs.
-- Respect server transition guards; show meaningful errors.
-- Explain workspace-write access at Start.
-- Keep narrow-width scrolling contained and preserve ordinary chat navigation.
+At a release boundary:
 
-UI work can proceed alongside group 1 where contracts are agreed. Run one
-integrated browser smoke after both groups are ready.
+1. Run npm run check:project-boards (tests, type-check/build, board browser).
+2. Run node tests/chatReliability.e2e.mjs when chat behavior changed.
+3. Inspect representative light/dark/mobile screenshots.
+4. Review diff/status and run Gitleaks.
+5. Commit, push main, and verify GitHub Actions.
+6. Use machine-local deployment instructions for any required restart, through
+   the authorized independent Terminal handoff. Verify health after reconnecting.
 
-### 3. Feature-boundary verification and release
+Do not rerun all checks after every small edit. A relevant failure or correction
+justifies repeating the affected checks. Keep delivery stubs, synthetic browser
+stress, real read-only agent execution, and production writing evidence distinct.
 
-1. Run `npm run check:project-boards`: full tests (which include board tests),
-   production build, then one disposable browser smoke.
-2. Inspect the desktop, dark, and mobile screenshots in `output/project-boards/`.
-3. Review the entire diff/status, and run `gitleaks dir --redact .` if available.
-4. Commit coherent store, execution, UI, and documentation changes separately.
-5. Push main and verify GitHub Actions as required by repository `AGENTS.md`.
-6. Follow the machine-local restart handoff. A server/dependency change needs a
-   restart; never restart the hosting process from its own turn. Verify health
-   after reconnecting.
+## Deliberate limits
 
-Repeat checks only after a relevant change or failure. A passing build does not
-clear a discovered correctness defect. Record skipped or simulated checks
-honestly in `PROGRESS.md`.
-
-## Completed composable-agent cycle
-
-The composable-agent and prompt-editor cycle is complete; see `PROGRESS.md` for
-actual verification and deployment evidence. Its scope was:
-
-1. Route plans by exact profile ID and classify verification on tasks.
-2. Apply the selected profile on every turn, including resumed chats.
-3. Make profile creation/editing/copying clear, preserve drafts, and scope new
-   roster membership to the current board. Keep the editor usable on mobile.
-4. Run the grouped check, then one bounded real-runtime dogfood in disposable
-   state. Record what native execution actually proves, including prompt edits.
-5. Review, scan, commit, push, verify CI, and use the authorized one-shot restart
-   handoff. Keep machine-specific details outside the repository.
-
-Use native Codex for agent trees; durable nested specialist runs, a global agent
-chat/memory service, and visual organization charts remain separate future work.
-
-## Next development cycle
-
-Follow [UX_BACKLOG.md](../UX_BACKLOG.md): investigate the reported chat issues,
-add per-feature model/reasoning controls, then clarify plan review and feature
-dependencies. It distinguishes current behavior from proposed changes and keeps
-Lead-selected verification. No source implementation is included in this plan
-update. Use the recorded real workflow cases after each coherent feature group.
+One orchestrated feature per project; session-scoped queues/consent; blocked
+restart recovery; mutable profiles; no automatic batch QA or provider rotation.
+The bridge still reads a full native transcript before returning browser pages.
+Use actual dogfood friction to choose the next implementation.

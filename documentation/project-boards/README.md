@@ -6,8 +6,8 @@ next action. Then read only the relevant product or implementation details:
 - [PRD.md](PRD.md): current scope and behavior.
 - [IMPLEMENTATION_PLAN.md](IMPLEMENTATION_PLAN.md): architecture and delivery groups.
 - [TEST_PLAN.md](TEST_PLAN.md): the small set of checks that protects the workflow.
-- [UX_BACKLOG.md](../UX_BACKLOG.md): proposed chat fixes, per-feature model
-  controls, and planning/dependency workflows for the next development cycle.
+- [UX_BACKLOG.md](../UX_BACKLOG.md): chat/board entry flows, delivered UX
+  improvements, design references, and small follow-ups for dogfooding.
 
 The 2026-09-05 scope revision removes the speculative full-MVP framework and
 exhaustive test checklist. Future ideas are options, not release requirements.
@@ -26,7 +26,17 @@ exhaustive test checklist. Future ideas are options, not release requirements.
 Do not rerun the full suite after every small edit. At a Project Boards release
 boundary, `npm run check:project-boards` runs the full tests (including the focused
 board tests), production build, and one disposable browser smoke flow.
+For browser checks, install the matching engines once with
+`npx playwright install chromium`. The board smoke includes desktop and phone/
+touch contexts; unit tests do not require browsers. An optional Safari-engine
+pass uses `npx playwright install webkit`, then
+`CODEXUI_MOBILE_BROWSER=webkit npm run test:e2e:project-boards` on a supported host.
 
 Generated screenshots belong in ignored `output/project-boards/`. Runtime board
 state belongs outside the repository. The browser smoke uses synthetic board
 state; it does not prove a real Lead/subagent session completed.
+
+Voice fields reuse Codex transcription. Tap a field's microphone, speak, stop,
+then review and save. Long-chat and voice browser checks are separate isolated
+fixtures; see TEST_PLAN.md. The board UI borrows Squad's clear ownership and
+attention hierarchy while retaining CodexUI themes and controls.

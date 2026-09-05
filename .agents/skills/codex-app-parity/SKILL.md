@@ -5,6 +5,41 @@ description: "Use when implementing or changing user-visible behavior/UI in this
 
 # Codex App Parity Skill
 
+## Findings: Planning controls and long conversations (2026-09-05)
+
+- Phone board screenshots need a real touch/coarse-pointer context as well as
+  a narrow desktop viewport. Keep toolbar labels within their buttons, close
+  the initial sidebar, and allow vertical page scrolling so a short screen's
+  controls cannot squeeze the card area to zero height. This is a web adaptation.
+- Native `subAgentActivity` carries `agentThreadId`, `agentPath`, and a kind:
+  started/interacted/interrupted/completed. Integrated `app-initial` maps these
+  to active/updated/interrupted/completed; the final non-root path segment is
+  the display name. `subagent-activity-chip-group-1b9dc9694a94.js` uses an agent
+  glyph, concise lifecycle copy, and Open subagent navigation. An item/completed
+  envelope closes the activity item; it does not itself mean the child finished.
+- Board field microphones reuse the existing MediaRecorder/transcription path.
+  Their per-field controls are an intentional web extension. Preserve typing,
+  insert at the caret, keep retry/overflow text reviewable, and save manually.
+  Cancelling a pending permission request must clear the busy state immediately;
+  stale permission callbacks must not reset a newer recording attempt.
+- At the user's request, Squad's public demo informed board owner badges,
+  short column explanations, attention/completion counts, and search. Preserve
+  local themes and accessible native inputs, rather than importing a UI system.
+- Integrated `26.901.31953` uses `implementPlanRequest.prompt` and
+  `composer.planModeIndicator` in `app-primary-37ff25fd4643.js` for explicit
+  plan-to-implementation transitions. Its model controls filter advertised
+  `supportedReasoningEfforts`. Board planning remains an intentional extension;
+  use existing dialogs and distinguish planning from workspace-write execution.
+- `local-conversation-turn-96bd5cd318dd.js` identifies final output with
+  `phase === final_answer`. Keep work, final output, and the duration separator
+  within the same turn when reconciling live and persisted item order.
+- `local-conversation-thread-7fad29d31eb2.js` uses
+  `data-virtualized-turn-content` and estimated-height shells.
+  `app-initial-caa927532ffb.js` requests an initial five-turn page. For the web
+  UI, unmount heavy offscreen content and bound inactive caches; lightweight
+  shells and explicitly loaded active history remain. Do not describe browser
+  heap measurements as total device memory.
+
 ## Findings: Composable board agents (2026-09-05)
 
 - Integrated `26.901.31953` chunks `subagents-5f95f3a1e0e2.js` and

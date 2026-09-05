@@ -1,138 +1,85 @@
-# CodexUI next improvements
+# CodexUI workflow improvements
 
-Recorded 2026-09-05. This is the proposed next scope, not a list of shipped
-features. The user requested a small plan followed by real workflow testing.
+Updated 2026-09-05. The requested focused cycle is implemented; release status
+and evidence live in [Project Boards progress](project-boards/PROGRESS.md).
 
-## Decisions to preserve
+## How to use it
 
-- Any reusable agent may lead. The Lead chooses specialists and the verifier.
-  Keep the existing independent-verification approach; a required QA selector
-  or new reviewer dispatcher is not requested.
-- Stopping dictation transcribes into an editable draft. Keep manual Add/Save
-  for a selected-text comment and manual Send for the chat.
-- Validate coherent features rather than every small edit. Validate earlier
-  when another feature needs a proven result.
-- Retain native Codex execution and the existing board, chat, and notification
-  surfaces. New provider/account support is a later, separate feature.
-
-## Small delivery sequence
-
-### 1. Chat reliability and responsiveness
-
-- **Message order:** reproduce the reported final-answer / “Worked for…” order
-  problem. Streaming, completion, reconnect, refresh, and history paging should
-  show the same chronology, with one duration separator immediately before the
-  correct turn's final answer. Capture an event replay and add a focused
-  regression for the demonstrated failure.
-- **Long chats:** measure browser memory, rendered message count, typing, and
-  scrolling with one representative large transcript on desktop and mobile.
-  Keep initial/reloaded history bounded, render a limited window when needed,
-  and release inactive chat caches while preserving drafts and scroll position.
-- **Dictation polish:** show Recording → Transcribing → Ready and prevent
-  annotation Add/Save from discarding speech still being transcribed. Keep text
-  editable before submission; include the selection → dictate → stop → Add →
-  Send flow in the same UI check.
-
-Read-only triage: the browser already loads the newest 20 turns and pages older
-history. The bridge still reads the full transcript before slicing; loaded
-messages use an ordinary list and older pages/cached chats remain retained.
-Twenty turns can also contain large tool results. These are investigation
-points, not a reproduced diagnosis. Start with browser rendering/cache bounds;
-migrate server pagination only if measurements justify it.
-
-Ordering investigation: live arrival counters and persisted item indices can
-differ; the duration separator currently targets the last assistant message,
-with a fallback across turns. Check `useDesktopState.ts`, `api/normalizers/v2.ts`,
-`ThreadConversation.vue`, and `codexAppServerBridge.ts` before choosing the fix.
-Inspect the installed Codex equivalent before implementing UI behavior.
-
-### 2. Per-feature model and reasoning controls
-
-- Reuse the ordinary chat's model/effort picker and advertised supported values.
-- Default to **Use Lead settings**; resolve an unset model through the app's
-  configured default. Show the effective model and effort before starting.
-- Save optional overrides on the feature without editing the reusable agent.
-  Apply them on start and subsequent continuations, never halfway through a run.
-- Label these as the feature Lead's settings. Specialists retain their own
-  profile settings where native delegation supports them; do not imply a Lead
-  override changes every child or supports another provider.
-- Explain an unavailable model or unsupported effort and let the user choose a
-  supported value. Do not silently substitute an explicitly selected model.
-
-### 3. Make planning and related features understandable
-
-- Keep **Plan & start** for a straightforward brief. Add **Plan first** for work
-  the user wants to review before implementation. A planning run must not execute
-  implementation tasks; **Start work** resumes the saved plan in the Lead chat.
-  Plan review is an optional path, not a mandatory approval after every task.
-- Accept an existing plan in the feature brief or a referenced project file.
-  Have the Lead read it explicitly and show the resulting task list. Do not
-  imply another chat or an unreferenced document is automatically imported.
-- Add a simple **Depends on** picker using the existing dependency model.
-  Give the Lead a compact view of relevant features and dependency outcomes,
-  including what changed and what was checked. Current context omits sibling
-  feature summaries, so the Lead cannot reliably coordinate the whole board yet.
-- Before starting related work, check for duplicate scope or shared groundwork.
-  Offer to combine tightly coupled work, or order separate features around one
-  shared prerequisite. Keep one active board feature per project folder.
-- Show why work is waiting and the explicit next action. Finishing one feature
-  must not imply the next feature was automatically started.
-- Preserve completed work when plans change. The current wholesale plan
-  replacement is rejected after execution starts. Support a small follow-up
-  feature or a bounded change to remaining tasks; do not erase past handoffs.
-
-## Practical workflow contract
-
-| Situation | Current behavior / smallest useful improvement |
+| Starting point | Flow |
 |---|---|
-| Clear small request | Brief + Done when → Plan & start → Lead does or delegates work → feature-level check. |
-| Plan already exists | Put it in the brief or reference its project file; the Lead reads it and makes durable tasks. A normal chat plan alone does not populate the board. |
-| Explore before building | Proposed Plan first → review/edit the plan → Start work. Today planning and execution share one action. |
-| Features overlap | Today no semantic overlap detection exists. Board execution serializes features in one project; ordinary chats/external editors are outside that lock. Proposed dependency UI and shared context make sequencing explicit. |
-| Shared foundation | Build it once as a prerequisite, then dependent features reuse its files and handoff. Strongly coupled edits may stay in one larger feature with one final check. |
-| Specialist needs a decision | Specialist returns the question to the Lead → Needs You → user answers → continue when automatic continuation is enabled, otherwise Start explicitly. |
-| Review fails or scope changes | Record findings and repair the relevant work before checking again. Preserve history; explain any manual retry needed by current state guards. |
-| Run is interrupted | Saved tasks remain; unfinished active work becomes Blocked. Review partial work and explicitly retry rather than silently replaying side effects. |
+| Existing planning chat | Turn this chat into a board → review the prefilled plan/project → coordinator creates cards. |
+| New board | Plan features → describe the goal or reference a project plan → review cards and dependencies. |
+| Straightforward feature | Add a brief and acceptance criteria → Plan & start. |
+| Explore before building | Plan first → review tasks → Start work in the same Lead chat. |
+| Many features | Review/select the cards → Run selected features → one ready feature at a time. |
+| Shared groundwork | Put it in one prerequisite feature; dependent cards receive its saved outcome. Combine tightly coupled work when that is simpler. |
+| Decision needed | Lead asks on the feature → Needs You and existing notifications → answer → continue if enabled, otherwise Start. A paused queue needs explicit resume. |
+| Review finds a defect | Lead reopens affected work, retains previous handoffs, repairs, and verifies after the changes. |
+| Restart/interruption | Partial work remains visible and blocked; review it and explicitly retry/select remaining cards. |
 
-Handoffs should stay short: task, relevant context, completion criteria, result,
-files/output, checks, and unresolved issues. The Lead integrates the result and
-records it on the board. Independent specialists may read/research in parallel;
-shared project edits stay sequential. Recheck affected behavior after a later
-feature changes code an earlier feature relied on; Done is evidence at that time,
-not a guarantee against future regressions.
+Any reusable agent may lead. Each profile has editable instructions and starter
+copies. Each feature can inherit Lead model/reasoning settings or override them.
+Specialists use their own settings. The Lead decides when delegation is useful.
 
-### 4. Notification and activity polish after the core workflow
+## Delivered UI and efficiency work
 
-Route board decisions through existing notification delivery, including a
-closed-browser option, then add completion/failure notices and a compact
-“who is working / what happened / what is next” trail. Reuse exact question links,
-deduplication, and existing notification preferences. Do not build another inbox
-or promise every intermediate agent event deserves an alert.
+- Final answers and Worked for separators stay attached to the correct turn.
+- Heavy offscreen message bodies unmount; markdown/inactive history caches are
+  bounded. The active raw transcript and lightweight shells still consume memory.
+- Recording → Transcribing → Ready, transcription retry, preserved original-chat
+  drafts, and manual Add/Send make selected-text comments safer to compose.
+- Board fields also offer voice input for plans, prompts, briefs, answers, and
+  names. Stop transcribes; the user reviews and saves. Pending retry/overflow
+  text cannot silently be omitted by saving the form.
+- Project plans, dependency labels, explicit planning versus implementation,
+  compact handoffs, and one selected queue make the next action visible.
+- Questions, completed features, planning results, and failures use the existing
+  Activity/notification delivery system and preferences.
+- Bounded source excerpts and on-demand full profile/card reads limit repeated
+  context. Deterministic queue advancement uses no LLM polling.
+- Squad-inspired ownership, attention/completion counts, and feature search
+  improve scanning. Run history preserves requested execution settings even
+  after a profile changes.
+- Native subagent activity shows names, status, and child-chat links. Phone
+  layouts use touch controls, scrollable forms, and reachable board cards;
+  the sidebar no longer covers a fresh mobile visit.
 
-## Real workflow testing after implementation
+## Keep the framework small
 
-Use a disposable project for one small build and one pair of related features:
-shared groundwork → dependent change → final integration check. Exercise a
-user-supplied plan, optional plan review, a clarification, a failed review/fix,
-and an interrupted retry. Verify model/effort on actual native runs. Separately
-replay the ordering failure and browse one large synthetic chat, including
-selection/dictation and refresh/reconnect. Measure before/after memory and record
-what actually passed. Do this at feature boundaries; add only regressions tied
-to failures or new behavior.
+Validate at the coherent feature boundary; test earlier if a dependent feature
+needs proof. A later change can invalidate an earlier check, so finish related
+work with a relevant integration check. Done records what was checked at that
+time, not immunity from future regressions.
 
-## Patterns to borrow, without adding a framework
+A required QA selector, a second agent runtime, workflow engine migration,
+organization-chart editor, concurrent writer fleet, broad test matrix, and
+automatic account rotation are not part of this cycle.
+
+## Next improvements only if dogfooding justifies them
+
+1. Try a small repository build with shared groundwork → dependent change →
+   final review/fix. Record friction instead of adding speculative framework.
+2. Profile native transcript retrieval if backend memory still causes lag.
+   Current gains chiefly reduce browser rendering and inactive cache retention.
+3. Consider direct reviewer-run links, richer specialist activity, or saved
+   project templates when the simpler workflow proves insufficient.
+4. Provider/account support remains a separate project with explicit execution
+   and authentication contracts.
+
+## Patterns used as design references
 
 - [Hermes Kanban](https://hermes-agent.nousresearch.com/docs/user-guide/features/kanban):
-  explicit dependency links, persistent tasks, and comments as handoff context.
+  durable dependencies, tasks, and handoff comments.
 - [LangGraph workflows](https://docs.langchain.com/oss/python/langgraph/workflows-agents):
-  a coordinator divides work and combines results; a reviewer returns feedback
-  for another revision when the result misses the acceptance criteria.
+  a coordinator divides work and combines results; reviewers return findings.
 - [LangGraph interrupts](https://docs.langchain.com/oss/python/langgraph/interrupts):
-  save the work state, present the exact decision, and resume that same work.
+  save state, present the exact decision, resume the same work.
 - [Squad missions](https://squad.so/resources/docs/missions-board):
-  clear ownership, a readable progress trail, and decisions attached to work.
+  clear ownership, visible progress, and decisions attached to work.
+- [Orca orchestration](https://github.com/stablyai/orca/blob/main/skill-guides/orchestration.md):
+  optional delegation, durable attempts/questions, compact context, explicit
+  handoffs, and retry-aware launch records. Its orchestration is experimental;
+  source review is not proof that it is battle-tested.
 
-These documented patterns inform the proposal; their documentation does not
-prove this implementation is battle-tested. No framework migration, automatic
-multi-account rotation, concurrent writer fleet, organization-chart editor,
-mandatory reviewer selector, or large test matrix belongs in this next cycle.
+These references informed the design, not a framework dependency or a feature
+parity claim. See PRD.md for OpenClaw, Hermes profiles, and Squad roster sources.

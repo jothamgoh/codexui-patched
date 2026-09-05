@@ -16,6 +16,8 @@ import {
 } from './threadMetadataStore'
 import { AutomationStore } from './automationStore'
 import { AUTOMATION_DYNAMIC_TOOL_SPEC, AutomationService } from './automationService'
+import { ProjectBoardStore } from './projectBoardStore'
+import { ProjectBoardService } from './projectBoardService'
 import { getCodexUiChildEnv } from './envFile'
 import {
   paginateThreadReadResult,
@@ -860,7 +862,7 @@ class AppServerProcess {
   private readonly pending = new Map<number, { resolve: (value: unknown) => void; reject: (reason?: unknown) => void }>()
   private readonly notificationListeners = new Set<(value: { method: string; params: unknown }) => void>()
   private readonly pendingServerRequests = new Map<number, PendingServerRequest>()
-  private dynamicToolHandler: ((params: unknown) => Promise<unknown>) | null = null
+  private readonly dynamicToolHandlers = new Map<string, (params: unknown) => Promise<unknown>>()
   private readonly appServerCommand = resolveCodexAppServerCommand()
   private readonly appServerArgs = createAppServerArgs()
   private readonly reviewMutationGate = new ReviewMutationGate()
@@ -901,7 +903,7 @@ class AppServerProcess {
       // Keep stderr silent in dev middleware; JSON-RPC errors are forwarded via responses.
     })
 
-    proc.on('exit', () => {
+    proc.on('exit', (code, signal) => {
       const failure = new Error(this.stopping ? 'codex app-server stopped' : 'codex app-server exited unexpectedly')
       for (const request of this.pending.values()) {
         request.reject(failure)
@@ -914,6 +916,10 @@ class AppServerProcess {
       this.initializePromise = null
       this.readBuffer = ''
       this.reviewMutationGate.resetTurns()
+      this.emitNotification({
+        method: 'codexui/appServer/exited',
+        params: { code, signal, message: failure.message },
+      })
     })
   }
 
@@ -1014,12 +1020,10 @@ class AppServerProcess {
 
   private handleServerRequest(requestId: number, method: string, params: unknown): void {
     const requestParams = asRecord(params)
-    if (
-      method === 'item/tool/call' &&
-      requestParams?.tool === 'automation_update' &&
-      this.dynamicToolHandler
-    ) {
-      void this.dynamicToolHandler(params)
+    const dynamicToolName = typeof requestParams?.tool === 'string' ? requestParams.tool : ''
+    const dynamicToolHandler = this.dynamicToolHandlers.get(dynamicToolName)
+    if (method === 'item/tool/call' && dynamicToolHandler) {
+      void dynamicToolHandler(params)
         .then((result) => {
           this.sendServerRequestReply(requestId, { result })
           this.emitNotification({
@@ -1027,7 +1031,7 @@ class AppServerProcess {
             params: {
               id: requestId,
               method,
-              threadId: typeof requestParams.threadId === 'string' ? requestParams.threadId : '',
+              threadId: typeof requestParams?.threadId === 'string' ? requestParams.threadId : '',
               mode: 'automatic',
               resolvedAtIso: new Date().toISOString(),
             },
@@ -1038,7 +1042,7 @@ class AppServerProcess {
             result: {
               contentItems: [{
                 type: 'inputText',
-                text: error instanceof Error ? error.message : 'Scheduled task update failed.',
+                text: error instanceof Error ? error.message : `${dynamicToolName} failed.`,
               }],
               success: false,
             },
@@ -1136,8 +1140,8 @@ class AppServerProcess {
     this.emitNotification({ method, params })
   }
 
-  setDynamicToolHandler(handler: ((params: unknown) => Promise<unknown>) | null): void {
-    this.dynamicToolHandler = handler
+  registerDynamicToolHandler(name: string, handler: (params: unknown) => Promise<unknown>): void {
+    this.dynamicToolHandlers.set(name, handler)
   }
 
   async respondToServerRequest(payload: unknown): Promise<void> {
@@ -1576,6 +1580,7 @@ type SharedBridgeState = {
   threadTitleGenerator: ThreadTitleGenerator
   methodCatalog: MethodCatalog
   automationService: AutomationService
+  projectBoardService: ProjectBoardService
 }
 
 const SHARED_BRIDGE_KEY = '__codexRemoteSharedBridge__'
@@ -1599,12 +1604,33 @@ function getSharedBridgeState(): SharedBridgeState {
     createWorktree: createManagedWorktree,
     dynamicToolSpec: AUTOMATION_DYNAMIC_TOOL_SPEC,
   })
-  appServer.setDynamicToolHandler((params) => automationService.handleDynamicToolCall(params))
+  const projectBoardStore = new ProjectBoardStore({
+    stateFilePath: join(getCodexHomeDir(), 'codexui-project-boards.json'),
+  })
+  const projectBoardService = new ProjectBoardService({
+    store: projectBoardStore,
+    appServer,
+    prepareThreadStartParams: (params) => automationService.augmentThreadStartParams(params),
+  })
+  appServer.registerDynamicToolHandler(
+    'automation_update',
+    (params) => automationService.handleDynamicToolCall(params),
+  )
+  appServer.registerDynamicToolHandler(
+    'project_board_update',
+    (params) => projectBoardService.handleDynamicToolCall(params),
+  )
   appServer.onNotification((notification) => {
     void automationService.handleNotification(notification)
+    void projectBoardService.handleNotification(notification).catch((error) => {
+      console.warn('[project-boards] Failed to handle lifecycle notification:', getErrorMessage(error, 'Unknown project-board error'))
+    })
   })
   void automationService.start().catch((error) => {
     console.warn('[automations] Failed to start scheduler:', getErrorMessage(error, 'Unknown scheduler error'))
+  })
+  void projectBoardService.start().catch((error) => {
+    console.warn('[project-boards] Failed to start service:', getErrorMessage(error, 'Unknown project-board error'))
   })
 
   const created: SharedBridgeState = {
@@ -1612,13 +1638,14 @@ function getSharedBridgeState(): SharedBridgeState {
     threadTitleGenerator: new ThreadTitleGenerator(),
     methodCatalog: new MethodCatalog(),
     automationService,
+    projectBoardService,
   }
   globalScope[SHARED_BRIDGE_KEY] = created
   return created
 }
 
 export function createCodexBridgeMiddleware(): CodexBridgeMiddleware {
-  const { appServer, threadTitleGenerator, methodCatalog, automationService } = getSharedBridgeState()
+  const { appServer, threadTitleGenerator, methodCatalog, automationService, projectBoardService } = getSharedBridgeState()
   const localNotificationListeners = new Set<
     (value: { method: string; params: unknown; atIso: string }) => void
   >()
@@ -1867,6 +1894,104 @@ export function createCodexBridgeMiddleware(): CodexBridgeMiddleware {
         }
 
         setJson(res, 200, { result: await resumeThreadLite(appServer, threadId) })
+        return
+      }
+
+      if (url.pathname === '/codex-api/project-boards') {
+        if (req.method === 'GET') {
+          setJson(res, 200, { data: await projectBoardService.read() })
+          return
+        }
+        if (req.method === 'POST') {
+          setJson(res, 200, { data: await projectBoardService.createBoard(await readJsonBody(req)) })
+          return
+        }
+      }
+
+      if (req.method === 'POST' && url.pathname === '/codex-api/project-boards/ensure') {
+        setJson(res, 200, { data: await projectBoardService.ensureDefaultBoard(await readJsonBody(req)) })
+        return
+      }
+
+      const projectBoardPathMatch = url.pathname.match(/^\/codex-api\/project-boards\/([^/]+)$/u)
+      if (projectBoardPathMatch) {
+        const boardId = decodeURIComponent(projectBoardPathMatch[1])
+        if (req.method === 'PATCH') {
+          setJson(res, 200, { data: await projectBoardService.updateBoard(boardId, await readJsonBody(req)) })
+          return
+        }
+        if (req.method === 'DELETE') {
+          setJson(res, 200, { data: await projectBoardService.deleteBoard(boardId) })
+          return
+        }
+      }
+
+      if (req.method === 'POST' && url.pathname === '/codex-api/project-board-agents') {
+        setJson(res, 200, { data: await projectBoardService.createAgent(await readJsonBody(req)) })
+        return
+      }
+
+      const projectBoardAgentMatch = url.pathname.match(/^\/codex-api\/project-board-agents\/([^/]+)$/u)
+      if (projectBoardAgentMatch) {
+        const agentId = decodeURIComponent(projectBoardAgentMatch[1])
+        if (req.method === 'PATCH') {
+          setJson(res, 200, { data: await projectBoardService.updateAgent(agentId, await readJsonBody(req)) })
+          return
+        }
+        if (req.method === 'DELETE') {
+          setJson(res, 200, { data: await projectBoardService.deleteAgent(agentId) })
+          return
+        }
+      }
+
+      if (req.method === 'POST' && url.pathname === '/codex-api/project-board-cards') {
+        setJson(res, 200, { data: await projectBoardService.createCard(await readJsonBody(req)) })
+        return
+      }
+
+      const startProjectBoardCardMatch = url.pathname.match(/^\/codex-api\/project-board-cards\/([^/]+)\/start$/u)
+      if (req.method === 'POST' && startProjectBoardCardMatch) {
+        setJson(res, 202, {
+          data: await projectBoardService.startFeature(
+            decodeURIComponent(startProjectBoardCardMatch[1]),
+            await readJsonBody(req),
+          ),
+        })
+        return
+      }
+
+      const commentProjectBoardCardMatch = url.pathname.match(/^\/codex-api\/project-board-cards\/([^/]+)\/comments$/u)
+      if (req.method === 'POST' && commentProjectBoardCardMatch) {
+        setJson(res, 200, {
+          data: await projectBoardService.addComment(
+            decodeURIComponent(commentProjectBoardCardMatch[1]),
+            await readJsonBody(req),
+          ),
+        })
+        return
+      }
+
+      const projectBoardCardMatch = url.pathname.match(/^\/codex-api\/project-board-cards\/([^/]+)$/u)
+      if (projectBoardCardMatch) {
+        const cardId = decodeURIComponent(projectBoardCardMatch[1])
+        if (req.method === 'PATCH') {
+          setJson(res, 200, { data: await projectBoardService.updateCard(cardId, await readJsonBody(req)) })
+          return
+        }
+        if (req.method === 'DELETE') {
+          setJson(res, 200, { data: await projectBoardService.deleteCard(cardId) })
+          return
+        }
+      }
+
+      const answerProjectBoardQuestionMatch = url.pathname.match(/^\/codex-api\/project-board-questions\/([^/]+)\/answer$/u)
+      if (req.method === 'POST' && answerProjectBoardQuestionMatch) {
+        setJson(res, 200, {
+          data: await projectBoardService.answerQuestion(
+            decodeURIComponent(answerProjectBoardQuestionMatch[1]),
+            await readJsonBody(req),
+          ),
+        })
         return
       }
 

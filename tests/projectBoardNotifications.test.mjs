@@ -21,6 +21,8 @@ const {
   projectBoardNotificationScope,
   projectBoardBatchCompletedNotification,
   isProjectBoardNotification,
+  projectBoardNativeRequestNotification,
+  projectBoardNotificationCopy,
 } = await import(`data:text/javascript;base64,${Buffer.from(compiled).toString('base64')}`)
 const utilityModuleUrl = `data:text/javascript;base64,${Buffer.from(compiled).toString('base64')}`
 
@@ -61,7 +63,9 @@ test('board activity shows an unlisted Lead and planning run once, preserving ex
   snapshot.runs[0].error = 'The server restarted'
   snapshot.runs[1].status = 'succeeded'
   const stopped = collectProjectBoardActivity(snapshot)
-  assert.equal(stopped.length, 1)
+  assert.equal(stopped.length, 2)
+  assert.equal(stopped[1].status, 'review')
+  assert.equal(stopped[1].threadId, 'planning-chat', 'Completed planning chats remain linked in the project')
   assert.equal(stopped[0].status, 'paused')
   assert.equal(stopped[0].summary, 'The server restarted')
 })
@@ -74,6 +78,24 @@ const attention = {
   title: 'Secret feature title',
   message: 'Secret question body',
 }
+
+test('native board approvals and questions use redacted stable Lead links and exclude child chats', () => {
+  const snapshot = { boards: [{ id: 'board', planningThreadId: 'planner' }], cards: [{ id: 'feature', boardId: 'board', type: 'feature', threadId: 'lead' }, { id: 'task', boardId: 'board', type: 'task', threadId: 'child' }] }
+  const request = { id: 51, method: 'item/commandExecution/requestApproval', params: { threadId: 'lead', turnId: 'turn-1', command: 'PRIVATE command', reason: 'PRIVATE context' } }
+  const event = projectBoardNativeRequestNotification(snapshot, request, '2026-09-07T01:00:00Z')
+  assert.equal(isProjectBoardNotification(event), true)
+  assert.equal(event.requestKind, 'approval')
+  assert.equal(JSON.stringify(event).includes('PRIVATE'), false)
+  assert.equal(projectBoardNotificationCopy(event).title, 'Lead needs your approval')
+  assert.equal(projectBoardNotificationDeepLink(event), '#/thread/lead?board=board&feature=feature')
+  assert.notEqual(projectBoardNativeRequestNotification(snapshot, { ...request, params: { ...request.params, turnId: 'turn-2' } }, event.occurredAt).id, event.id)
+  const question = projectBoardNativeRequestNotification(snapshot, { ...request, method: 'item/tool/requestUserInput', params: { ...request.params, threadId: 'planner' } }, event.occurredAt)
+  assert.equal(question.featureId, '')
+  assert.equal(question.requestKind, 'question')
+  assert.equal(projectBoardNotificationCopy(question).title, 'Lead needs your input')
+  for (const threadId of ['ordinary-chat', 'child']) assert.equal(projectBoardNativeRequestNotification(snapshot, { ...request, params: { ...request.params, threadId } }, event.occurredAt), null)
+  assert.equal(projectBoardNativeRequestNotification(snapshot, { ...request, method: 'item/tool/call' }, event.occurredAt), null)
+})
 
 test('builds an exact Needs You deep link and deduplicates question events', () => {
   assert.equal(
@@ -161,6 +183,8 @@ test('notifies authoritative board outcomes, not successful intermediate lead tu
   assert.equal(collectProjectBoardNotifications(waiting, finished)[0].threadId, 'lead')
   const queued = { ...waiting, queues: [{ boardId: 'board', status: 'running', featureIds: ['feature'] }] }
   assert.equal(collectProjectBoardNotifications(queued, finished)[0].quiet, true, 'Last selected feature is still quiet after its queue disappears')
+  const userStopped = { ...initial, runs: [{ ...initial.runs[0], status: 'interrupted', stoppedByUser: true }] }
+  assert.equal(collectProjectBoardNotifications(initial, userStopped)[0].quiet, true, 'User Stop stays in Activity without an unsolicited device alert')
   const failed = { ...initial, runs: [{ ...initial.runs[0], status: 'interrupted', error: 'PRIVATE error' }] }
   assert.deepEqual(collectProjectBoardNotifications(initial, failed).map((event) => event.kind), ['failed'])
   const planned = { ...initial, runs: [{ id: 'plan', boardId: 'board', cardId: '', kind: 'board_plan', status: 'succeeded', threadId: 'planner' }] }
@@ -259,6 +283,7 @@ test('board delivery reuses the durable inbox and device/Telegram preferences wi
   telegram.handleProjectBoardNotification(event)
   telegram.handleProjectBoardNotification(event)
   assert.equal(telegramSent.length, 1)
+
   assert.match(telegramSent[0].text, /https:\/\/example\.test\/#\/board\/b%20%2F%201\?feature=f-1&question=q\+%2F\+1/u)
   process.env.CODEXUI_TELEGRAM_NOTIFICATIONS = 'false'
   createTelegramTurnNotifier().handleProjectBoardNotification({ ...event, id: 'other' })
@@ -281,4 +306,23 @@ test('board delivery reuses the durable inbox and device/Telegram preferences wi
   assert.equal(isolatedTelegram.enabled, false)
   isolatedTelegram.handleProjectBoardNotification({ ...event, id: 'isolated-run' })
   assert.equal(telegramSent.length, 1)
+
+  // Native approval alerts use the same enrolled-device sink and survive reload.
+  process.env.CODEXUI_WEB_PUSH_STATE_FILE = stateFile
+  const nativePush = createWebPushTurnNotifier()
+  const nativeEvent = { id: 'project-board-native:lead:turn:51', kind: 'native_request', boardId: 'board', featureId: 'feature', cardId: 'feature', threadId: 'lead', requestId: 51, requestKind: 'approval', occurredAt: '2026-09-07T01:00:00Z' }
+  const sentBefore = globalThis.__boardPushDeliveries.length
+  assert.equal(await nativePush.handleProjectBoardNotification(nativeEvent), true)
+  await new Promise(setImmediate)
+  assert.equal(globalThis.__boardPushDeliveries.length, sentBefore + 2)
+  assert.deepEqual(globalThis.__boardPushDeliveries.slice(-2).map(({ payload }) => [payload.title, payload.body, payload.url]), Array(2).fill(['Lead needs your approval', 'Open the Lead chat to review the request and continue.', '/#/thread/lead?board=board&feature=feature']))
+  assert.equal(await createWebPushTurnNotifier().handleProjectBoardNotification(nativeEvent), false)
+  await nativePush.syncProjectBoardNativeRequests([nativeEvent.id], '2026-09-07T01:01:00Z')
+  assert.equal(JSON.parse(await readFile(stateFile, 'utf8')).history[0].readAt, null)
+  await nativePush.syncProjectBoardNativeRequests([], '2026-09-07T01:02:00Z')
+  const resolvedNative = JSON.parse(await readFile(stateFile, 'utf8')).history[0]
+  assert.equal(resolvedNative.status, 'resolved')
+  assert.equal(resolvedNative.readAt, '2026-09-07T01:02:00Z')
+  assert.equal(resolvedNative.projectBoard.requestId, 51)
+  assert.equal(globalThis.__boardPushDeliveries.length, sentBefore + 2, 'Resolving a native request must not send another device notification')
 })

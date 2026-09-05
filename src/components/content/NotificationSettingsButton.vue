@@ -113,7 +113,7 @@
               <span class="notification-row-copy">
                 <span class="notification-row-title-line">
                   <span class="notification-row-title">{{ item.title }}</span>
-                  <span class="notification-unread-pill">Needs you</span>
+                  <span class="notification-unread-pill is-attention">Needs you</span>
                 </span>
                 <span class="notification-row-meta">
                   <span>Project board</span><span aria-hidden="true">·</span><span>{{ formatRelative(item.createdAtIso) }}</span>
@@ -132,7 +132,7 @@
               <span class="notification-row-copy">
                 <span class="notification-row-title-line">
                   <span class="notification-row-title">{{ item.title }}</span>
-                  <span class="notification-unread-pill">{{ item.label }}</span>
+                  <span class="notification-unread-pill is-attention">{{ item.label }}</span>
                 </span>
                 <span class="notification-row-meta">
                   <span>{{ item.board ? 'Project board' : 'Chat' }}</span><span aria-hidden="true">·</span><span>{{ formatRelative(item.receivedAtIso) }}</span>
@@ -229,15 +229,15 @@
               >
                 <span
                   class="notification-row-icon"
-                  :class="item.status === 'failed' ? 'is-failed' : 'is-completed'"
+                  :class="['failed', 'question', 'native_request'].includes(item.status) ? 'is-failed' : 'is-completed'"
                 >
-                  <CircleAlert v-if="item.status === 'failed'" />
+                  <CircleAlert v-if="['failed', 'question', 'native_request'].includes(item.status)" />
                   <CheckCircle2 v-else />
                 </span>
                 <span class="notification-row-copy">
                   <span class="notification-row-title-line">
                     <span class="notification-row-title">{{ item.title }}</span>
-                    <span v-if="item.isUnread" class="notification-unread-pill">Unread</span>
+                    <span v-if="item.isUnread" class="notification-unread-pill" :class="{ 'is-attention': ['failed', 'question', 'native_request'].includes(item.status) }">Unread</span>
                   </span>
                   <span class="notification-row-meta">
                     <span>{{ activityStatusLabel(item) }}</span>
@@ -601,7 +601,8 @@ const unreadThreads = computed(() =>
 )
 const visibleHistory = computed(() => history.value.filter((item) =>
   !(props.boardThreadIds ?? []).includes(item.threadId) &&
-  !props.boardAttention.some((attention) => attention.questionId === item.projectBoard?.questionId),
+  !props.boardAttention.some((attention) => attention.questionId === item.projectBoard?.questionId) &&
+  !(item.projectBoard?.kind === 'native_request' && props.pendingRequests?.some((request) => request.id === item.projectBoard?.requestId && request.threadId === item.projectBoard?.threadId)),
 ))
 const currentActivityThreadIds = computed(() =>
   new Set([
@@ -964,7 +965,7 @@ function openRecentItem(item: RecentActivityItem): void {
     isOpen.value = false
     const activity = boardItemForEvent(item.projectBoard)
     const threadId = item.projectBoard.threadId || activity?.threadId
-    if (item.projectBoard.kind === 'completed' && threadId) openThread(threadId)
+    if ((item.projectBoard.kind === 'completed' || item.projectBoard.kind === 'native_request') && threadId) openThread(threadId)
     else openProjectBoardDeepLink(projectBoardNotificationDeepLink(item.projectBoard))
     return
   }
@@ -977,6 +978,8 @@ function activityStatusLabel(item: RecentActivityItem): string {
   if (item.status === 'answered') return 'Answered'
   if (item.status === 'plan_ready') return 'Plan ready'
   if (item.status === 'batch_completed') return 'Selected features complete'
+  if (item.status === 'resolved') return 'Resolved'
+  if (item.status === 'native_request') return item.projectBoard?.requestKind === 'approval' ? 'Approval needed' : 'Answer needed'
   return item.projectBoard ? 'Feature complete' : 'Completed'
 }
 
@@ -1539,6 +1542,11 @@ function onModeChange(event: Event): void {
   @apply inline-flex shrink-0 items-center rounded-full px-1.5 py-0.5 text-[10px] font-semibold leading-none;
   background: color-mix(in srgb, #22c55e 14%, transparent);
   color: #16a34a;
+}
+
+.notification-unread-pill.is-attention {
+  background: color-mix(in srgb, #d97706 14%, transparent);
+  color: var(--text-warning, #d97706);
 }
 
 .notification-row-meta {

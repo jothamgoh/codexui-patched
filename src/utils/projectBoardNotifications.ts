@@ -1,3 +1,5 @@
+import type { ProjectBoardSnapshot } from '../types/projectBoards'
+
 export type ProjectBoardNeedsInput = {
   boardId: string
   featureId: string
@@ -9,13 +11,15 @@ export type ProjectBoardNeedsInput = {
 
 export type ProjectBoardNotification = {
   id: string
-  kind: 'question' | 'failed' | 'completed' | 'plan_ready' | 'batch_completed'
+  kind: 'question' | 'failed' | 'completed' | 'plan_ready' | 'batch_completed' | 'native_request'
   boardId: string
   featureId: string
   cardId: string
   questionId?: string
   threadId?: string
   queueId?: string
+  requestId?: number
+  requestKind?: 'approval' | 'question'
   /** Keep the outcome in Activity without a separate device alert. */
   quiet?: boolean
   occurredAt: string
@@ -24,7 +28,7 @@ export type ProjectBoardNotification = {
 export function isProjectBoardNotification(value: unknown): value is ProjectBoardNotification {
   if (!value || typeof value !== 'object') return false
   const event = value as Record<string, unknown>
-  return ['question', 'failed', 'completed', 'plan_ready', 'batch_completed'].includes(String(event.kind)) &&
+  return ['question', 'failed', 'completed', 'plan_ready', 'batch_completed', 'native_request'].includes(String(event.kind)) &&
     typeof event.id === 'string' && Boolean(event.id) &&
     typeof event.boardId === 'string' && Boolean(event.boardId) &&
     typeof event.featureId === 'string' && typeof event.cardId === 'string' &&
@@ -32,14 +36,17 @@ export function isProjectBoardNotification(value: unknown): value is ProjectBoar
     (event.questionId === undefined || typeof event.questionId === 'string') &&
     (event.threadId === undefined || typeof event.threadId === 'string') &&
     (event.queueId === undefined || typeof event.queueId === 'string') &&
+    (event.requestId === undefined || Number.isInteger(event.requestId)) &&
+    (event.requestKind === undefined || event.requestKind === 'approval' || event.requestKind === 'question') &&
     (event.quiet === undefined || typeof event.quiet === 'boolean') &&
     (event.kind !== 'question' || Boolean(event.questionId)) &&
-    (event.kind !== 'batch_completed' || Boolean(event.queueId))
+    (event.kind !== 'batch_completed' || Boolean(event.queueId)) &&
+    (event.kind !== 'native_request' || (Boolean(event.threadId) && Number.isInteger(event.requestId) && Boolean(event.requestKind)))
 }
 
 export function projectBoardNotificationDeepLink(event: Pick<ProjectBoardNotification, 'boardId' | 'featureId' | 'questionId'> & Partial<Pick<ProjectBoardNotification, 'kind' | 'threadId'>>): string {
   const params = new URLSearchParams()
-  if (event.kind === 'completed' && event.threadId) {
+  if ((event.kind === 'completed' || event.kind === 'native_request') && event.threadId) {
     params.set('board', event.boardId)
     if (event.featureId) params.set('feature', event.featureId)
     return `#/thread/${encodeURIComponent(event.threadId)}?${params.toString()}`
@@ -50,13 +57,14 @@ export function projectBoardNotificationDeepLink(event: Pick<ProjectBoardNotific
   return `#/board/${encodeURIComponent(event.boardId)}${query ? `?${query}` : ''}`
 }
 
-export function projectBoardNotificationCopy(event: Pick<ProjectBoardNotification, 'kind'> & Partial<Pick<ProjectBoardNotification, 'threadId'>>): { title: string; body: string } {
+export function projectBoardNotificationCopy(event: Pick<ProjectBoardNotification, 'kind'> & Partial<Pick<ProjectBoardNotification, 'threadId' | 'requestKind'>>): { title: string; body: string } {
   switch (event.kind) {
     case 'question': return { title: 'CodexUI needs your input', body: 'Open the project board to answer a question.' }
     case 'failed': return { title: 'Project work needs attention', body: 'A board run stopped. Open the board to review and continue.' }
     case 'plan_ready': return { title: 'Project plan ready', body: 'Open the board to review the proposed features.' }
     case 'completed': return { title: 'Feature complete', body: event.threadId ? 'Open the Lead chat to review the result.' : 'Open the project board to review the result.' }
     case 'batch_completed': return { title: 'Selected features complete', body: 'Open the project board to review the results.' }
+    case 'native_request': return { title: event.requestKind === 'approval' ? 'Lead needs your approval' : 'Lead needs your input', body: 'Open the Lead chat to review the request and continue.' }
   }
 }
 
@@ -74,6 +82,30 @@ export function projectBoardBatchCompletedNotification(boardId: string, queueId:
     featureId: '',
     cardId: '',
     queueId,
+    occurredAt,
+  }
+}
+
+/** Only the saved feature Lead or board planner may raise a board device alert. */
+export function projectBoardNativeRequestNotification(snapshot: ProjectBoardSnapshot, value: unknown, occurredAt: string): ProjectBoardNotification | null {
+  if (!value || typeof value !== 'object') return null
+  const request = value as Record<string, unknown>
+  const params = request.params as Record<string, unknown> | undefined
+  const approval = typeof request.method === 'string' && /^item\/(commandExecution|fileChange|permissions)\/requestApproval$/u.test(request.method)
+  if (!approval && request.method !== 'item/tool/requestUserInput') return null
+  if (!Number.isInteger(request.id) || !params || typeof params.threadId !== 'string' || !params.threadId || typeof params.turnId !== 'string' || !params.turnId) return null
+  const feature = snapshot.cards.find((card) => card.type === 'feature' && card.threadId === params.threadId)
+  const board = snapshot.boards.find((entry) => feature ? entry.id === feature.boardId : entry.planningThreadId === params.threadId)
+  if (!board) return null
+  return {
+    id: `project-board-native:${params.threadId}:${params.turnId}:${request.id}`,
+    kind: 'native_request',
+    boardId: board.id,
+    featureId: feature?.id || '',
+    cardId: feature?.id || '',
+    threadId: params.threadId,
+    requestId: Number(request.id),
+    requestKind: approval ? 'approval' : 'question',
     occurredAt,
   }
 }

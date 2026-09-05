@@ -88,6 +88,7 @@ export type WebPushTurnNotifier = {
   enabled: boolean
   statusMessage: string
   handleNotification: (notification: BridgeNotification) => void
+  syncProjectBoardNativeRequests: (pendingEventIds: string[], atIso: string) => Promise<void>
   handleProjectBoardNotification: (event: ProjectBoardNotification) => Promise<boolean>
   resolveProjectBoardQuestions: (questionIds: string[], atIso: string) => Promise<void>
   handleRequest: (req: IncomingMessage, res: ServerResponse, next: () => void) => void
@@ -165,7 +166,7 @@ function normalizeHistoryItem(value: unknown): StoredNotificationHistoryItem | n
   const completedAt = readString(record.completedAt)
   if (!threadId || !turnId || !completedAt) return null
   const board = asRecord(record.projectBoard)
-  const projectBoard = board && ['question', 'failed', 'completed', 'plan_ready', 'batch_completed'].includes(readString(board.kind)) &&
+  const projectBoard = board && ['question', 'failed', 'completed', 'plan_ready', 'batch_completed', 'native_request'].includes(readString(board.kind)) &&
     readString(board.id) && readString(board.boardId) && readString(board.occurredAt)
     ? {
       id: readString(board.id),
@@ -176,6 +177,8 @@ function normalizeHistoryItem(value: unknown): StoredNotificationHistoryItem | n
       ...(readString(board.questionId) ? { questionId: readString(board.questionId) } : {}),
       ...(readString(board.threadId) ? { threadId: readString(board.threadId) } : {}),
       ...(readString(board.queueId) ? { queueId: readString(board.queueId) } : {}),
+      ...(Number.isInteger(board.requestId) ? { requestId: Number(board.requestId) } : {}),
+      ...(board.requestKind === 'approval' || board.requestKind === 'question' ? { requestKind: board.requestKind as ProjectBoardNotification['requestKind'] } : {}),
       ...(board.quiet === true ? { quiet: true } : {}),
       occurredAt: readString(board.occurredAt),
     }
@@ -565,6 +568,19 @@ export function createWebPushTurnNotifier(): WebPushTurnNotifier {
     })
   }
 
+  const syncProjectBoardNativeRequests = async (pendingEventIds: string[], atIso: string): Promise<void> => {
+    const pending = new Set(pendingEventIds)
+    await mutateState((state) => {
+      for (const item of state.history) {
+        if (item.projectBoard?.kind !== 'native_request' || pending.has(item.projectBoard.id)) continue
+        item.readAt = item.readAt || atIso
+        item.status = 'resolved'
+        item.title = 'Lead request resolved'
+        item.body = 'This Lead request has been resolved.'
+      }
+    })
+  }
+
   const processCompletedTurn = async (turn: CompletedTurn): Promise<void> => {
     await recordCompletedTurn(turn)
     await sendCompletedTurn(turn)
@@ -834,6 +850,7 @@ export function createWebPushTurnNotifier(): WebPushTurnNotifier {
     handleNotification,
     handleProjectBoardNotification,
     resolveProjectBoardQuestions,
+    syncProjectBoardNativeRequests,
     handleRequest,
     removeThreadHistory,
   }

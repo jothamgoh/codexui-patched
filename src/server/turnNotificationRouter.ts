@@ -6,7 +6,7 @@ import {
   type CodexThreadAudience,
 } from '../utils/codexThreadSource.js'
 import type { ProjectBoardSnapshot } from '../types/projectBoards'
-import { isProjectBoardNotification, type ProjectBoardNotification } from '../utils/projectBoardNotifications'
+import { isProjectBoardNotification, projectBoardNativeRequestNotification, type ProjectBoardNotification } from '../utils/projectBoardNotifications'
 import { collectProjectBoardNotifications, projectBoardThreadIds } from './projectBoardNotificationEvents.js'
 
 type BridgeNotification = {
@@ -22,6 +22,7 @@ type NotificationBridge = {
   readProjectBoards?: () => Promise<ProjectBoardSnapshot>
   takeProjectBoardRecoveryBaseline?: () => Promise<ProjectBoardSnapshot> | null
   publishLocalNotification?: (method: string, params: unknown) => void
+  listPendingServerRequests?: () => Array<{ id: number; method: string; params: unknown; receivedAtIso?: string }>
 }
 
 type TurnNotificationSink = {
@@ -32,6 +33,7 @@ type TurnNotificationSink = {
 type WebPushNotificationSink = TurnNotificationSink & {
   removeThreadHistory: (threadIds: Iterable<string>) => Promise<void>
   resolveProjectBoardQuestions?: (questionIds: string[], atIso: string) => Promise<void>
+  syncProjectBoardNativeRequests?: (pendingEventIds: string[], atIso: string) => Promise<void>
 }
 
 export type TurnNotificationRouter = {
@@ -78,6 +80,7 @@ export function createTurnNotificationRouter(
   let boardSnapshot: ProjectBoardSnapshot | null = null
   let boardThreadIds = new Set<string>()
   let boardDeliveryQueue = Promise.resolve()
+  const nativeRequestEvents = new Map<number, ProjectBoardNotification>()
 
   const removeInternalHistory = (threadIds: Iterable<string>): void => {
     void options.webPushTurnNotifier.removeThreadHistory(threadIds).catch((error: unknown) => {
@@ -119,6 +122,26 @@ export function createTurnNotificationRouter(
     }).catch((error: unknown) => {
       const message = error instanceof Error ? error.message : String(error)
       console.warn(`[project-boards] Could not deliver board notification: ${message}`)
+    })
+  }
+
+  const observeNativeRequest = (request: unknown, atIso: string): void => {
+    if (disposed || !boardSnapshot) return
+    const event = projectBoardNativeRequestNotification(boardSnapshot, request, atIso)
+    if (!event) return
+    nativeRequestEvents.set(event.requestId!, event)
+    deliverBoardEvent(event)
+  }
+
+  const syncNativeRequestHistory = (atIso: string): void => {
+    const pendingIds = [...nativeRequestEvents.values()].map((event) => event.id)
+    boardDeliveryQueue = boardDeliveryQueue.then(async () => {
+      if (disposed) return
+      await options.webPushTurnNotifier.syncProjectBoardNativeRequests?.(pendingIds, atIso)
+      options.bridge.publishLocalNotification?.('codexui/projectBoards/historyUpdated', {})
+    }).catch((error: unknown) => {
+      const message = error instanceof Error ? error.message : String(error)
+      console.warn(`[project-boards] Could not resolve Lead request notifications: ${message}`)
     })
   }
 
@@ -193,6 +216,21 @@ export function createTurnNotificationRouter(
   }
 
   const unsubscribe = options.bridge.subscribeNotifications((notification) => {
+    if (notification.method === 'server/request') {
+      boardSnapshotQueue = boardSnapshotQueue.then(() => observeNativeRequest(notification.params, notification.atIso || new Date().toISOString()))
+      return
+    }
+    if (notification.method === 'server/request/resolved') {
+      const request = notification.params as { id?: unknown; threadId?: unknown }
+      boardSnapshotQueue = boardSnapshotQueue.then(() => {
+        if (!Number.isInteger(request?.id)) return
+        const event = nativeRequestEvents.get(Number(request.id))
+        if (!event || (request.threadId && event.threadId !== request.threadId)) return
+        nativeRequestEvents.delete(Number(request.id))
+        syncNativeRequestHistory(notification.atIso || new Date().toISOString())
+      })
+      return
+    }
     if (notification.method === 'codexui/projectBoards/batchCompleted') {
       const event = notification.params
       if (isProjectBoardNotification(event) && event.kind === 'batch_completed') {
@@ -221,6 +259,14 @@ export function createTurnNotificationRouter(
       console.warn(`[notifications] Could not route turn completion: ${message}`)
     })
   })
+
+  if (options.bridge.listPendingServerRequests) {
+    boardSnapshotQueue = boardSnapshotQueue.then(() => {
+      const atIso = new Date().toISOString()
+      for (const request of options.bridge.listPendingServerRequests!()) observeNativeRequest(request, request.receivedAtIso || atIso)
+      syncNativeRequestHistory(atIso)
+    })
+  }
 
   void loadInternalSubagentThreadIds((params) => withTimeout(
     options.bridge.listThreads(params),

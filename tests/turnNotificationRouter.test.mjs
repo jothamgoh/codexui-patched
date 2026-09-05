@@ -50,6 +50,7 @@ function createHarness({
   backfillRequestTimeoutMs = 40,
   readProjectBoards,
   takeProjectBoardRecoveryBaseline,
+  listPendingServerRequests,
 }) {
   let listener = null
   const telegram = []
@@ -58,11 +59,13 @@ function createHarness({
   const boardPush = []
   const boardTelegram = []
   const boardPublished = []
+  const nativeHistorySyncs = []
   const bridge = {
     listThreads,
     readThread,
     readProjectBoards,
     takeProjectBoardRecoveryBaseline,
+    listPendingServerRequests,
     publishLocalNotification(method, params) { boardPublished.push({ method, params }) },
     subscribeNotifications(nextListener) {
       listener = nextListener
@@ -82,6 +85,7 @@ function createHarness({
         boardPush.push(event)
         return true
       },
+      async syncProjectBoardNativeRequests(ids, atIso) { nativeHistorySyncs.push({ ids, atIso }) },
       async removeThreadHistory(threadIds) {
         removedHistory.push([...threadIds])
       },
@@ -99,6 +103,7 @@ function createHarness({
     boardPush,
     boardTelegram,
     boardPublished,
+    nativeHistorySyncs,
   }
 }
 
@@ -120,6 +125,37 @@ test('delivers an off-page interactive completion after authoritative lookup', a
 
   assert.equal(harness.telegram.length, 1)
   assert.equal(harness.webPush.length, 1)
+  harness.router.dispose()
+})
+
+test('alerts native Lead approvals without a browser, deduplicates replay and resolves cancelled requests', async () => {
+  const baseline = { version: 1, boards: [{ id: 'board', planningThreadId: 'planner' }], cards: [{ id: 'feature', type: 'feature', boardId: 'board', status: 'working', threadId: 'lead' }, { id: 'task', type: 'task', boardId: 'board', threadId: 'child' }], runs: [], questions: [], updatedAtIso: '2026-09-07T01:00:00Z' }
+  const approval = { id: 71, method: 'item/commandExecution/requestApproval', params: { threadId: 'lead', turnId: 'turn', command: 'PRIVATE command' }, receivedAtIso: baseline.updatedAtIso }
+  let pending = [approval]
+  const harness = createHarness({ readThread: async () => ({}), readProjectBoards: async () => baseline, listPendingServerRequests: () => pending })
+  await delay(15)
+  assert.equal(harness.boardPush.length, 1, 'An already pending Lead request is backfilled')
+  assert.equal(harness.boardTelegram.length, 1)
+  assert.equal(harness.boardPush[0].kind, 'native_request')
+  assert.equal(harness.boardPush[0].requestKind, 'approval')
+  assert.equal(JSON.stringify(harness.boardPush[0]).includes('PRIVATE'), false)
+  harness.emit({ method: 'server/request', params: approval, atIso: baseline.updatedAtIso })
+  for (const threadId of ['child', 'ordinary-chat']) harness.emit({ method: 'server/request', params: { ...approval, id: 99, params: { ...approval.params, threadId } }, atIso: baseline.updatedAtIso })
+  const question = { ...approval, id: 72, method: 'item/tool/requestUserInput' }
+  pending.push(question)
+  harness.emit({ method: 'server/request', params: question, atIso: baseline.updatedAtIso })
+  await delay(15)
+  assert.equal(harness.boardPush.length, 2)
+  assert.equal(harness.boardTelegram.length, 2)
+  pending = [question]
+  harness.emit({ method: 'server/request/resolved', params: { id: approval.id, threadId: 'lead', mode: 'manual' }, atIso: baseline.updatedAtIso })
+  await delay(15)
+  assert.deepEqual(harness.nativeHistorySyncs.at(-1).ids, [harness.boardPush[1].id])
+  pending = []
+  harness.emit({ method: 'server/request/resolved', params: { id: question.id, threadId: 'lead', mode: 'cancelled' }, atIso: baseline.updatedAtIso })
+  await delay(15)
+  assert.deepEqual(harness.nativeHistorySyncs.at(-1).ids, [])
+  assert.equal(harness.boardPush.length, 2, 'Resolving a request does not send another device alert')
   harness.router.dispose()
 })
 

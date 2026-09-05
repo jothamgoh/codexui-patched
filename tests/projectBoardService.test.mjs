@@ -659,8 +659,8 @@ test('runs only the approved ready queue and pauses at questions without answer-
 })
 
 
-test('pending automatic continuations respect queue pause, failure, and replacement', async (t) => {
-  for (const scenario of ['pause', 'failure', 'replacement']) {
+test('pending automatic continuations respect queue pause, failure, replacement, and board controls', async (t) => {
+  for (const scenario of ['pause', 'failure', 'replacement', 'automatic-off', 'automatic-off-standalone']) {
     const { appServer, board, feature, store } = await createHarness(t)
     const pending = new Map()
     let lookups = 0
@@ -671,14 +671,24 @@ test('pending automatic continuations respect queue pause, failure, and replacem
       }
       return settings
     } })
-    await service.startBoardQueue(board.id, { featureIds: [feature.id], allowWorkspaceWrite: true })
+    if (scenario === 'automatic-off-standalone') await service.startFeature(feature.id, { allowWorkspaceWrite: true })
+    else await service.startBoardQueue(board.id, { featureIds: [feature.id], allowWorkspaceWrite: true })
     await waitFor(() => appServer.calls.find((call) => call.method === 'turn/start'), 'First queue turn did not start')
     await service.handleDynamicToolCall(toolCall('lead-thread', 'replace_plan', { plan: { summary: 'Work remains.', tasks: [
       { key: 'work', title: 'Remaining work', description: 'Continue the implementation.', acceptanceCriteria: 'Work checked.', agentId: 'builtin-engineer', taskPurpose: 'work', dependsOn: [] },
     ] } }))
     await service.handleNotification({ method: 'turn/completed', params: { threadId: 'lead-thread', turn: { id: 'lead-turn-1', status: 'completed' } } })
     await waitFor(() => pending.has(2), 'Automatic continuation did not reach model lookup')
-    if (scenario === 'failure') {
+    if (scenario.startsWith('automatic-off')) {
+      await service.updateBoard(board.id, { autoDispatch: false })
+      pending.get(2).resolve()
+      await delay(60)
+      const state = await service.read()
+      assert.equal(appServer.calls.filter((call) => call.method === 'turn/start').length, 1)
+      assert.equal(state.cards.find((card) => card.id === feature.id).status, 'backlog')
+      assert.equal(state.runs.filter((run) => run.status === 'running').length, 0)
+      if (scenario === 'automatic-off') assert.equal(state.queues[0].status, 'paused')
+    } else if (scenario === 'failure') {
       pending.get(2).reject(new Error('Selected model became unavailable.'))
       await waitFor(() => appServer.notifications.some((notification) => notification.method === 'codexui/projectBoards/updated'
         && notification.params.cards.some((card) => card.id === feature.id && card.status === 'blocked')), 'Continuation failure was not recorded')

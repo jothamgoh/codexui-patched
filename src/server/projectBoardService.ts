@@ -344,7 +344,17 @@ export class ProjectBoardService {
   }
 
   async updateBoard(id: string, changes: unknown): Promise<ProjectBoardSnapshot> {
-    return this.publish(await this.store.updateBoard(id, changes))
+    const snapshot = await this.store.updateBoard(id, changes)
+    if (asRecord(changes)?.autoDispatch === false) {
+      for (const feature of snapshot.cards.filter((card) => card.boardId === id && card.type === 'feature')) {
+        this.workspaceWriteByFeatureId.delete(feature.id)
+      }
+      const queue = this.queues.get(id)
+      if (queue?.currentFeatureId && !this.activeFeatureIds.has(queue.currentFeatureId)) {
+        this.pauseQueue(id, 'Automatic continuation is off. Continue the feature when you are ready.')
+      }
+    }
+    return this.publish(snapshot)
   }
 
   async deleteBoard(id: string): Promise<ProjectBoardSnapshot> {
@@ -580,6 +590,8 @@ export class ProjectBoardService {
     if (!lead) throw new Error('Add an agent to this board before starting.')
 
     const settings = await this.resolveExecutionSettings({ model: feature.model || lead.model, reasoningEffort: feature.reasoningEffort || lead.reasoningEffort })
+    // Turning continuation off also cancels a start already awaiting model metadata.
+    if (continuation && !this.workspaceWriteByFeatureId.has(featureId)) return this.read()
     if (queue && (queue.status !== 'running' || this.queues.get(queue.boardId) !== queue || queue.currentFeatureId !== featureId)) {
       throw new Error('The queue was paused or replaced before this feature started.')
     }
@@ -926,7 +938,7 @@ export class ProjectBoardService {
       void this.startFeatureRun(featureId, true, this.workspaceWriteByFeatureId.get(featureId) === true, 'execute', queue).catch(async (error) => {
         // A paused/replaced queue cannot authorize a pending continuation, and
         // its late rejection must not block a replacement queue's feature.
-        if (generation !== this.processGeneration || !queueIsCurrent() || this.activeFeatureIds.has(featureId)) return
+        if (generation !== this.processGeneration || !queueIsCurrent() || !this.workspaceWriteByFeatureId.has(featureId) || this.activeFeatureIds.has(featureId)) return
         const reason = error instanceof Error ? error.message : 'Feature could not continue.'
         if (queue) this.pauseQueue(queue.boardId, reason)
         this.workspaceWriteByFeatureId.delete(featureId)

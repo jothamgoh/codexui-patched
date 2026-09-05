@@ -153,13 +153,20 @@ The parity skill records the inspected areas and reusable findings.
 
 ## Exact next step
 
-1. Refresh CodexUI. In Project boards → Agents, customize a starter or create a
-   profile with the desired instructions. Select it as Lead for a feature.
-2. Use one real feature to assess the complete development workflow; record
-   concrete friction and improve it before expanding the framework. Choose a
-   final self-check or fresh independent verification proportional to that work.
-3. Keep validation at the feature boundary. No additional release/restart work
-   is pending for this source change.
+The user reported chat ordering and long-chat responsiveness issues, requested
+per-feature model/reasoning controls, and asked for a small workflow plan before
+battle testing. [UX_BACKLOG.md](../UX_BACKLOG.md) records the current limitations,
+proposed delivery order, planning/overlap cases, and official design references.
+These follow-ups are planned, not implemented. The existing Lead-selected
+verification approach is accepted; a mandatory QA selector is not requested.
+
+1. Start with the chat ordering/performance investigation and small dictation
+   polish; preserve manual Send. Then add per-feature execution settings and
+   clearer planning/dependencies as coherent features.
+2. Exercise a real feature and a related dependent feature after implementation,
+   using proportionate final verification and recording actual friction.
+3. Keep validation at the feature boundary. No additional restart is needed for
+   this planning-only update.
 
 The initial Terminal handoff failed before restarting. Process-start evidence
 confirmed no restart occurred. Opening a fresh independent Terminal instance

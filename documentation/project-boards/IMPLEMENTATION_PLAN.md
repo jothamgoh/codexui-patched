@@ -67,10 +67,10 @@ Repeat checks only after a relevant change or failure. A passing build does not
 clear a discovered correctness defect. Record skipped or simulated checks
 honestly in `PROGRESS.md`.
 
-## Next development cycle
+## Completed composable-agent cycle
 
-The user clarified that agents should compose and each should have its own
-editable prompt. Finish this as one coherent feature:
+The composable-agent and prompt-editor cycle is complete; see `PROGRESS.md` for
+actual verification and deployment evidence. Its scope was:
 
 1. Route plans by exact profile ID and classify verification on tasks.
 2. Apply the selected profile on every turn, including resumed chats.
@@ -83,3 +83,11 @@ editable prompt. Finish this as one coherent feature:
 
 Use native Codex for agent trees; durable nested specialist runs, a global agent
 chat/memory service, and visual organization charts remain separate future work.
+
+## Next development cycle
+
+Follow [UX_BACKLOG.md](../UX_BACKLOG.md): investigate the reported chat issues,
+add per-feature model/reasoning controls, then clarify plan review and feature
+dependencies. It distinguishes current behavior from proposed changes and keeps
+Lead-selected verification. No source implementation is included in this plan
+update. Use the recorded real workflow cases after each coherent feature group.

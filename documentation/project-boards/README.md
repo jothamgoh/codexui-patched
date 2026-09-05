@@ -6,6 +6,8 @@ next action. Then read only the relevant product or implementation details:
 - [PRD.md](PRD.md): current scope and behavior.
 - [IMPLEMENTATION_PLAN.md](IMPLEMENTATION_PLAN.md): architecture and delivery groups.
 - [TEST_PLAN.md](TEST_PLAN.md): the small set of checks that protects the workflow.
+- [UX_BACKLOG.md](../UX_BACKLOG.md): proposed chat fixes, per-feature model
+  controls, and planning/dependency workflows for the next development cycle.
 
 The 2026-09-05 scope revision removes the speculative full-MVP framework and
 exhaustive test checklist. Future ideas are options, not release requirements.

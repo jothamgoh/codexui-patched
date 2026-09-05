@@ -116,6 +116,8 @@ test('any reusable profile can coordinate and a resumed chat uses the current se
   const started = await service.startFeature(feature.id, { allowWorkspaceWrite: true })
   assert.equal(started.runs[0].status, 'running')
   assert.equal(started.runs[0].agentId, coordinator.id)
+  assert.equal(started.runs[0].requestedModel, 'research-model')
+  assert.equal(started.runs[0].requestedReasoningEffort, 'high')
 
   const turnCall = await waitFor(
     () => appServer.calls.find((call) => call.method === 'turn/start'),
@@ -170,6 +172,10 @@ test('any reusable profile can coordinate and a resumed chat uses the current se
     method: 'turn/completed',
     params: { threadId: 'lead-thread', turn: { id: 'lead-turn-1', status: 'failed' } },
   })
+  await service.updateAgent(coordinator.id, { model: 'edited-profile-model', reasoningEffort: 'low' })
+  const historicalRun = (await store.read()).runs.find((run) => run.id === started.runs[0].id)
+  assert.equal(historicalRun.requestedModel, 'research-model')
+  assert.equal(historicalRun.requestedReasoningEffort, 'high')
   const withReplacement = await service.createAgent({
     boardId: board.id,
     name: 'Replacement coordinator', role: 'custom', sandbox: 'read-only',
@@ -205,7 +211,10 @@ test('any reusable profile can coordinate and a resumed chat uses the current se
   assert.equal(resumedTurn.params.threadId, 'lead-thread')
   assert.equal(resumedTurn.params.model, 'current-model')
   assert.equal(resumedTurn.params.effort, 'medium')
-  assert.equal((await store.read()).runs[0].agentId, replacement.id)
+  const resumedRun = (await store.read()).runs[0]
+  assert.equal(resumedRun.agentId, replacement.id)
+  assert.equal(resumedRun.requestedModel, 'current-model')
+  assert.equal(resumedRun.requestedReasoningEffort, 'medium')
 })
 
 test('drives plan, dependency handoff, Needs You, answer, QA, and completion through the board tool', async (t) => {
@@ -518,6 +527,8 @@ test('plans read-only, preserves the reviewed task graph, and applies feature se
   await service.handleNotification({ method: 'turn/completed', params: { threadId: 'lead-thread', turn: { id: 'lead-turn-1', status: 'completed' } } })
   let snapshot = await store.read()
   assert.equal(snapshot.cards.find((card) => card.id === feature.id).planStatus, 'ready')
+  assert.equal(snapshot.runs[0].requestedModel, 'feature-model')
+  assert.equal(snapshot.runs[0].requestedReasoningEffort, 'low')
   assert.equal(snapshot.cards.find((card) => card.id === feature.id).status, 'backlog')
   assert.equal(appServer.calls.filter((call) => call.method === 'turn/start').length, 1)
   await service.updateCard(feature.id, { model: 'unavailable' })
@@ -533,12 +544,16 @@ test('plans read-only, preserves the reviewed task graph, and applies feature se
   assert.equal(appServer.calls.filter((call) => call.method === 'thread/start').length, 1)
   snapshot = await store.read()
   assert.equal(snapshot.cards.find((card) => card.parentCardId === feature.id).id, task.id)
+  assert.equal(snapshot.runs[0].requestedModel, 'default-model')
+  assert.equal(snapshot.runs[0].requestedReasoningEffort, 'high')
+  assert.equal(snapshot.runs[1].requestedModel, 'feature-model')
+  assert.equal(snapshot.runs[1].requestedReasoningEffort, 'low')
   await service.handleNotification({ method: 'turn/completed', params: { threadId: 'lead-thread', turn: { id: 'lead-turn-2', status: 'interrupted' } } })
 })
 
 test('imports a plan into linked feature cards once, scopes planner authority, and preserves unrelated work on failure', async (t) => {
   const { appServer, board, feature, service, store } = await createHarness(t)
-  await service.startBoardPlan(board.id, { plan: 'Build a foundation, then the interface.', sourceThreadId: 'ordinary-chat', coordinatorAgentId: 'builtin-product' }, 'User and assistant agreed on a small release.')
+  await service.startBoardPlan(board.id, { plan: 'Build a foundation, then the interface.', sourceThreadId: 'ordinary-chat', coordinatorAgentId: 'builtin-product', model: 'planner-model', reasoningEffort: 'low' }, 'User and assistant agreed on a small release.')
   const turn = await waitFor(() => appServer.calls.find((call) => call.method === 'turn/start'), 'No board planner')
   assert.equal(turn.params.sandboxPolicy.type, 'readOnly')
   assert.match(turn.params.input[0].text, /incomplete context from the linked planning chat/u)
@@ -563,6 +578,10 @@ test('imports a plan into linked feature cards once, scopes planner authority, a
   assert.equal(ui.autoRun, false)
   assert.equal(snapshot.boards[0].sourceThreadId, 'ordinary-chat')
   assert.equal(snapshot.runs[0].kind, 'board_plan')
+  assert.equal(snapshot.runs[0].requestedModel, turn.params.model)
+  assert.equal(snapshot.runs[0].requestedReasoningEffort, turn.params.effort)
+  assert.equal(snapshot.runs[0].requestedModel, 'planner-model')
+  assert.equal(snapshot.runs[0].requestedReasoningEffort, 'low')
   assert.deepEqual(new Set(snapshot.runs[0].createdCardIds), new Set([base.id, ui.id]))
   await service.handleNotification({ method: 'turn/completed', params: { threadId: 'lead-thread', turn: { id: 'lead-turn-1', status: 'completed' } } })
   await service.startBoardPlan(board.id, { plan: 'Consider an optional follow-up.' })
@@ -570,6 +589,8 @@ test('imports a plan into linked feature cards once, scopes planner authority, a
   await service.handleNotification({ method: 'turn/completed', params: { threadId: 'lead-thread', turn: { id: 'lead-turn-2', status: 'failed' } } })
   snapshot = await store.read()
   assert.equal(snapshot.runs[0].status, 'failed')
+  assert.equal(snapshot.runs[1].requestedModel, 'planner-model')
+  assert.equal(snapshot.runs[1].requestedReasoningEffort, 'low')
   assert.equal(snapshot.cards.find((card) => card.id === feature.id).status, 'backlog')
   assert.equal(snapshot.cards.find((card) => card.id === base.id).status, 'backlog')
   assert.equal(snapshot.cards.find((card) => card.id === ui.id).status, 'backlog')

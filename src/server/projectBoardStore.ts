@@ -301,6 +301,7 @@ function normalizeRun(value: unknown): ProjectBoardRun | null {
   const kind: ProjectBoardRunKind = record.kind === 'board_plan' ? 'board_plan' : record.kind === 'plan' ? 'plan' : 'execute'
   const allowedStatuses = new Set(['queued', 'running', 'succeeded', 'failed', 'interrupted'])
   const rawStatus = readString(record.status)
+  const requestedReasoningEffort = readString(record.requestedReasoningEffort) as ReasoningEffort
   return {
     id,
     boardId,
@@ -310,6 +311,8 @@ function normalizeRun(value: unknown): ProjectBoardRun | null {
     createdCardIds: readStringArray(record.createdCardIds),
     status: allowedStatuses.has(rawStatus) ? rawStatus as ProjectBoardRun['status'] : 'failed',
     threadId: readString(record.threadId, 200),
+    requestedModel: record.requestedModel === undefined ? undefined : readString(record.requestedModel, 200),
+    requestedReasoningEffort: REASONING_EFFORTS.has(requestedReasoningEffort) ? requestedReasoningEffort : undefined,
     startedAtIso: readString(record.startedAtIso, 100),
     finishedAtIso: readString(record.finishedAtIso, 100),
     summary: readString(record.summary),
@@ -1097,7 +1100,7 @@ export class ProjectBoardStore {
     })
   }
 
-  startRun(cardId: string, agentId: string, kind: ProjectBoardRunKind, expectedFingerprint?: string): Promise<{ snapshot: ProjectBoardSnapshot; run: ProjectBoardRun }> {
+  startRun(cardId: string, agentId: string, kind: ProjectBoardRunKind, expectedFingerprint?: string, settings?: { model: string; reasoningEffort: ReasoningEffort }): Promise<{ snapshot: ProjectBoardSnapshot; run: ProjectBoardRun }> {
     let createdRun!: ProjectBoardRun
     return this.mutate((current) => {
       const card = current.cards.find((entry) => entry.id === cardId)
@@ -1126,6 +1129,8 @@ export class ProjectBoardStore {
         createdCardIds: [],
         status: 'running',
         threadId: '',
+        requestedModel: settings?.model,
+        requestedReasoningEffort: settings?.reasoningEffort,
         startedAtIso: now.toISOString(),
         finishedAtIso: '',
         summary: '',
@@ -1143,7 +1148,7 @@ export class ProjectBoardStore {
     }).then((snapshot) => ({ snapshot, run: createdRun }))
   }
 
-  startBoardPlan(boardId: string, agentId: string, plan: string, sourceThreadId: string): Promise<{ snapshot: ProjectBoardSnapshot; run: ProjectBoardRun }> {
+  startBoardPlan(boardId: string, agentId: string, plan: string, sourceThreadId: string, settings?: { model: string; reasoningEffort: ReasoningEffort }): Promise<{ snapshot: ProjectBoardSnapshot; run: ProjectBoardRun }> {
     let run!: ProjectBoardRun
     return this.mutate((current) => {
       const board = current.boards.find((entry) => entry.id === boardId)
@@ -1151,7 +1156,11 @@ export class ProjectBoardStore {
       if (current.runs.some((entry) => entry.boardId === boardId && entry.status === 'running')) throw new Error('Wait for this board’s active run to finish.')
       if (!readString(plan)) throw new Error('A project plan is required.')
       const now = this.now().toISOString()
-      run = { id: randomUUID(), boardId, cardId: '', agentId, kind: 'board_plan', createdCardIds: [], status: 'running', threadId: '', startedAtIso: now, finishedAtIso: '', summary: '', error: '' }
+      run = {
+        id: randomUUID(), boardId, cardId: '', agentId, kind: 'board_plan', createdCardIds: [], status: 'running', threadId: '',
+        requestedModel: settings?.model, requestedReasoningEffort: settings?.reasoningEffort,
+        startedAtIso: now, finishedAtIso: '', summary: '', error: '',
+      }
       return {
         ...current,
         runs: [run, ...current.runs],

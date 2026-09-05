@@ -118,6 +118,9 @@ export type ProjectBoardRun = {
   createdCardIds: string[]
   status: ProjectBoardRunStatus
   threadId: string
+  // Launch request settings, not independently observed runtime telemetry. Absent on legacy runs.
+  requestedModel?: string
+  requestedReasoningEffort?: ReasoningEffort
   startedAtIso: string
   finishedAtIso: string
   summary: string

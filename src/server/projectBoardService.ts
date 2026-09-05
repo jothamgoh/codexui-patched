@@ -422,7 +422,7 @@ export class ProjectBoardService {
     if (this.activeProjectPaths.has(projectPath)) throw new Error('Another feature is running in this project. Let it finish before planning.')
     this.activeProjectPaths.add(projectPath)
     try {
-      const { snapshot: started, run } = await this.store.startBoardPlan(boardId, agent.id, readString(record.plan).slice(0, 20_000), record.sourceThreadId === undefined ? board.sourceThreadId : readString(record.sourceThreadId))
+      const { snapshot: started, run } = await this.store.startBoardPlan(boardId, agent.id, readString(record.plan).slice(0, 20_000), record.sourceThreadId === undefined ? board.sourceThreadId : readString(record.sourceThreadId), settings)
       if (generation !== this.processGeneration) {
         this.publish(await this.store.failRun(run.id, 'Codex app-server exited during planning start.', 'interrupted'))
         throw new Error('Codex app-server exited. Try planning again.')
@@ -586,7 +586,7 @@ export class ProjectBoardService {
     this.activeFeatureIds.add(feature.id)
     this.activeProjectPaths.add(projectPath)
     try {
-      const { snapshot: startedSnapshot, run } = await this.store.startRun(feature.id, lead.id, kind, projectBoardFeatureFingerprint(feature))
+      const { snapshot: startedSnapshot, run } = await this.store.startRun(feature.id, lead.id, kind, projectBoardFeatureFingerprint(feature), settings)
       if (generation !== this.processGeneration) {
         this.publish(await this.store.failRun(run.id, 'Codex app-server exited while this run was starting.', 'interrupted'))
         throw new Error('Codex app-server exited. Select Start to retry this feature.')

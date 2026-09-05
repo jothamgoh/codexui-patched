@@ -463,6 +463,8 @@ test('restart recovery interrupts active runs without claiming the work succeede
   const recoveredRun = recovered.runs.find((entry) => entry.id === run.id)
   assert.equal(recoveredRun.status, 'interrupted')
   assert.equal(recoveredRun.threadId, 'lead-thread-before-restart')
+  assert.equal(recoveredRun.requestedModel, undefined, 'Legacy runs do not infer settings from the current profile')
+  assert.equal(recoveredRun.requestedReasoningEffort, undefined)
   assert.match(recoveredRun.error, /restarted before this run finished/u)
   assert.equal(recovered.cards.find((card) => card.id === feature.id)?.status, 'blocked')
   assert.equal(recovered.cards.find((card) => card.id === task.id)?.status, 'blocked')

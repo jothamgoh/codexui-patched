@@ -1,86 +1,112 @@
 # Project Boards verification
 
-Revised 2026-09-05. Protect behavior with focused scenarios, not an exhaustive
-framework matrix. PROGRESS.md records which checks actually passed.
+Revised 2026-09-06. Protect real behavior with focused scenarios, not an
+exhaustive framework matrix. PROGRESS.md records what actually passed.
 
-## When to validate
+## Validation boundary
 
 Develop a coherent feature/fix group, then validate. Check earlier for dependent
-contracts, material risk, or a failure that needs isolation.
+contracts, material risk, or a failure that needs isolation. Do not repeat
+unchanged suites just because a small edit was made.
 
 | Command | Purpose |
 |---|---|
-| npm run test:project-boards | Focused store/service/model/notification diagnosis. |
+| npm run test:project-boards | Store/service/model/board-notification diagnosis. |
 | npm run check:project-boards | Full tests, production build, board browser flow. |
 | npm run test:e2e:project-boards | Browser-only rerun after a UI correction. |
-| node tests/chatReliability.e2e.mjs | Chat rendering/dictation stress and interaction checks. |
-| node tests/boardDictation.e2e.mjs | Isolated text-field speech insertion/retry/cancel/overflow checks. |
+| node tests/chatReliability.e2e.mjs | Chat rendering, live/persisted activity, dictation, and stress. |
+| node tests/requestUserInput.e2e.mjs | Native question choices, voice/free text, retry, replay, and resume. |
+| npm run test:e2e:question-preference | New-chat setting defaults, persistence, capability/policy gates. |
+| node tests/boardDictation.e2e.mjs | Field speech insertion, concurrent edits, retry/cancel, and overflow. |
 
-npm test already includes focused board tests and notification routing/delivery
-regressions. Do not repeat equivalent suites at an unchanged boundary.
+npm test includes the focused board, question, preference, and notification
+regressions. npm run test:native:question-preference is an optional isolated
+app-server check, separate from npm test; CODEXUI_CODEX_COMMAND can select its
+runtime. It uses a local fake model response with a real native request/reply.
 
-## Behavioral coverage
+## Keep fixtures isolated
 
-- Durable serialized mutations, input guards, capacity errors, and recovery.
-- Exact profile assignments, current prompts on resumed chats, active-thread/
-  turn ownership, dependencies, questions, and final verification ordering.
-- Plan first prevents implementation; project planning saves related cards
-  atomically/idempotently and preserves existing completed work.
-- Queues start only approved dependency-ready cards, pause for attention, reject
-  changed scope, and resist pause/start races. Restart clears continuation consent.
-- Available model/default resolution and rejection of unsupported explicit choices.
-- New task repair preserves handoff history and requires affected dependents to
-  be reopened before their prerequisites.
-- Meaningful board outcomes enter existing history/delivery once, suppress
-  generic Lead completion, and handle recovery ordering without replaying history.
-- Final-answer grouping, pagination, draft preservation, and dictation cancellation.
+The earlier bridge fixture used temporary CODEX_HOME but loaded real default
+push subscribers, causing external stopped-run alerts. CODEX_HOME now scopes
+notification storage too. Retain explicit defense in every bridge fixture:
 
-Use temporary state/project directories and fake execution/delivery for these
-tests. Never send real external notifications or touch production board state.
+- Use temporary project/state directories and an empty CODEXUI_ENV_FILE.
+- Set CODEXUI_WEB_PUSH_STATE_FILE inside that temporary directory; clear inherited
+  VAPID and all Telegram token/chat variables. Disable Telegram and use only a
+  local fixture public URL.
+- Assert zero push subscriptions and unavailable Telegram before browser actions.
+  Unit delivery tests use stubs; do not send external test notifications.
+- Intercept execution calls unless this is the explicitly bounded native probe.
+  Do not mutate production boards, preferences, or notification history.
+- Freeze source during smoke, or explicitly close the Vite watcher. A watch:null
+  override can be merged with the repository config and leave HMR active.
+- Stop the fixture and remove only its own temporary data and forwarding rules.
 
-## Browser verification
+## Meaningful scenarios
 
-The board smoke uses a disposable real bridge/store with synthetic state and
-intercepted native Start/Plan/Queue calls. It covers forms and errors, question
-links, profile prompts, dependencies/model settings, planning/write consent,
-chat-to-board source/prefill/retry, Activity navigation, routes, focus,
-light/dark dialogs, and contained mobile scrolling. A separate phone/touch
-context checks a fresh visit, readable toolbar controls, reachable cards,
-44px microphones, manual voice-field saving, and fixed dialog headers while
-forms scroll. Chromium is the default; CODEXUI_MOBILE_BROWSER=webkit opts into
-the Safari engine on a supported host. Neither is a physical-device test.
+- Serialized persistence, validation, capacity errors, and interruption recovery.
+- Exact profile/thread/turn ownership, dependencies, question provenance, and
+  final verification after the work it certifies. Updated built-ins must not
+  overwrite user-customized prompt copies.
+- Read-only Plan first; atomic/idempotent project-card creation; preserved prior
+  work; supported model/default resolution; repair with retained handoffs.
+- Selected dependency-ready queue work only. Exercise pause, replacement,
+  failure, process exit, changed scope, and turning continuation off while a
+  start awaits model metadata. A stale attempt cannot start or block new work.
+- Committed outcomes enter existing history once, suppress generic Lead alerts,
+  and recover interruptions without replaying old history or leaking fixtures.
+- Delayed history must not overwrite newer streamed text or remove a fresh final
+  answer. Keep turn-local final/separator order and relevant viewport coverage.
+- Question retries and bridge replays retain drafts and prevent duplicate replies;
+  secret answers remain masked. New-chat configuration must respect capability
+  and managed-policy constraints without claiming to reconfigure loaded chats.
 
-The separate isolated chat fixture renders 2,000 synthetic messages and verifies
-scrolling, limited rich-content mounting, selected-text dictation/retry, manual
-Add/Send, original-chat draft retention, and late microphone permission handling.
-It also exercises native subagent activity through the actual live SSE consumer,
-persisted rendering, lifecycle labels, and child navigation without JSON dumps.
-Browser heap numbers are illustrative, not total hardware memory measurements.
+## Browser and device evidence
 
-The field-dictation fixture tests caret insertion, simultaneous typed edits,
-retained audio retry, overflow review, cancellation, late permission responses,
-manual saving, and touch/dark layout. The integrated board flow additionally
-checks that microphone stop cannot create a plan or discard pending speech.
+The board smoke combines a disposable real bridge/store with synthetic state and
+intercepted execution. Cover the plan/chat entry, dependency/model controls,
+write/queue consent, draft failures, Activity links, Board/Needs You/Runs views,
+exact question/feature links, voice/manual save, themes, focus, and phone layout.
 
-Inspect screenshots under ignored output/project-boards,
-output/board-dictation, and output/chat-reliability. Behavioral assertions and visual review complement
-each other.
+Separate frontend fixtures exercise a 2,000-message conversation, live/persisted
+subagent activity, and native question request/reply. The field fixture checks
+caret insertion, typing during transcription, retained audio retry, overflow,
+cancellation, and delayed permission. Inspect representative screenshots under
+ignored output/project-boards/, output/chat-reliability/,
+output/request-user-input/, and output/board-dictation/.
 
-## Real native execution
+Chromium touch emulation is the normal automated phone check. A supported host
+can opt into CODEXUI_MOBILE_BROWSER=webkit; the current local engine crashes on
+a blank page, so this does not establish Safari compatibility.
 
-Keep a separate bounded disposable probe. Current evidence covers project plan →
-two related cards → read-only Plan first → same Lead chat implementation →
-automatic dependent execution using the first saved handoff, with native
-model/effort checked. Earlier evidence covers a real fresh verifier and profile
-edits on a resumed chat.
+Real Android testing follows the user's device automation instructions: trusted
+start/unlock, inspect before taps, no unnecessary Location changes, managed
+captures, and cleanup/sleep. A disposable local fixture is sufficient for forms.
+Current Pixel evidence includes actual mic permission/recording/upload, synthetic
+transcript insertion, phone-keyboard edits, manual Backlog save, question voice
+cancel, and Needs You/Runs navigation. Non-sensitive evidence is under ignored
+output/android-project-boards/. No audio is retained. This is not physical iPhone
+Safari or speech-recognition accuracy evidence.
 
-This read-only arithmetic probe does not prove production writing, arbitrary
-parallel writers, deeply nested trees, or real closed-browser notification
-delivery. The next practical dogfood is a small repository change and dependent
-feature with one review/fix. Record real friction and add only useful regressions.
+## Bounded real native execution
+
+Use a disposable project and isolated Codex state. Current evidence includes
+both a read-only arithmetic flow and two real parser/CLI writing flows, including
+one with copies of the current starter prompts. Each writing flow covered:
+
+1. Project planning into two dependent features and read-only feature Plan first.
+2. Same-chat implementation and a fresh native reviewer.
+3. A deliberately introduced parser defect, recorded repair, and fresh recheck.
+4. Automatic dependent CLI work using the saved parser contract; combined 8/8 tests.
+
+Record run outcomes, thread reuse, actual files/checks, and preserved handoffs.
+Stop native processes and remove temporary auth links. This proves a bounded
+write/review/repair workflow, not arbitrary concurrent writers, production
+release, or closed-browser notification delivery.
 
 ## Release
 
-Review diff/status, scan secrets, commit discrete work, push main, verify CI,
-and use the authorized local restart/health workflow. Passing simulated checks
-must never be described as evidence of a production action.
+Review diff/status, scan secrets, run the coherent final checks, commit discrete
+work, push main, verify CI, and follow the authorized machine-local restart/health
+workflow. Keep simulated, native disposable, physical-device, and production
+evidence distinct. A later material fix needs its affected checks again.

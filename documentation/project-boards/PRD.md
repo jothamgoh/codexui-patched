@@ -1,6 +1,6 @@
 # Project Boards requirements
 
-Scope revised: 2026-09-05. This document describes the small working release;
+Scope revised: 2026-09-06. This document describes the focused product scope;
 `PROGRESS.md` records what is implemented and verified.
 
 ## Purpose
@@ -44,8 +44,11 @@ Run selected features advances approved dependency-ready cards sequentially.
 It pauses for questions, failure, review, or changed approved scope. New cards
 do not join the selection automatically. Selection and continuation consent are
 session-scoped; after restart, review partial work and select remaining cards.
-Continue within features controls the existing bounded continuation behavior;
-it is distinct from selecting a cross-feature queue.
+Continue within features controls bounded continuation within a feature; it is
+distinct from selecting a cross-feature queue. Turning it off cancels pending
+continuations, including a start waiting on model metadata. A running turn may
+finish. Pausing or replacing a queue also prevents its old pending starts or
+failures from affecting replacement work.
 
 Features optionally override their Lead's model and reasoning effort. Defaults
 inherit the selected profile; available choices come from advertised runtime
@@ -147,6 +150,9 @@ Checkbox changes save immediately. Creating an agent enables it on the current
 board only. Search supports a growing roster. Users can edit a custom prompt or
 customize a starter into a named copy, see save feedback, and retain a draft after
 failed saves or closing the dialog. Switching profiles must not discard edits.
+Built-in prompts provide practical role guidance, bounded delegation, useful
+handoffs, proportional checks, and an explicit review/repair loop. Their text is
+maintained by the app; customized copies keep their saved instructions.
 On mobile, choosing Edit brings the editor into view. Assigned-agent access is
 locked with an explanation and a copy action; ordinary prompt edits remain easy.
 
@@ -175,9 +181,24 @@ for recording/transcription or retained retry/overflow text to be resolved;
 stopping speech never submits the form. Native text fields remain available
 for ordinary keyboard and OS dictation input.
 
-Squad-inspired overview counts emphasize attention and completion; cards show
-clear ownership and a short status line. Feature search helps larger boards.
-These are presentation improvements over the existing durable state.
+Squad-inspired Board/Needs You/Runs views share the existing durable state.
+Board shows the feature lanes; Needs You lists exact unanswered decisions plus
+blocked work and items awaiting review. Runs shows recent attempts, outcomes,
+requested settings, and links to the actual feature or chat when available.
+Counts represent the attention items in that view; run receipts do not pretend
+to be live specialist telemetry. Feature search helps larger boards.
+
+Ordinary chats also render native requestUserInput questions as clear cards,
+with described choices, recommendations, progress, optional free text/voice,
+explicit submission, preserved drafts, and retry. Secret answers are masked and
+have no microphone. These native replies and durable board questions remain
+separate from Codex approval requests.
+
+The browser-local Questions in new chats setting defaults on when the runtime
+advertises support and managed policy allows it. It controls optional structured
+questions outside Plan mode for new ordinary chats; it does not force the agent
+to ask a question or retrofit loaded chats. Unsupported runtimes receive no
+unknown override. PROGRESS.md records the setting's current verification state.
 
 The installed Codex desktop app supplies nearby interaction and theme patterns;
 it has no equivalent durable project board. The board is a deliberate CodexUI
@@ -188,6 +209,9 @@ extension. Ordinary chat navigation and native approval handling remain intact.
 A versioned JSON file at `$CODEX_HOME/codexui-project-boards.json` stores boards,
 typed cards, profiles, questions, comments, artifacts, and runs. Mutations are
 serialized and saved through a mode-600 temporary file and atomic rename.
+Default Web Push subscriber/history state and Telegram preferences also follow
+CODEX_HOME; an explicit push-state path remains supported. Development fixtures
+must isolate environment loading and delivery credentials as well as board data.
 Capacity limits reject writes instead of silently discarding durable work.
 Invalid JSON or an unsupported top-level state format must produce an error
 rather than an empty board.

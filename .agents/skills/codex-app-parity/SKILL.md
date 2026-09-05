@@ -5,6 +5,48 @@ description: "Use when implementing or changing user-visible behavior/UI in this
 
 # Codex App Parity Skill
 
+## Findings: Native questions, board views, and real Android (2026-09-06)
+
+- Native `item/tool/requestUserInput` supplies question IDs, described options,
+  free-text/Other and secret-answer flags; replies preserve its structured
+  answers shape. Keep question progress and explicit submission visible, mask
+  secret input, retain drafts for retries, and prevent duplicate replies when
+  the bridge replays a pending request. Board questions remain a separate durable
+  workflow; ordinary prose and approval requests are not question-card events.
+- The integrated desktop flag `default-mode-request-user-input-enabled` defaults
+  to true. Native app-server `0.153.1` was probed with the configuration key
+  `features.default_mode_request_user_input`: off rejected a Default-mode
+  question; on emitted a real request and resumed after its reply. Resuming an
+  already loaded off-chat with an on-override did not change that chat. Gate a
+  new-chat preference by advertised capability and managed policy; do not claim
+  a browser setting reconfigures existing chats. This is a web setting, not an
+  assertion that the native desktop app has the same toggle.
+- Squad-inspired Board/Needs You/Runs views are an intentional durable-board
+  extension. Reuse existing snapshot state, exact question/feature/chat identity,
+  theme tokens, and responsive dialogs. Status text needs adequate contrast in
+  both themes; switching a scrollable daily view should start at its list top.
+- Real Pixel 8a Chrome checks covered native microphone permission, recording,
+  upload, editable text insertion, phone-keyboard input, manual Backlog save,
+  exact question navigation, voice cancellation, and Runs→feature navigation.
+  Audio was real; transcription text was synthetic and audio was not retained.
+  This establishes device interaction, not speech accuracy or iPhone Safari.
+- Native writing probes with current starter prompt copies covered project plan,
+  feature Plan first, same-chat implementation, fresh QA, an injected defect,
+  retained repair handoffs, and dependent CLI work. These are bounded disposable
+  runs, not production release or proof of arbitrary nested writer trees.
+- Device/bridge fixtures must isolate notification subscribers, preferences,
+  environment loading, and credentials. CODEX_HOME previously isolated boards
+  without isolating default push state, which caused real test alerts. Defaults
+  now follow CODEX_HOME and browser fixtures assert zero subscribers. Keep
+  machine-specific automation paths outside the repository and follow the user's
+  device preparation/cleanup instructions. Close Vite's watcher explicitly if
+  config merging leaves HMR enabled; a reload can discard in-progress form drafts.
+- Heavy-content windowing does not prevent a delayed history response from
+  overwriting fresh streamed text. Treat live/history reconciliation as a separate
+  correctness boundary and regression-test it with reordered responses. Track
+  current fix status in Project Boards PROGRESS.md rather than assuming a narrow
+  viewport or a passing rendering fixture explains every missing final answer.
+
 ## Findings: Planning controls and long conversations (2026-09-05)
 
 - Phone board screenshots need a real touch/coarse-pointer context as well as

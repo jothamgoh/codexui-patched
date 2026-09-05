@@ -1,6 +1,6 @@
 # Project Boards implementation
 
-Scope revised: 2026-09-05. PROGRESS.md owns release status and actual evidence.
+Scope revised: 2026-09-06. PROGRESS.md owns release status and actual evidence.
 
 ## Architecture
 
@@ -13,10 +13,12 @@ Scope revised: 2026-09-05. PROGRESS.md owns release status and actual evidence.
 | server/codexAppServerBridge.ts | HTTP, bounded source-chat context, app-server events. |
 | server/turnNotificationRouter.ts | Board outcomes through existing durable notification sinks. |
 | api/projectBoards.ts and composables/useProjectBoards.ts | Browser requests, snapshots, live updates. |
-| components/content/ProjectBoardsHub.vue | Cards, dependencies, profiles, feature planning, queue controls. |
+| components/content/ProjectBoardsHub.vue and BoardDailyViews.vue | Cards, decisions, run receipts, profiles, planning, queue controls. |
 | components/content/BoardPlanDialog.vue | Chat/board plan entry with preserved retries. |
 | components/content/BoardExecutionSettings.vue | Inherited or explicit supported model/reasoning settings. |
 | components/content/DictationField.vue | Reusable speech insertion, retry, overflow review, and manual-save state. |
+| components/content/RequestUserInputCard.vue | Native question choices, drafts, manual replies, and retry. |
+| components/content/QuestionSettingControl.vue and composables/useQuestionPreference.ts | Capability/policy-gated browser preference for newly created ordinary chats. |
 | api/subAgentActivity.ts and components/content/SubAgentActivityCard.vue | Shared native activity normalization and child-chat presentation. |
 
 All paths are under src/. Reuse Vue/Reka, Express, native threads/turns, existing
@@ -35,13 +37,20 @@ database migration, generic policy layer, or LLM polling dispatcher.
    task repair, and an explicitly selected sequential queue.
 4. Notification integration: meaningful committed outcomes use existing Activity,
    Web Push, Telegram, preferences, and deduplication; interrupted runs notify once.
-5. Everyday usability: voice in board fields, readable subagent activity,
-   requested run settings, board overview/search, and phone/touch layouts.
+5. Everyday usability: voice fields, native question cards, readable subagent
+   activity, requested run settings, Board/Needs You/Runs views, and phone layouts.
+6. Follow-up hardening: queue identity and consent checked across async waits,
+   notification storage/fixtures isolated, and useful starter guidance with
+   preserved custom copies. Current remaining fixes are tracked in PROGRESS.md.
 
 Context reads are compact by default. New native chats expose lazy read_agent
 and read_card; legacy chats keep their existing tool schema and compatibility
 context. A completed planner save is idempotent within its run. Queue approval
 freezes selected card scope and is checked again atomically before execution.
+Pending continuation also checks its original queue and current consent after
+async waits; pause, replacement, failure, or disabling continuation must win.
+An active turn is allowed to finish. Starter profiles are app-maintained text;
+customized copies retain their own identity and saved instructions.
 
 ## Development and verification
 
@@ -52,7 +61,7 @@ failure needs isolation. Preserve unrelated changes and commit discrete tasks.
 At a release boundary:
 
 1. Run npm run check:project-boards (tests, type-check/build, board browser).
-2. Run node tests/chatReliability.e2e.mjs when chat behavior changed.
+2. Run the relevant chat/question/voice browser fixture when its behavior changed.
 3. Inspect representative light/dark/mobile screenshots.
 4. Review diff/status and run Gitleaks.
 5. Commit, push main, and verify GitHub Actions.
@@ -61,7 +70,9 @@ At a release boundary:
 
 Do not rerun all checks after every small edit. A relevant failure or correction
 justifies repeating the affected checks. Keep delivery stubs, synthetic browser
-stress, real read-only agent execution, and production writing evidence distinct.
+stress, disposable native write/review execution, physical-phone checks, and
+production release evidence distinct. Bridge fixtures must isolate notification
+state and environment loading, not just board data; see TEST_PLAN.md.
 
 ## Deliberate limits
 

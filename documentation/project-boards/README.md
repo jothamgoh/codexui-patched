@@ -9,7 +9,7 @@ next action. Then read only the relevant product or implementation details:
 - [UX_BACKLOG.md](../UX_BACKLOG.md): chat/board entry flows, delivered UX
   improvements, design references, and small follow-ups for dogfooding.
 
-The 2026-09-05 scope revision removes the speculative full-MVP framework and
+The focused scope removes the speculative full-MVP framework and
 exhaustive test checklist. Future ideas are options, not release requirements.
 
 ## Continuing development
@@ -39,4 +39,11 @@ state; it does not prove a real Lead/subagent session completed.
 Voice fields reuse Codex transcription. Tap a field's microphone, speak, stop,
 then review and save. Long-chat and voice browser checks are separate isolated
 fixtures; see TEST_PLAN.md. The board UI borrows Squad's clear ownership and
-attention hierarchy while retaining CodexUI themes and controls.
+attention hierarchy while retaining CodexUI themes and controls. Board shows
+features; Needs You collects decisions and review/blockers; Runs records attempts
+and links back to their work. Starter prompts can be customized into saved copies.
+
+Real disposable native writing/review/repair and real Android form checks are now
+recorded in PROGRESS.md. Physical iPhone Safari remains unverified. Before starting
+a bridge fixture, follow TEST_PLAN.md notification/environment isolation; an
+isolated board file alone is insufficient.

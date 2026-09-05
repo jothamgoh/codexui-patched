@@ -1,146 +1,135 @@
 # Project Boards progress
 
-Updated: 2026-09-05
+Updated: 2026-09-06
 
-Status: released. Source through 9523339 was pushed to main and
-[GitHub CI passed](https://github.com/jothamgoh/codexui-patched/actions/runs/33974933982).
-The authorized independent-Terminal restart completed. After reconnecting,
-the bridge and board/model APIs returned valid HTTP 200 responses, and public
-access still redirected to the authenticated gateway. The checkout is ready
-for real-work dogfooding.
+Status: follow-up implementation and verification are in progress. The previous
+release through 9523339 was deployed and its CI passed; the changes below are
+not yet a completed release. A newly reported stale-history/final-message
+regression still needs its fix and final checks.
+Final grouped validation, push/CI, restart, and health verification remain.
 
 ## Goal and decisions
 
-Make larger builds easy to steer from a chat or a board: plan the project,
-review feature cards, run useful work, see results, and answer focused questions.
-Keep native Codex execution and the existing UI framework. Validate coherent
-features, earlier only when dependencies or risk justify it.
+Make larger builds easy to steer from a chat or board: plan, review feature
+cards, run useful work, see results, and answer focused questions. Reuse native
+Codex execution and the existing Vue/Reka framework. Validate coherent features,
+earlier only when a dependency or material risk requires it.
 
-Any reusable agent can lead or delegate. The Lead chooses a fresh verifier when
-independent verification is requested; no mandatory QA selector or separate
-reviewer-launch service is needed. Dictation keeps manual Add and Send.
+Any reusable agent can lead or delegate; delegation is optional. The Lead chooses
+a fresh verifier for independent QA. There is no mandatory reviewer selector or
+separate reviewer-launch service. Voice input always keeps manual Save/Add/Send.
 Multi-account/provider execution remains separate future work.
 
-## Implemented in this cycle
+## Working capabilities
 
-- Chat final output uses native final-answer phase and stable turn grouping.
-  Work, the duration separator, final answer, and diff remain in their own turn.
-- Long chats unmount heavy offscreen content, bound markdown and inactive
-  history caches, and retain drafts/scroll state. Lightweight shells remain.
-- Dictation shows Recording, Transcribing, and Ready; retries preserve audio.
-  Pending transcription belongs to the original chat draft after switching.
-  Late microphone permission cannot start an invisible recording.
-- Features save optional model/reasoning overrides, defaulting to Lead settings.
-  Agent profiles also expose settings. The server validates advertised model
-  capabilities before a run; specialists retain their own profile settings.
-- Chat header → Turn this chat into a board opens a prefilled, editable plan.
-  Choose an existing project or open/create its folder. A retry reuses the
-  newly created board. The source chat remains linked.
-- Plan features starts a read-only coordinator chat that saves distinct cards
-  and dependencies. Saved project plans remain visible on the board.
-- Plan first saves a feature task plan without implementation; Start work
-  resumes that same Lead chat. Simple briefs can still use Plan & start.
-- Feature dependencies and compact prerequisite outcomes explain sequencing.
-  Completed task handoffs remain recorded when a Lead reopens work for repair.
-- Run selected features grants a specific, session-scoped queue authorization.
-  The service starts dependency-ready selected features sequentially and pauses
-  for questions, failures, review, or changed approved scope. Added cards do not
-  silently join the queue; restart requires selecting remaining work again.
-- Outcome/question notifications use existing Activity, Web Push, and Telegram
-  settings. Generic Lead-turn completion alerts are suppressed. Restart
-  interruptions appear once without replaying old history.
-- Prompt context uses bounded summaries and lazy profile/card reads. Queue
-  advancement is deterministic and event-driven, without polling an LLM.
-- Board forms now reuse Codex voice transcription for text fields, preserving
-  caret position and typed edits. Retry/overflow text stays reviewable; Save
-  waits until pending speech is resolved. Microphone stop never submits a form.
-- Squad's public demo informed clearer ownership, concise column explanations,
-  attention/completion counts, and feature search. Themes and dialogs remain
-  consistent with CodexUI.
-- Orca's guide and completion/question/receipt source reinforced the existing
-  orchestration design. Runs now retain requested model/reasoning settings.
-- Native subAgentActivity renders agent names, lifecycle status, and child-chat
-  links instead of Unsupported item. Newly created children can open before
-  they appear in the sidebar list.
-- Phone controls have comfortable touch targets, readable selectors, scrollable
-  forms, and a board layout that leaves cards reachable on short screens. The
-  sidebar starts closed on mobile instead of covering a fresh board visit.
+- Chat → editable project plan → read-only coordinator → distinct feature cards
+  and dependencies. Retry preserves the draft and reuses the newly created board.
+- Feature Plan first saves tasks without implementation. Start work resumes the
+  same Lead chat; Plan & start remains available for a clear brief.
+- Optional per-feature model/reasoning overrides inherit Lead settings. Agent
+  profiles expose their own settings; supported choices come from the runtime.
+- A selected, sequential delivery queue starts dependency-ready features and
+  pauses for questions, failure, review, or changed approved scope. Shared
+  groundwork has one prerequisite card and a compact saved handoff.
+- Task repair preserves previous handoffs, reopens affected work, and requires
+  fresh verification after changes. New chats support the repair tool schema.
+- Activity and existing Web Push/Telegram settings carry meaningful outcomes.
+  Generic Lead-turn completion is suppressed; interrupted runs remain visible.
+- Board text fields use Codex transcription, with caret insertion, preserved
+  typing, retry/cancel, reviewable overflow, and pending-speech save guards.
+- Heavy offscreen chat bodies unmount; markdown and inactive-history caches are
+  bounded. Native subagent activity has names, status, and child-chat links.
+- Board/Needs You/Runs views expose work, decisions, blockers/review, and run
+  receipts with exact feature/question/chat navigation. Phone forms and controls
+  remain usable with touch, keyboard, voice, and both themes.
 
-The underlying durable store, active-thread/turn guards, atomic completion and
-QA checks, canonical project lock, native approvals, and development SSE remain.
-No database, generic dispatcher framework, or provider layer was added.
+## Follow-up changes in this checkout
 
-## Validation evidence
+- Pending automatic continuation retains its originating queue identity. Pause,
+  replacement, failure, or app-server exit cannot authorize a late start or let
+  an old rejection block a replacement queue.
+- Turning off Continue within features revokes pending continuation consent,
+  including starts waiting on model metadata. An already active turn finishes;
+  an idle queue waiting to continue pauses. Restart still clears consent.
+- Starter Lead/Product/Design/Engineer/QA prompts now give practical role,
+  delegation, proportional verification, and repair guidance. Built-in text is
+  maintained by the app; user-customized copies retain their saved instructions.
+- Native chat questions now show option descriptions, recommendations, progress,
+  Other/free text, voice, explicit Submit, retry, and preserved drafts. Secret
+  answers stay masked and do not offer voice. Replies use the native request;
+  questions do not bypass approvals or turn ordinary prose into a form.
+- Tools → Settings → Questions in new chats is capability/managed-policy gated,
+  browser-local, and default on. It applies only when creating ordinary chats;
+  loaded chats retain native configuration. Unit/browser checks and a real
+  app-server request/reply probe passed.
+- Notification storage now respects CODEX_HOME. Browser fixtures also use an
+  empty explicit environment file, isolated push state, and no delivery
+  credentials, and assert zero subscribers before interactions.
 
-- Final grouped check: 196 tests passed, production type-check/frontend/CLI
-  build passed, and board browser flow passed.
-- Headless board browser flow passed: model/effort settings, dependency saving,
-  Plan first versus write consent, queue selection, chat plan prefill/source,
-  retry without duplicate boards, Activity outcome deep links, preserved
-  drafts, ordinary chats, light/dark surfaces, unlisted child-chat navigation,
-  integrated field dictation/manual save, and Chromium phone/touch emulation.
-- Separate headless chat browser passed: long history scrolling, transcription
-  retry, manual Add/Send, original-chat draft preservation, and late microphone
-  permission cancellation, plus native subagent events through the live SSE
-  consumer and persisted rendering. Screenshots are in ignored output directories.
-- Synthetic 2,000-message comparison: about 47,385 → 2,193 DOM nodes,
-  2,000 → 6 mounted rich message bodies, and about 97MB → 40MB Chromium heap.
-  These are illustrative browser measurements, not total device RAM results.
-- Real native app-server 0.153.1 probe passed all four runs: project planning →
-  feature Plan first → same-chat execution → automatic dependent execution.
-  Both related features finished; the second used the first's exact saved
-  handoff. Three thread starts and one resume; gpt-6-astra with low effort.
-  It used disposable read-only arithmetic work, not a production writing task.
-- Earlier composability probe used a real fresh native reviewer and confirmed
-  edited profile instructions on the same resumed Lead chat. It does not prove
-  arbitrary nested writer trees.
-- Notification delivery/recovery tests use stubs. No real external test message,
-  production board mutation, or global configuration change was made.
-- Final diff whitespace check and Gitleaks scan passed.
-- Isolated field-dictation browser passed caret insertion, concurrent edits,
-  retry/cancel, overflow review, delayed permission cancellation, and touch/dark
-  layout. Existing chat browser passed again after the shared cancellation fix.
-- The installed WebKit test engine crashes even on a blank page. Safari and a
-  physical phone are unverified; Chromium phone/touch checks are not a Safari pass.
-- After the final mobile CSS correction, the production build and integrated
-  browser check passed again. Screenshot review confirmed toolbar labels fit
-  and cards remain reachable. The browser opens a card with a touch action.
+## Correction: notification test isolation
 
-## Native comparison and references
+Earlier progress incorrectly stated that no real external test messages were
+sent. Disposable board fixtures isolated CODEX_HOME but loaded the real default
+Web Push subscribers; restart recovery produced real “Board run stopped” alerts
+with fixture-only links. The user reported these alerts. Production board data
+was not mutated. The fixture environment and notification storage defaults were
+corrected; subsequent phone/browser checks used verified zero-subscriber state.
+Do not erase real notification history as part of test cleanup.
 
-Inspected integrated Codex 26.901.31953 for final-answer phase, virtualized
-content shells, planning/implementation controls, advertised reasoning levels,
-theme tokens, and focus restoration. These patterns are recorded in the local
-parity skill. Durable boards remain an intentional CodexUI extension.
+## Evidence and its limits
 
-Official Hermes, OpenClaw, Squad, LangGraph, and Orca references and adopted choices
-are in PRD.md and ../UX_BACKLOG.md. They informed the workflow; their maturity is
-not evidence that this implementation has identical capabilities.
+- Focused queue/continuation, storage-isolation, starter-prompt, and question
+  regressions passed. The Board/Needs You/Runs browser check and type-check
+  passed; final integrated validation after outstanding fixes is still due.
+- Two disposable real-write native probes passed with gpt-6-astra/low, including
+  the new built-in prompt copies. Each planned two dependent features, used
+  read-only Plan first, wrote a parser and CLI, and finished four native runs.
+  Fresh QA found an injected uppercase-X/trimming defect; the Lead preserved two
+  repair records, fixed it, and obtained a new review. Each probe passed the
+  combined parser/CLI tests 8/8. The second recorded three starts, one resume,
+  and 26 native agent events. Processes stopped and temporary auth links were removed. This is real
+  disposable writing/review evidence, not a production deployment.
+- Earlier native arithmetic evidence also passed project planning → feature
+  planning → same-chat execution → dependent execution using the saved handoff.
+- Real Pixel 8a Chrome passed microphone permission/recording/upload, insertion
+  into a feature title, phone-keyboard editing, manual save to Backlog, exact
+  Needs You question navigation, question voice cancellation, and Runs→feature
+  navigation. Audio was real and discarded in memory; transcription text was a
+  synthetic fixture response. Test tab, forwarding, temporary boards, and managed
+  captures were cleaned up; the display was put to sleep.
+- Representative non-sensitive Android evidence is under ignored
+  output/android-project-boards/. Other browser evidence is under
+  output/project-boards/, output/request-user-input/, output/board-dictation/,
+  and output/chat-reliability/. Inspect assertions and screenshots together.
+- Synthetic 2,000-message checks reduced roughly 47,385→2,193 DOM nodes,
+  2,000→6 mounted rich bodies, and 97→40MB Chromium heap. This is illustrative
+  browser memory, not total device RAM. The user's latest stale-message report
+  found a separate delayed-history overwrite race; its fix is under validation.
+- The local WebKit engine crashes even on a blank page. Physical iPhone Safari
+  remains unverified; Android and Chromium emulation are not a Safari pass.
 
-## Limits that matter
+## Boundaries to retain
 
-- One orchestrated feature per canonical project directory. Ordinary chats and
-  external editors are outside that lock; related writers must be coordinated.
-- Active chats retain fetched raw history until switching; the bridge still
-  reads the full app-server transcript before paging it to the browser.
-- Queues and continuation consent do not survive service restart. Interrupted
-  work is blocked for deliberate retry; there is no automatic side-effect replay.
-- Existing native chats retain their original dynamic-tool schema. Legacy
-  repair uses the documented manual/replan path; new chats support task reopen.
-- Independent verification is Lead-driven. The server checks recorded task
-  ordering/completion, not that a separate reviewer chat actually ran.
-- Project-planning clarification currently stops with an explanation; edit the
-  plan and retry. Feature questions use Needs You.
-- Closed-browser delivery requires configured Web Push or Telegram and a running
-  server. Reminder policies, parallel worktrees, rich specialist telemetry,
-  automatic batch QA, immutable profiles, and provider/account rotation are deferred.
+One orchestrated feature runs per canonical project directory; ordinary chats
+and external editors are outside that lock. Queues/consent do not survive
+restart. Legacy chats retain their original dynamic-tool schema. Independent QA
+is Lead-driven: the server checks recorded ordering/completion, not independent
+proof that a reviewer chat ran. Active chats retain fetched raw history, and the
+bridge still reads the full native transcript before browser paging.
 
-## Exact next step
+Project-planning clarification stops with an explanation and retry; durable
+feature questions use Needs You. Closed-browser delivery requires configured
+Web Push/Telegram and a running server. No database, second runtime, generic
+workflow engine, LLM polling, automatic batch QA, or provider rotation was added.
+References and adopted choices remain in PRD.md and ../UX_BACKLOG.md.
 
-1. Refresh the UI on the user's phone. Start with a chat plan or Plan features,
-   dictate the brief, review the cards, and select a small real build with shared
-   groundwork and one dependent feature, including a review/fix.
-2. Record actual friction before expanding the framework. Preserve the read-only
-   scope of automated native evidence; production writing was not tested.
-3. Check Safari on a working WebKit host or physical phone. Its current test-engine
-   crash is an environment limitation, not a passed compatibility check.
+## Exact next steps
+
+1. Finish the delayed-history/final-message regression fix and its targeted
+   replay/viewport check. The new-chat question setting checks have passed.
+2. Run one final coherent validation boundary, review screenshots/diff/status,
+   and scan secrets. Update this file with actual results, not planned claims.
+3. Commit discrete changes, push main, verify CI, then use the authorized
+   machine-local independent-Terminal restart and verify health after reconnecting.
+4. Dogfood a real user project and check physical iPhone Safari when available.
+   Add only regressions that explain observed friction; do not expand the framework.

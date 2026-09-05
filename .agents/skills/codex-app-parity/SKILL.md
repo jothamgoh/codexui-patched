@@ -887,3 +887,20 @@ After each feature implementation session that uses this skill:
 - The installed Codex renderer exposes three configurable send-shortcut modes in `general-settings-*.js`: `enter`, `cmdIfMultiline`, and `cmdAlways`. Its settings copy explicitly distinguishes sending from inserting a newline.
 - CodexUI's mobile web composer uses a native multiline `textarea`, so leaving Enter unhandled inserts a newline across mobile keyboards without custom key synthesis.
 - For a strict send-button-only interaction requested by the user, prevent native form submission without calling the submit handler, keep submission on the visible Send button's click handler, and retain Enter/Tab only for committing an open mention-picker selection. This intentionally goes beyond Codex.app's `cmdAlways` mode by disabling modifier-key submission too.
+
+## Findings: Project Boards and Agent Orchestration (2026-09-05)
+
+- The installed ChatGPT/Codex renderer (`26.803.41515`) has project navigation, task side panels, agent activity, and attention states, but no project-level Kanban or durable cross-chat feature board. CodexUI Project Boards are therefore an intentional product extension, not an exact missing-app parity port.
+- The closest native runtime language maps active work to Working; user input or approval to Needs input/Waiting; errors to Blocked/Failed; unread completion to Ready/Review; and terminal work to Done. A five-lane board can group the durable `needs_input` and `blocked` states under Needs You while retaining distinct card labels and data.
+- Native subagent activity groups Active and Done agents and labels individual agents Working or Waiting. CodexUI should keep its board task graph durable and deterministic, then use those native activity concepts only for live run presentation; a completed turn or idle child thread is not proof that a task is done.
+- The native task/review surface docks on the right at wide desktop widths and becomes a modal/full-screen surface when space is constrained. CodexUI follows that responsive pattern for feature detail while leaving the ordinary chat composer and thread routes unchanged.
+- The native app has no comparable touch Kanban interaction. CodexUI must provide explicit status selects as the accessible/mobile equivalent to drag-and-drop, keep horizontal scrolling contained within the lane area, and preserve the global header and notification center across board and chat routes.
+
+## Findings: Project Board Theme and Focus Corrections (2026-09-05)
+
+- Rechecked the extracted integrated app version `26.901.31953`. The `app-initial-*.css` renderer stylesheet uses theme surface tokens; `projects-index-page-*` and `toggle-thread-summary-panel-*` include focus restoration patterns.
+- `app-primary-*` and `avatar-overlay-*` distinguish Working, Needs input, Ready, and Blocked. A durable board remains a CodexUI extension; use those nearby patterns without deriving completion from transient native activity.
+- Match the existing local `WorkspaceReviewPanel.vue` Reka pattern: a non-modal docked detail on wide pointer-driven screens, a modal detail at narrow widths, and focus restoration on close. Use surface/text tokens for portaled content as well as in-page cards.
+- Keep browser smoke evidence in ignored `output/project-boards/`. Pre-seeded browser state and fake service orchestration are complementary checks, not proof of a real Codex Lead/subagent session.
+
+- CodexUI's Vite bridge mounts HTTP/SSE but has no production WebSocket upgrade handler. Use the existing SSE transport in development, start notification listening before chat hydration, and freeze source edits during browser smoke: Vite full reloads intentionally discard component form drafts.

@@ -76,6 +76,7 @@ The SPA uses hash routing so it works behind a simple static/reverse-proxy setup
 | `#/thread/:threadId` | Conversation |
 | `#/skills` | Skills Hub |
 | `#/scheduled` | Scheduled tasks |
+| `#/boards` / `#/board/:boardId` | Project boards and feature details |
 | `#/mcps` | MCP Hub |
 | `#/plugins` | Plugins Hub |
 
@@ -88,6 +89,8 @@ The browser uses `/codex-api/*`. Important interfaces include:
 - `GET /codex-api/events` for the SSE fallback.
 - `/codex-api/server-requests/*` for approval requests.
 - `/codex-api/automations/*` for scheduled-task state and execution.
+- `/codex-api/project-boards` and `/codex-api/project-board-*` for durable
+  features, Lead execution, and questions.
 - `/codex-api/push/*` and `/codex-api/telegram/config` for notifications.
 - Project, title, thread-pagination, upload, and file-search helper endpoints.
 
@@ -103,6 +106,16 @@ configuration. Browser-only preferences such as theme, sidebar state, project
 ordering, read markers, scroll position, and model choices use `localStorage`.
 Unsent composer drafts use an in-memory Pinia store keyed by chat, so they
 survive chat switching but intentionally disappear on page refresh.
+
+Project Boards use a serialized, versioned per-user JSON store and the native
+Codex Lead thread for execution. The board owns task/dependency/completion truth;
+thread idleness does not imply completion. See the current
+[board scope and progress](documentation/project-boards/README.md).
+
+Vite development uses the existing SSE notification endpoint. The production
+server provides the WebSocket upgrade endpoint. Shared notification listening
+starts before chat hydration so a slow initial chat load does not block board
+updates.
 
 Runtime credentials and machine-specific settings do not belong in this
 repository. A deployment should load a mode-`600` file outside the checkout,
@@ -131,6 +144,10 @@ npm run build
 
 `npm run build` type-checks and builds the frontend, then builds the production
 CLI. The resulting service runs from `dist/` and `dist-cli/`.
+
+For the integrated Project Boards feature, `npm run check:project-boards` runs
+the full suite, build, and one disposable browser smoke. Validate coherent
+feature groups rather than repeating that sequence after every small edit.
 
 When changing the Codex protocol bridge, consult
 [`documentation/APP_SERVER_DOCUMENTATION.md`](documentation/APP_SERVER_DOCUMENTATION.md)

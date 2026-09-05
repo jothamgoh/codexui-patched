@@ -42,6 +42,10 @@ of your computer to this repository.
   your phone.
 - **Work across projects.** Choose a folder, keep chats grouped by project, pin
   important threads, and search old conversations.
+- **Coordinate larger builds.** Use a persistent project board, reusable agent
+  roles, task handoffs, flexible QA, and Needs You questions while keeping each
+  feature connected to a normal Codex chat. See the [Project Boards product
+  specification](documentation/project-boards/README.md).
 - **Show the work as it happens.** Follow plans, tool calls, terminal commands,
   file changes, approvals, and results in real time.
 - **Handle long conversations.** Older messages load as you scroll without

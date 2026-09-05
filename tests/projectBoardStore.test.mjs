@@ -72,6 +72,27 @@ function planTask(overrides) {
   }
 }
 
+test('refreshes maintained starter prompts on reload without replacing custom instructions', async (t) => {
+  const fixture = await createFixture(t)
+  const { board } = await createBoardAndFeature(fixture.store)
+  const snapshot = await fixture.store.createAgent({
+    boardId: board.id,
+    name: 'My product lead',
+    instructions: 'Keep my saved product decisions and personal workflow.',
+    model: 'my-model',
+    reasoningEffort: 'low',
+  })
+  const custom = snapshot.agents.find((agent) => agent.name === 'My product lead')
+  const currentLead = snapshot.agents.find((agent) => agent.id === 'builtin-lead')
+  const saved = JSON.parse(await readFile(fixture.stateFilePath, 'utf8'))
+  saved.agents.find((agent) => agent.id === 'builtin-lead').instructions = 'Outdated starter instructions.'
+  await writeFile(fixture.stateFilePath, JSON.stringify(saved))
+  const reloaded = await fixture.reopen().read()
+  assert.equal(reloaded.agents.find((agent) => agent.id === 'builtin-lead').instructions, currentLead.instructions)
+  assert.deepEqual(reloaded.agents.find((agent) => agent.id === custom.id), custom)
+  assert.equal(reloaded.cards.length, snapshot.cards.length)
+})
+
 test('persists one default and optional additional boards with custom agent rosters', async (t) => {
   const fixture = await createFixture(t)
   let snapshot = await fixture.store.ensureDefaultBoard({

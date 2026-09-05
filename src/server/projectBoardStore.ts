@@ -1147,7 +1147,7 @@ export class ProjectBoardStore {
     })
   }
 
-  startRun(cardId: string, agentId: string, kind: ProjectBoardRunKind, expectedFingerprint?: string, settings?: { model: string; reasoningEffort: ReasoningEffort }): Promise<{ snapshot: ProjectBoardSnapshot; run: ProjectBoardRun }> {
+  startRun(cardId: string, agentId: string, kind: ProjectBoardRunKind, expectedFingerprint?: string, settings?: { model: string; reasoningEffort: ReasoningEffort }, reopen = false): Promise<{ snapshot: ProjectBoardSnapshot; run: ProjectBoardRun }> {
     let createdRun!: ProjectBoardRun
     return this.mutate((current) => {
       const card = current.cards.find((entry) => entry.id === cardId)
@@ -1155,7 +1155,11 @@ export class ProjectBoardStore {
       if (expectedFingerprint !== undefined && projectBoardFeatureFingerprint(card) !== expectedFingerprint) throw new Error('The feature changed while starting. Review its settings and start again.')
       if (card.type !== 'feature') throw new Error('Only features can start a Lead run; QA batches are not executable yet.')
       assertManualEdit(current, card)
-      if (card.status === 'done') throw new Error('This feature is already done. Reopen it or create a follow-up feature.')
+      if (card.status === 'done') {
+        if (!reopen) throw new Error('This feature is already done. Choose Reopen feature to send a follow-up.')
+        const dependent = current.cards.find((entry) => entry.dependencyIds.includes(card.id) && ['working', 'done', 'review'].includes(entry.status))
+        if (dependent) throw new Error(`Reopen dependent card "${dependent.title}" first.`)
+      }
       if (kind === 'plan' && current.cards.some((entry) => entry.parentCardId === cardId && (entry.status === 'working' || entry.status === 'done'))) {
         throw new Error('This feature already has execution history. Continue its existing plan or reopen a task for repair.')
       }

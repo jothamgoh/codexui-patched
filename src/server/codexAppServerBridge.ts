@@ -1922,6 +1922,12 @@ export function createCodexBridgeMiddleware(): CodexBridgeMiddleware {
         return
       }
 
+      const boardMessageMatch = url.pathname.match(/^\/codex-api\/project-board-threads\/([^/]+)\/messages$/u)
+      if (req.method === 'POST' && boardMessageMatch) {
+        setJson(res, 202, { data: await projectBoardService.sendChatMessage(decodeURIComponent(boardMessageMatch[1]), await readJsonBody(req)) })
+        return
+      }
+
       const boardPlanMatch = url.pathname.match(/^\/codex-api\/project-boards\/([^/]+)\/plan$/u)
       if (req.method === 'POST' && boardPlanMatch) {
         const input = asRecord(await readJsonBody(req)) ?? {}

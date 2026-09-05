@@ -39,6 +39,33 @@ type ActiveFeatureRun = {
   settings: { model: string; reasoningEffort: ReasoningEffort }
   sourceContext: string
   finishing: boolean
+  message?: ManagedBoardMessage
+}
+
+type ManagedBoardMessage = {
+  input: Array<Record<string, unknown>>
+  clientUserMessageId: string
+  attachments?: unknown[]
+  reopenAndSend: boolean
+}
+
+function readManagedBoardMessage(value: Record<string, unknown>): ManagedBoardMessage {
+  const input = Array.isArray(value.input) ? value.input.map(asRecord) : []
+  if (!input.length || input.some((item) => !item || !['text', 'image', 'localImage', 'audio', 'localAudio', 'skill', 'mention'].includes(readString(item.type)))) {
+    throw new Error('A chat message with supported text or attachments is required.')
+  }
+  const valid = input.every((item) => {
+    if (item!.type === 'text') return typeof item!.text === 'string'
+    if (item!.type === 'image' || item!.type === 'audio') return Boolean(readString(item!.url))
+    return Boolean(readString(item!.path))
+  })
+  if (!valid || !input.some((item) => item!.type !== 'text' || readString(item!.text))) throw new Error('The chat message is empty or invalid.')
+  return {
+    input: input as Array<Record<string, unknown>>,
+    clientUserMessageId: readString(value.clientUserMessageId) || randomUUID(),
+    ...(Array.isArray(value.attachments) ? { attachments: value.attachments } : {}),
+    reopenAndSend: value.reopenAndSend === true,
+  }
 }
 
 const MAX_AUTO_CONTINUATIONS = 3
@@ -165,6 +192,7 @@ function buildFeaturePrompt(
       ? 'Continue orchestrating this feature from its durable board state.'
       : 'Plan and carry out this feature using the durable project board.',
     `Feature: ${feature.title}`,
+    feature.sourceThreadId ? `Source conversation: thread://${feature.sourceThreadId}. This feature continues the request from that chat; use its supplied brief and context, preserving the source link.` : '',
     feature.description ? `Brief:\n${feature.description}` : '',
     feature.acceptanceCriteria ? `Acceptance criteria:\n${feature.acceptanceCriteria}` : '',
     `Verification policy: ${feature.verificationPolicy}`,
@@ -232,7 +260,7 @@ export const PROJECT_BOARD_DYNAMIC_TOOL_SPEC = {
       features: {
         type: 'array', minItems: 1, maxItems: 30, items: {
           type: 'object', additionalProperties: false,
-          required: ['key', 'title', 'description', 'acceptanceCriteria', 'agentId', 'verificationPolicy', 'dependsOn'],
+          required: ['key', 'description', 'acceptanceCriteria', 'agentId', 'verificationPolicy', 'dependsOn'],
           properties: {
             key: { type: 'string' }, title: { type: 'string' }, description: { type: 'string' }, acceptanceCriteria: { type: 'string' },
             agentId: { type: 'string' }, verificationPolicy: { type: 'string', enum: ['none', 'self', 'independent', 'batch'] },
@@ -378,7 +406,13 @@ export class ProjectBoardService {
   }
 
   async updateCard(id: string, changes: unknown): Promise<ProjectBoardSnapshot> {
-    return this.publish(await this.store.updateCard(id, changes))
+    const snapshot = this.publish(await this.store.updateCard(id, changes))
+    const feature = snapshot.cards.find((card) => card.id === id && card.type === 'feature')
+    if (feature?.threadId && Object.prototype.hasOwnProperty.call(asRecord(changes) ?? {}, 'title')) {
+      // The durable title is authoritative even if the native chat is unavailable.
+      await this.appServer.rpc('thread/name/set', { threadId: feature.threadId, name: feature.title }).catch(() => undefined)
+    }
+    return snapshot
   }
 
   async deleteCard(id: string): Promise<ProjectBoardSnapshot> {
@@ -413,7 +447,31 @@ export class ProjectBoardService {
     return this.startFeatureRun(featureId, false, record.allowWorkspaceWrite === true, record.mode === 'plan' ? 'plan' : 'execute')
   }
 
-  async startBoardPlan(boardId: string, input: unknown, sourceContext = ''): Promise<ProjectBoardSnapshot> {
+  async sendChatMessage(threadId: string, value: unknown): Promise<ProjectBoardSnapshot> {
+    const record = asRecord(value) ?? {}
+    if (record.mode !== undefined && record.mode !== 'plan' && record.mode !== 'execute') throw new Error('Unknown feature start mode.')
+    const message = readManagedBoardMessage(record)
+    const snapshot = await this.store.read()
+    const feature = snapshot.cards.find((card) => card.type === 'feature' && card.threadId === threadId)
+    const board = snapshot.boards.find((entry) => feature ? entry.id === feature.boardId : entry.planningThreadId === threadId)
+    if (!threadId || !board) throw new Error('This chat is not a project-board Lead chat.')
+    const active = [...this.activeRunsById.values()].find((run) => run.threadId === threadId)
+    const expectedTurnId = readString(record.expectedTurnId)
+    if (active) {
+      if (active.finishing || !active.turnId || expectedTurnId !== active.turnId) throw new Error('The Lead turn changed or is still starting. Wait for its current status, then send again.')
+      await this.appServer.rpc('turn/steer', {
+        threadId, expectedTurnId, input: message.input, clientUserMessageId: message.clientUserMessageId,
+      })
+      return this.read()
+    }
+    if (expectedTurnId) throw new Error('That Lead turn has ended. Send again to start a new tracked run.')
+    if (!feature) {
+      return this.startBoardPlan(board.id, { plan: board.plan, coordinatorAgentId: board.coordinatorAgentId }, '', message)
+    }
+    return this.startFeatureRun(feature.id, false, record.allowWorkspaceWrite === true, record.mode === 'plan' ? 'plan' : 'execute', undefined, message)
+  }
+
+  async startBoardPlan(boardId: string, input: unknown, sourceContext = '', message?: ManagedBoardMessage): Promise<ProjectBoardSnapshot> {
     const record = asRecord(input) ?? {}
     const generation = this.processGeneration
     const snapshot = await this.store.read()
@@ -439,7 +497,7 @@ export class ProjectBoardService {
       }
       const context: ActiveFeatureRun = {
         runId: run.id, featureId: '', boardId, projectPath, threadId: '', turnId: '', responseText: '', error: '',
-        workspaceWrite: false, kind: 'board_plan', settings, sourceContext: sourceContext.slice(0, 20_000), finishing: false,
+        workspaceWrite: false, kind: 'board_plan', settings, sourceContext: sourceContext.slice(0, 20_000), finishing: false, message,
       }
       this.activeRunsById.set(run.id, context)
       this.publish(started)
@@ -558,7 +616,7 @@ export class ProjectBoardService {
     } finally { this.queuePumping.delete(boardId) }
   }
 
-  private async startFeatureRun(featureId: string, continuation: boolean, allowWorkspaceWrite: boolean, kind: 'plan' | 'execute' = 'execute', queue?: ProjectBoardQueue): Promise<ProjectBoardSnapshot> {
+  private async startFeatureRun(featureId: string, continuation: boolean, allowWorkspaceWrite: boolean, kind: 'plan' | 'execute' = 'execute', queue?: ProjectBoardQueue, message?: ManagedBoardMessage): Promise<ProjectBoardSnapshot> {
     const generation = this.processGeneration
     const snapshot = await this.store.read()
     const feature = snapshot.cards.find((card) => card.id === featureId)
@@ -600,7 +658,7 @@ export class ProjectBoardService {
     this.activeFeatureIds.add(feature.id)
     this.activeProjectPaths.add(projectPath)
     try {
-      const { snapshot: startedSnapshot, run } = await this.store.startRun(feature.id, lead.id, kind, projectBoardFeatureFingerprint(feature), settings)
+      const { snapshot: startedSnapshot, run } = await this.store.startRun(feature.id, lead.id, kind, projectBoardFeatureFingerprint(feature), settings, message?.reopenAndSend)
       if (generation !== this.processGeneration) {
         this.publish(await this.store.failRun(run.id, 'Codex app-server exited while this run was starting.', 'interrupted'))
         throw new Error('Codex app-server exited. Select Start to retry this feature.')
@@ -618,7 +676,7 @@ export class ProjectBoardService {
         responseText: '',
         error: '',
         workspaceWrite, kind, settings, sourceContext: '',
-        finishing: false,
+        finishing: false, message,
       }
       this.activeRunsById.set(run.id, context)
       this.publish(startedSnapshot)
@@ -832,13 +890,20 @@ export class ProjectBoardService {
       const currentFeature = snapshot.cards.find((card) => card.id === feature?.id) ?? feature
       const startedTurn = await this.appServer.rpc('turn/start', {
         threadId,
-        clientUserMessageId: randomUUID(),
-        input: [{ type: 'text', text: context.kind === 'board_plan' ? this.buildBoardPlanPrompt(snapshot, board, lead, context.sourceContext) : buildFeaturePrompt(snapshot, board, currentFeature!, continuation, context.kind === 'plan') }],
+        clientUserMessageId: context.message?.clientUserMessageId || randomUUID(),
+        input: context.message?.input ?? [{ type: 'text', text: context.kind === 'board_plan' ? this.buildBoardPlanPrompt(snapshot, board, lead, context.sourceContext) : buildFeaturePrompt(snapshot, board, currentFeature!, continuation, context.kind === 'plan') }],
+        ...(context.message?.attachments ? { attachments: context.message.attachments } : {}),
         // Loaded threads can ignore resume overrides. Application context is a
         // per-turn developer message and preserves the native collaboration mode.
         // Keep long profile instructions in the full durable context: native
         // additional-context fragments are capped at 1,000 tokens each.
         additionalContext: {
+          ...(context.message ? {
+            codexui_project_board_reply: {
+              kind: 'application',
+              value: `The user is replying in this same tracked ${context.kind === 'board_plan' ? 'planning' : 'feature'} chat. Read project_board_update read_context before acting${currentTools ? ` and read_agent for your current profile ${lead.id}` : ` and use the current profile ${lead.id} from that context`}. Preserve the existing plan, completed work, and handoffs; apply the user's new request to this workflow. ${context.kind === 'board_plan' ? 'Keep planning read-only. Save only genuinely new feature cards, avoiding duplicates; never execute work.' : 'If completed tasks need changes, reopen the affected work and dependent verification in the required order with a reason, then verify the repair. Do not treat an old completed handoff as proof that this new request is done.'}`,
+            },
+          } : {}),
           codexui_project_board_coordinator: {
             kind: 'application',
             value: context.kind === 'board_plan' ? `You coordinate project planning with profile ${lead.id}. This turn is planning only, read-only. Use save_features to propose top-level feature cards once, then stop. Never implement or start feature tasks. This overrides earlier execution instructions in this chat.` : context.kind === 'plan' ? `${buildCoordinatorInstructions(lead, currentTools)}\nPLANNING ONLY: inspect read-only, save tasks, then stop. Do not execute tasks or request elevated write permissions.` : buildCoordinatorInstructions(lead, currentTools),

@@ -44,6 +44,16 @@ export type ProjectBoardPlanInput = {
   reasoningEffort?: ReasoningEffort | ''
 }
 
+export type ProjectBoardChatMessageInput = {
+  input: Array<Record<string, unknown>>
+  clientUserMessageId?: string
+  expectedTurnId?: string
+  attachments?: unknown[]
+  mode?: 'plan' | 'execute'
+  allowWorkspaceWrite?: boolean
+  reopenAndSend?: boolean
+}
+
 export type ProjectBoardCommentInput = {
   text: string
   author?: string
@@ -223,6 +233,10 @@ export function startProjectBoardFeature(featureId: string, allowWorkspaceWrite 
 
 export function planProjectBoard(boardId: string, input: ProjectBoardPlanInput): Promise<ProjectBoardSnapshot> {
   return requestProjectBoardSnapshot(projectBoardPath(`project-boards/${encodeURIComponent(boardId)}/plan`), jsonRequest('POST', input))
+}
+
+export function sendProjectBoardChatMessage(threadId: string, input: ProjectBoardChatMessageInput): Promise<ProjectBoardSnapshot> {
+  return requestProjectBoardSnapshot(projectBoardPath(`project-board-threads/${encodeURIComponent(threadId)}/messages`), jsonRequest('POST', input))
 }
 
 export function startProjectBoardQueue(boardId: string, featureIds: string[], allowWorkspaceWrite: boolean): Promise<ProjectBoardSnapshot> {

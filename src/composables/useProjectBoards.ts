@@ -12,6 +12,7 @@ import {
   getProjectBoards,
   isProjectBoardSnapshot,
   startProjectBoardFeature,
+  sendProjectBoardChatMessage,
   planProjectBoard,
   startProjectBoardQueue,
   stopProjectBoardQueue,
@@ -24,6 +25,7 @@ import {
   type ProjectBoardQuestionAnswerInput,
   type ProjectBoardUpdateInput,
   type ProjectBoardPlanInput,
+  type ProjectBoardChatMessageInput,
 } from '../api/projectBoards'
 import { subscribeInPageRpcNotifications } from '../api/codexRpcClient'
 import { isWebPushLocallyEnabled } from './useWebPushNotifications'
@@ -218,6 +220,8 @@ export function useProjectBoards(options: UseProjectBoardsOptions = {}) {
       mutate(() => answerProjectBoardQuestion(questionId, input)),
     startFeature: (featureId: string, allowWorkspaceWrite = false, mode: 'plan' | 'execute' = 'execute') =>
       mutate(() => startProjectBoardFeature(featureId, allowWorkspaceWrite, mode)),
+    sendChatMessage: (threadId: string, input: ProjectBoardChatMessageInput) =>
+      mutate(() => sendProjectBoardChatMessage(threadId, input)),
     planBoard: (boardId: string, input: ProjectBoardPlanInput) =>
       mutate(() => planProjectBoard(boardId, input)),
     startQueue: (boardId: string, featureIds: string[], allowWorkspaceWrite: boolean) =>

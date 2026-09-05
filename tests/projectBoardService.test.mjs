@@ -18,7 +18,8 @@ async function compileTypeScriptModule(sourcePath, replacements = []) {
 }
 
 const storeSourceUrl = new URL('../src/server/projectBoardStore.ts', import.meta.url)
-const storeModuleUrl = await compileTypeScriptModule(storeSourceUrl)
+const titleModuleUrl = await compileTypeScriptModule(new URL('../src/lib/projectBoardTitle.ts', import.meta.url))
+const storeModuleUrl = await compileTypeScriptModule(storeSourceUrl, [["from '../lib/projectBoardTitle'", `from '${titleModuleUrl}'`]])
 const { ProjectBoardStore } = await import(storeModuleUrl)
 const serviceSourceUrl = new URL('../src/server/projectBoardService.ts', import.meta.url)
 const serviceModuleUrl = await compileTypeScriptModule(serviceSourceUrl, [
@@ -103,6 +104,98 @@ function toolCall(threadId, action, fields = {}) {
     arguments: { action, ...fields },
   }
 }
+
+test('managed replies steer the exact Lead turn and preserve native input without falling back', async (t) => {
+  const { appServer, feature, service, store } = await createHarness(t)
+  await service.startFeature(feature.id, { allowWorkspaceWrite: true })
+  await waitFor(() => appServer.calls.find((call) => call.method === 'turn/start'), 'No feature turn')
+  const input = [
+    { type: 'text', text: 'Please check this screenshot and the selected response.', text_elements: [] },
+    { type: 'image', url: 'data:image/png;base64,AA==' },
+    { type: 'skill', name: 'Review', path: '/fixture/review/SKILL.md' },
+    { type: 'mention', name: 'Source', path: 'thread://fixture-source' },
+  ]
+  const message = { input, clientUserMessageId: 'user-steer-1', expectedTurnId: 'lead-turn-1' }
+  await service.sendChatMessage('lead-thread', message)
+  assert.deepEqual(appServer.calls.find((call) => call.method === 'turn/steer').params, { threadId: 'lead-thread', ...message })
+  assert.equal((await store.read()).runs.length, 1)
+  await assert.rejects(service.sendChatMessage('lead-thread', { ...message, expectedTurnId: 'stale-turn' }), /turn changed/u)
+  await assert.rejects(service.sendChatMessage('lead-thread', { input }), /turn changed/u)
+  const rpc = appServer.rpc.bind(appServer)
+  appServer.rpc = async (method, params) => {
+    if (method === 'turn/steer') throw new Error('Turn ended before delivery.')
+    return rpc(method, params)
+  }
+  await assert.rejects(service.sendChatMessage('lead-thread', message), /ended before delivery/u)
+  assert.equal(appServer.calls.filter((call) => call.method === 'turn/start').length, 1)
+  await service.handleNotification({ method: 'turn/completed', params: { threadId: 'lead-thread', turn: { id: 'lead-turn-1', status: 'interrupted' } } })
+  await assert.rejects(service.sendChatMessage('lead-thread', message), /turn has ended/u)
+  await assert.rejects(service.sendChatMessage('unrelated-chat', { input }), /not a project-board Lead/u)
+  await assert.rejects(service.sendChatMessage('lead-thread', { input: [{ type: 'text', text: '' }] }), /empty or invalid/u)
+  assert.equal((await store.read()).runs.length, 1)
+})
+
+test('idle managed replies preserve the plan and require fresh write consent and explicit atomic reopening', async (t) => {
+  const { appServer, feature, service, store } = await createHarness(t)
+  await service.updateCard(feature.id, { verificationPolicy: 'none', model: 'feature-model', reasoningEffort: 'low' })
+  await service.startFeature(feature.id, { mode: 'plan' })
+  await waitFor(() => appServer.calls.find((call) => call.method === 'turn/start'), 'No planning turn')
+  await service.handleDynamicToolCall(toolCall('lead-thread', 'replace_plan', { plan: { summary: 'Saved scope.', tasks: [
+    { key: 'work', title: 'Fix the bug', description: 'Repair it.', acceptanceCriteria: 'Works.', agentId: 'builtin-engineer', taskPurpose: 'work', dependsOn: [] },
+  ] } }))
+  await service.handleNotification({ method: 'turn/completed', params: { threadId: 'lead-thread', turn: { id: 'lead-turn-1', status: 'completed' } } })
+  const task = (await store.read()).cards.find((card) => card.parentCardId === feature.id)
+  await service.updateCard(feature.id, { title: 'Fix the remaining bug' })
+  assert.deepEqual(appServer.calls.filter((call) => call.method === 'thread/name/set').at(-1).params, { threadId: 'lead-thread', name: 'Fix the remaining bug' })
+  const input = [{ type: 'text', text: 'Implement this plan.' }, { type: 'image', url: 'data:image/png;base64,AA==' }]
+  await assert.rejects(service.sendChatMessage('lead-thread', { input }), /Confirm workspace-write/u)
+  await service.sendChatMessage('lead-thread', { input, clientUserMessageId: 'user-followup-1', allowWorkspaceWrite: true })
+  const resumed = await waitFor(() => appServer.calls.filter((call) => call.method === 'turn/start')[1], 'No tracked follow-up')
+  assert.deepEqual(resumed.params.input, input)
+  assert.equal(resumed.params.clientUserMessageId, 'user-followup-1')
+  assert.equal(resumed.params.threadId, 'lead-thread')
+  assert.equal(resumed.params.model, 'feature-model')
+  assert.equal(resumed.params.effort, 'low')
+  assert.match(resumed.params.additionalContext.codexui_project_board_reply.value, /read_context before acting/u)
+  assert.equal(appServer.calls.filter((call) => call.method === 'thread/start').length, 1)
+  assert.equal((await store.read()).cards.find((card) => card.id === task.id).title, task.title)
+  for (const [action, fields] of [
+    ['start_task', { taskId: task.id }],
+    ['complete_task', { taskId: task.id, summary: 'Original passing handoff.' }],
+    ['finish_feature', { summary: 'Original repair verified.' }],
+  ]) await service.handleDynamicToolCall({ ...toolCall('lead-thread', action, fields), turnId: 'lead-turn-2' })
+  await service.handleNotification({ method: 'turn/completed', params: { threadId: 'lead-thread', turn: { id: 'lead-turn-2', status: 'completed' } } })
+  assert.equal((await store.read()).cards.find((card) => card.id === feature.id).status, 'done')
+  const followup = { input: [{ type: 'text', text: 'Fix the remaining edge case.' }], allowWorkspaceWrite: true }
+  await assert.rejects(service.sendChatMessage('lead-thread', followup), /Reopen feature/u)
+  assert.equal((await store.read()).cards.find((card) => card.id === feature.id).status, 'done')
+  await service.sendChatMessage('lead-thread', { ...followup, reopenAndSend: true })
+  await waitFor(() => appServer.calls.filter((call) => call.method === 'turn/start')[2], 'No reopened follow-up')
+  const snapshot = await store.read()
+  assert.equal(snapshot.cards.find((card) => card.id === feature.id).status, 'working')
+  assert.equal(snapshot.cards.find((card) => card.id === task.id).summary, 'Original passing handoff.')
+  assert.equal(snapshot.runs[0].threadId, 'lead-thread')
+  assert.equal(snapshot.runs.length, 3)
+})
+
+test('replies in a planning chat remain read-only and retain the original linked plan', async (t) => {
+  const { appServer, board, service, store } = await createHarness(t)
+  await service.startBoardPlan(board.id, { plan: 'Ship a useful project.', sourceThreadId: 'original-chat' })
+  await waitFor(() => appServer.calls.find((call) => call.method === 'turn/start'), 'No board planner')
+  await service.handleNotification({ method: 'turn/completed', params: { threadId: 'lead-thread', turn: { id: 'lead-turn-1', status: 'completed' } } })
+  const input = [{ type: 'text', text: 'Include the missing accessibility feature.' }]
+  await service.sendChatMessage('lead-thread', { input, mode: 'execute', allowWorkspaceWrite: true })
+  const reply = await waitFor(() => appServer.calls.filter((call) => call.method === 'turn/start')[1], 'No planning reply')
+  assert.deepEqual(reply.params.input, input)
+  assert.equal(reply.params.sandboxPolicy.type, 'readOnly')
+  assert.equal(reply.params.approvalPolicy, 'never')
+  assert.match(reply.params.additionalContext.codexui_project_board_reply.value, /avoiding duplicates/u)
+  const snapshot = await store.read()
+  assert.equal(snapshot.runs[0].kind, 'board_plan')
+  assert.equal(snapshot.boards[0].plan, 'Ship a useful project.')
+  assert.equal(snapshot.boards[0].sourceThreadId, 'original-chat')
+  await assert.rejects(service.handleDynamicToolCall({ ...toolCall('lead-thread', 'start_task', { taskId: 'anything' }), turnId: 'lead-turn-2' }), /only save proposed feature cards/u)
+})
 
 test('any reusable profile can coordinate and a resumed chat uses the current selected profile', async (t) => {
   const { appServer, board, feature, service, store } = await createHarness(t)

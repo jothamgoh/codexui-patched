@@ -55,6 +55,7 @@ import type {
   UiThread,
   UiThreadGoal,
 } from '../types/codex'
+import { getNewChatQuestionConfig } from '../composables/useQuestionPreference'
 
 type CurrentModelConfig = {
   model: string
@@ -830,6 +831,8 @@ export async function startThread(
     if (serviceTier !== undefined) {
       params.serviceTier = serviceTier
     }
+    const questionConfig = await getNewChatQuestionConfig()
+    if (questionConfig) params.config = questionConfig
     const payload = await callRpc<ThreadStartResponse>('thread/start', params)
     const threadId = normalizeThreadIdFromPayload(payload)
     if (!threadId) {

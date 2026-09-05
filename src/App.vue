@@ -131,6 +131,7 @@
                   :error="fastModeError"
                   @update:model-value="setFastModeEnabled"
                 />
+                <QuestionSettingControl />
               </div>
             </div>
           </section>
@@ -374,6 +375,7 @@ import ThemeToggleButton from './components/content/ThemeToggleButton.vue'
 import UiFontSizeControl from './components/content/UiFontSizeControl.vue'
 import SpeedSettingControl from './components/content/SpeedSettingControl.vue'
 import NotificationSettingsButton from './components/content/NotificationSettingsButton.vue'
+import QuestionSettingControl from './components/content/QuestionSettingControl.vue'
 import WorkspaceSummaryButton from './components/content/WorkspaceSummaryButton.vue'
 import SidebarThreadControls from './components/sidebar/SidebarThreadControls.vue'
 import IconTablerChevronDown from './components/icons/IconTablerChevronDown.vue'

@@ -26,6 +26,7 @@ export type ProjectBoardCardUpdateInput = Partial<Pick<
   | 'status'
   | 'priority'
   | 'verificationPolicy'
+  | 'taskPurpose'
   | 'assignedAgentId'
   | 'autoRun'
 >>

@@ -110,7 +110,16 @@ test('persists one default and optional additional boards with custom agent rost
   )
   assert.equal(snapshot.boards.find((board) => board.name === 'New default')?.isDefault, true)
 
+  const initialRosters = snapshot.boards.map((board) => ({ id: board.id, agentIds: board.agentIds }))
+  await assert.rejects(fixture.store.createAgent({
+    boardId: 'missing-board', name: 'Invalid membership', instructions: 'Inspect the result.',
+  }), /Board not found/u)
+  snapshot = await fixture.store.createAgent({ name: 'Library researcher', instructions: 'Research when assigned.' })
+  assert.deepEqual(snapshot.boards.map((board) => ({ id: board.id, agentIds: board.agentIds })), initialRosters)
+  assert.equal(snapshot.agents.find((agent) => agent.name === 'Library researcher').boardId, undefined)
+
   snapshot = await fixture.store.createAgent({
+    boardId: releaseBoard.id,
     name: 'Accessibility reviewer',
     role: 'custom',
     description: 'Checks keyboard and screen-reader behavior.',
@@ -122,7 +131,11 @@ test('persists one default and optional additional boards with custom agent rost
   const customAgent = snapshot.agents.find((agent) => agent.name === 'Accessibility reviewer')
   assert.ok(customAgent)
   assert.equal(customAgent.builtIn, false)
-  assert.ok(snapshot.boards.every((board) => board.agentIds.includes(customAgent.id)))
+  assert.ok(snapshot.boards.find((board) => board.id === releaseBoard.id).agentIds.includes(customAgent.id))
+  assert.deepEqual(
+    snapshot.boards.filter((board) => board.id !== releaseBoard.id).map((board) => ({ id: board.id, agentIds: board.agentIds })),
+    initialRosters.filter((board) => board.id !== releaseBoard.id),
+  )
 
   fixture.advance()
   snapshot = await fixture.store.updateBoard(releaseBoard.id, {
@@ -137,8 +150,14 @@ test('persists one default and optional additional boards with custom agent rost
   assert.equal(snapshot.boards.find((board) => board.name === 'New default')?.isDefault, false)
 
   snapshot = await fixture.store.createCard({ boardId: releaseBoard.id, title: 'Review accessibility', assignedAgentId: customAgent.id })
-  await assert.rejects(fixture.store.updateAgent(customAgent.id, { role: 'qa' }), /new profile/u)
+  const feature = snapshot.cards.find((card) => card.title === 'Review accessibility')
+  snapshot = await fixture.store.updateAgent(customAgent.id, { role: 'qa' })
   await assert.rejects(fixture.store.updateAgent(customAgent.id, { sandbox: 'workspace-write' }), /new profile/u)
+  snapshot = await fixture.store.createCard({
+    boardId: releaseBoard.id, parentCardId: feature.id, type: 'task',
+    title: 'Inspect the interaction', assignedAgentId: customAgent.id,
+  })
+  assert.equal(snapshot.cards.find((card) => card.title === 'Inspect the interaction').taskPurpose, 'work')
 
   const reopened = await fixture.reopen().read()
   assert.equal(reopened.schemaVersion, 1)
@@ -177,7 +196,7 @@ test('validates a Lead plan and enforces task dependencies', async (t) => {
   await assert.rejects(fixture.store.replacePlan(feature.id, {
     summary: 'QA cannot run before implementation.',
     tasks: [planTask({ key: 'engineer' }), planTask({ key: 'qa', agentRole: 'qa' })],
-  }), /QA must depend on every implementation task/u)
+  }), /Verification must depend on every work task/u)
 
   let snapshot = await fixture.store.replacePlan(feature.id, {
     summary: 'Engineer, then independent QA.',
@@ -199,6 +218,8 @@ test('validates a Lead plan and enforces task dependencies', async (t) => {
   assert.deepEqual(qa.dependencyIds, [engineer.id])
   assert.equal(snapshot.agents.find((agent) => agent.id === engineer.assignedAgentId)?.role, 'engineering')
   assert.equal(snapshot.agents.find((agent) => agent.id === qa.assignedAgentId)?.role, 'qa')
+  assert.equal(engineer.taskPurpose, 'work')
+  assert.equal(qa.taskPurpose, 'verification')
 
   await assert.rejects(
     fixture.store.updateTaskFromAgent(feature.id, qa.id, 'start', {}),
@@ -230,6 +251,92 @@ test('validates a Lead plan and enforces task dependencies', async (t) => {
   assert.equal(snapshot.cards.find((card) => card.id === feature.id)?.progressNote, 'All tasks complete')
 })
 
+test('assigns same-role profiles by identity and verifies by task purpose', async (t) => {
+  const { store } = await createFixture(t)
+  const { board, feature } = await createBoardAndFeature(store, { verificationPolicy: 'independent' })
+  await store.createAgent({ boardId: board.id, name: 'Researcher', role: 'custom', instructions: 'Research the requested behavior.' })
+  let snapshot = await store.createAgent({ boardId: board.id, name: 'Reviewer', role: 'custom', instructions: 'Independently review the delivered behavior.' })
+  const researcher = snapshot.agents.find((agent) => agent.name === 'Researcher')
+  const reviewer = snapshot.agents.find((agent) => agent.name === 'Reviewer')
+  await store.updateBoard(board.id, { agentIds: ['builtin-lead', researcher.id, reviewer.id] })
+
+  for (const agentId of ['missing-agent', 'builtin-qa', '']) {
+    await assert.rejects(store.replacePlan(feature.id, {
+      summary: 'Invalid assignment must not fall back to a role.',
+      tasks: [planTask({ agentId, agentRole: 'custom', taskPurpose: 'work' })],
+    }), /must select an agent enabled for this board/u)
+  }
+  await assert.rejects(store.replacePlan(feature.id, {
+    summary: 'Invalid purpose.',
+    tasks: [planTask({ agentId: researcher.id, taskPurpose: 'unknown' })],
+  }), /unknown purpose/u)
+  await assert.rejects(store.replacePlan(feature.id, {
+    summary: 'Read-only work also needs to finish before verification.',
+    tasks: [
+      planTask({ key: 'research', agentId: researcher.id, taskPurpose: 'work' }),
+      planTask({ key: 'review', agentId: reviewer.id, taskPurpose: 'verification' }),
+    ],
+  }), /Verification must depend on every work task/u)
+
+  snapshot = await store.replacePlan(feature.id, {
+    summary: 'Research then a fresh independent review.',
+    tasks: [
+      planTask({ key: 'research', title: 'Research', agentId: researcher.id, taskPurpose: 'work' }),
+      planTask({ key: 'review', title: 'Review', agentId: reviewer.id, taskPurpose: 'verification', dependsOn: ['research'] }),
+    ],
+  })
+  const work = snapshot.cards.find((card) => card.title === 'Research')
+  const verification = snapshot.cards.find((card) => card.title === 'Review')
+  assert.equal(work.assignedAgentId, researcher.id)
+  assert.equal(verification.assignedAgentId, reviewer.id)
+  await assert.rejects(store.updateTaskFromAgent(feature.id, verification.id, 'start', {}), /waiting for dependency/u)
+
+  // Changing profile tags cannot turn work into verification or remove a review.
+  await store.updateAgent(researcher.id, { role: 'qa' })
+  snapshot = await store.updateAgent(reviewer.id, { role: 'engineering' })
+  assert.equal(snapshot.cards.find((card) => card.id === work.id).taskPurpose, 'work')
+  assert.equal(snapshot.cards.find((card) => card.id === verification.id).taskPurpose, 'verification')
+  for (const task of [work, verification]) {
+    await store.updateTaskFromAgent(feature.id, task.id, 'start', {})
+    await store.updateTaskFromAgent(feature.id, task.id, 'complete', { summary: 'Completed with evidence.' })
+  }
+  snapshot = await store.finishFeature(feature.id, 'Researched and independently checked.')
+  assert.equal(snapshot.cards.find((card) => card.id === feature.id).status, 'done')
+})
+
+test('migrates legacy QA tasks once while explicit assignments do not inherit profile workflow', async (t) => {
+  const fixture = await createFixture(t)
+  const { store, stateFilePath } = fixture
+  const { board, feature } = await createBoardAndFeature(store)
+  let snapshot = await store.createAgent({ boardId: board.id, name: 'Legacy reviewer', role: 'qa', instructions: 'Review the result.' })
+  const reviewer = snapshot.agents.find((agent) => agent.name === 'Legacy reviewer')
+  await store.updateBoard(board.id, { agentIds: ['builtin-lead', 'builtin-engineer', reviewer.id] })
+  snapshot = await store.replacePlan(feature.id, {
+    summary: 'Explicit assignments default to work even for a QA profile.',
+    tasks: [planTask({ agentId: reviewer.id, agentRole: 'qa' })],
+  })
+  assert.equal(snapshot.cards.find((card) => card.parentCardId === feature.id).taskPurpose, 'work')
+
+  snapshot = await store.replacePlan(feature.id, {
+    summary: 'Legacy role-based plan.',
+    tasks: [planTask({ key: 'work' }), planTask({ key: 'review', agentRole: 'qa', dependsOn: ['work'] })],
+  })
+  for (const card of snapshot.cards) delete card.taskPurpose
+  await writeFile(stateFilePath, JSON.stringify(snapshot))
+  snapshot = await fixture.reopen().read()
+  const review = snapshot.cards.find((card) => card.assignedAgentId === reviewer.id)
+  assert.equal(snapshot.cards.find((card) => card.id === feature.id).taskPurpose, 'work')
+  assert.equal(snapshot.cards.find((card) => card.assignedAgentId === 'builtin-engineer').taskPurpose, 'work')
+  assert.equal(review.taskPurpose, 'verification')
+  await assert.rejects(store.updateTaskFromAgent(feature.id, review.id, 'start', {}), /waiting for dependency/u)
+
+  await store.updateAgent(reviewer.id, { role: 'custom' })
+  snapshot = await fixture.reopen().read()
+  assert.equal(snapshot.cards.find((card) => card.id === review.id).taskPurpose, 'verification')
+  const persisted = JSON.parse(await readFile(stateFilePath, 'utf8'))
+  assert.equal(persisted.cards.find((card) => card.id === review.id).taskPurpose, 'verification')
+})
+
 test('independent and batch verification policies gate completion honestly', async (t) => {
   const fixture = await createFixture(t)
   let created = await createBoardAndFeature(fixture.store, {
@@ -249,7 +356,7 @@ test('independent and batch verification policies gate completion honestly', asy
   assert.equal(snapshot.cards.find((card) => card.id === independent.id)?.status, 'blocked')
   assert.equal(
     snapshot.cards.find((card) => card.id === independent.id)?.progressNote,
-    'Independent QA task required',
+    'Independent verification task required',
   )
 
   snapshot = await fixture.store.createCard({
@@ -383,6 +490,7 @@ test('public edits cannot forge ownership, bypass live workflow, or finish with 
   const task = snapshot.cards.find((card) => card.parentCardId === feature.id)
   assert.equal(task.lastRunId, run.id)
   await assert.rejects(store.updateCard(task.id, { status: 'done' }), /feature run to stop/u)
+  await assert.rejects(store.updateCard(task.id, { taskPurpose: 'verification' }), /feature run to stop/u)
   await assert.rejects(store.deleteCard(task.id), /feature run to stop/u)
   await store.updateTaskFromAgent(feature.id, task.id, 'start', {}, run.id)
   await store.updateTaskFromAgent(feature.id, task.id, 'complete', { summary: 'Implemented and checked.' }, run.id)
@@ -430,10 +538,11 @@ test('dependency references survive deletion attempts and stale QA cannot finish
   }
   await assert.rejects(store.updateCard(implementation.id, { status: 'backlog' }), /Reopen dependent card/u)
   await assert.rejects(store.updateCard(implementation.id, { assignedAgentId: 'builtin-qa' }), /Reopen the completed task/u)
+  await assert.rejects(store.updateCard(implementation.id, { taskPurpose: 'verification' }), /Reopen the completed task/u)
   const oldQaCompletedAt = snapshot.cards.find((card) => card.id === qa.id).completedAtIso
   snapshot.cards.find((card) => card.id === implementation.id).completedAtIso = '2026-09-06T02:00:00.000Z'
   await writeFile(stateFilePath, JSON.stringify(snapshot))
-  await assert.rejects(store.finishFeature(feature.id, 'Stale QA must fail.'), /QA must be repeated/u)
+  await assert.rejects(store.finishFeature(feature.id, 'Stale QA must fail.'), /Verification must be repeated/u)
   assert.equal((await store.read()).cards.find((card) => card.id === qa.id).completedAtIso, oldQaCompletedAt)
 
   // Corrupt dependency references are never interpreted as satisfied.

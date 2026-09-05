@@ -18,6 +18,7 @@ import type {
   ProjectBoardRunKind,
   ProjectBoardSnapshot,
   ProjectBoardStatus,
+  ProjectBoardTaskPurpose,
   ProjectBoardVerificationPolicy,
 } from '../types/projectBoards'
 import type { ReasoningEffort } from '../types/codex'
@@ -43,6 +44,7 @@ const VERIFICATION_POLICIES = new Set<ProjectBoardVerificationPolicy>([
 const AGENT_ROLES = new Set<ProjectBoardAgentRole>([
   'lead', 'product', 'design', 'engineering', 'qa', 'custom',
 ])
+const TASK_PURPOSES = new Set<ProjectBoardTaskPurpose>(['work', 'verification'])
 const REASONING_EFFORTS = new Set<ReasoningEffort>([
   'none', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max', 'ultra',
 ])
@@ -192,18 +194,21 @@ function normalizeBoard(value: unknown): ProjectBoard | null {
   }
 }
 
-function normalizeCard(value: unknown): ProjectBoardCard | null {
+function normalizeCard(value: unknown, agents: ProjectBoardAgent[]): ProjectBoardCard | null {
   const record = asRecord(value)
   const id = readString(record?.id, 200)
   const boardId = readString(record?.boardId, 200)
   const title = readString(record?.title, 240)
   if (!record || !id || !boardId || !title) return null
   const type = record.type === 'task' || record.type === 'qa_batch' ? record.type : 'feature'
+  const legacyVerification = record.taskPurpose === undefined && type === 'task'
+    && agents.some((agent) => agent.id === record.assignedAgentId && agent.role === 'qa')
   return {
     id,
     boardId,
     parentCardId: readString(record.parentCardId, 200),
     type,
+    taskPurpose: type === 'task' && (record.taskPurpose === 'verification' || legacyVerification) ? 'verification' : 'work',
     title,
     description: readString(record.description),
     acceptanceCriteria: readString(record.acceptanceCriteria),
@@ -344,7 +349,7 @@ function normalizeSnapshot(value: unknown, now: Date): ProjectBoardSnapshot {
   return {
     boards,
     cards: Array.isArray(record.cards)
-      ? record.cards.map(normalizeCard).filter((card): card is ProjectBoardCard => card !== null)
+      ? record.cards.map((card) => normalizeCard(card, agents)).filter((card): card is ProjectBoardCard => card !== null)
       : [],
     agents,
     questions: Array.isArray(record.questions)
@@ -407,20 +412,16 @@ function dependencyBlocker(snapshot: ProjectBoardSnapshot, card: ProjectBoardCar
   return ''
 }
 
-function qaOrderingBlocker(snapshot: ProjectBoardSnapshot, task: ProjectBoardCard): string {
-  const agent = snapshot.agents.find((entry) => entry.id === task.assignedAgentId)
-  if (agent?.role !== 'qa') return ''
-  const implementation = snapshot.cards.filter((entry) => {
-    const owner = snapshot.agents.find((candidate) => candidate.id === entry.assignedAgentId)
-    return entry.parentCardId === task.parentCardId && entry.id !== task.id
-      && (owner?.role === 'engineering' || (owner?.sandbox === 'workspace-write' && owner.role !== 'qa'))
-  })
-  if (implementation.some((entry) => !task.dependencyIds.includes(entry.id))) {
-    return 'QA must depend on every implementation task.'
+function verificationOrderingBlocker(snapshot: ProjectBoardSnapshot, task: ProjectBoardCard): string {
+  if (task.type !== 'task' || task.taskPurpose !== 'verification') return ''
+  const work = snapshot.cards.filter((entry) => entry.type === 'task'
+    && entry.parentCardId === task.parentCardId && entry.taskPurpose === 'work')
+  if (work.some((entry) => !task.dependencyIds.includes(entry.id))) {
+    return 'Verification must depend on every work task.'
   }
-  if (task.status === 'done' && implementation.some((entry) =>
+  if (task.status === 'done' && work.some((entry) =>
     !entry.completedAtIso || !task.completedAtIso || entry.completedAtIso > task.completedAtIso)) {
-    return 'QA must be repeated after the latest implementation.'
+    return 'Verification must be repeated after the latest work.'
   }
   return ''
 }
@@ -436,12 +437,11 @@ function featureCompletionBlocker(snapshot: ProjectBoardSnapshot, feature: Proje
   if (!tasks.length) return 'Create and complete a task plan before finishing the feature.'
   if (tasks.some((task) => task.status !== 'done')) return 'All required tasks must be done before finishing the feature.'
   for (const task of tasks) {
-    const blocker = dependencyBlocker(snapshot, task) || qaOrderingBlocker(snapshot, task)
+    const blocker = dependencyBlocker(snapshot, task) || verificationOrderingBlocker(snapshot, task)
     if (blocker) return blocker
   }
-  if (feature.verificationPolicy === 'independent' && !tasks.some((task) =>
-    snapshot.agents.some((agent) => agent.id === task.assignedAgentId && agent.role === 'qa'))) {
-    return 'Independent QA task required'
+  if (feature.verificationPolicy === 'independent' && !tasks.some((task) => task.taskPurpose === 'verification')) {
+    return 'Independent verification task required'
   }
   return ''
 }
@@ -501,7 +501,15 @@ function buildPlanCards(
   const tasks: ProjectBoardCard[] = rawTasks.map((rawTask) => {
     const key = readString(rawTask.key, 100)
     const role = normalizeAgentRole(rawTask.agentRole)
-    const agent = roster.find((entry) => entry.role === role) ?? lead
+    const explicitAgent = rawTask.agentId !== undefined
+    const agent = explicitAgent
+      ? roster.find((entry) => entry.id === readString(rawTask.agentId, 200))
+      : roster.find((entry) => entry.role === role) ?? lead
+    if (!agent) throw new Error(`Task ${key} must select an agent enabled for this board.`)
+    if (rawTask.taskPurpose !== undefined && !TASK_PURPOSES.has(rawTask.taskPurpose)) {
+      throw new Error(`Task ${key} has an unknown purpose.`)
+    }
+    const taskPurpose = rawTask.taskPurpose ?? (!explicitAgent && agent.role === 'qa' ? 'verification' : 'work')
     const dependencyIds = readStringArray(rawTask.dependsOn)
       .map((dependencyKey) => keyToId.get(dependencyKey) ?? '')
       .filter(Boolean)
@@ -510,13 +518,14 @@ function buildPlanCards(
       boardId: board.id,
       parentCardId: feature.id,
       type: 'task',
+      taskPurpose,
       title: readString(rawTask.title, 240) || key,
       description: readString(rawTask.description),
       acceptanceCriteria: readString(rawTask.acceptanceCriteria),
       status: 'backlog',
       priority: feature.priority,
       verificationPolicy: 'self',
-      assignedAgentId: agent?.id ?? '',
+      assignedAgentId: agent.id,
       dependencyIds,
       autoRun: true,
       threadId: '',
@@ -530,7 +539,7 @@ function buildPlanCards(
   })
   const planned = { ...snapshot, cards: [...snapshot.cards.filter((card) => card.parentCardId !== feature.id), ...tasks] }
   for (const task of tasks) {
-    const blocker = qaOrderingBlocker(planned, task)
+    const blocker = verificationOrderingBlocker(planned, task)
     if (blocker) throw new Error(blocker)
   }
   return tasks
@@ -709,6 +718,7 @@ export class ProjectBoardStore {
     return this.mutate((current) => {
       const record = asRecord(inputValue) ?? {}
       const input: ProjectBoardAgentCreateInput = {
+        boardId: record.boardId === undefined ? undefined : readString(record.boardId, 200),
         name: readString(record.name, 120),
         role: normalizeAgentRole(record.role),
         description: readString(record.description, 500),
@@ -718,6 +728,9 @@ export class ProjectBoardStore {
         sandbox: record.sandbox === 'workspace-write' ? 'workspace-write' : 'read-only',
       }
       if (!input.name || !input.instructions) throw new Error('Agent name and instructions are required.')
+      if (input.boardId !== undefined && !current.boards.some((board) => board.id === input.boardId)) {
+        throw new Error('Board not found.')
+      }
       const now = this.now()
       const agent: ProjectBoardAgent = {
         id: randomUUID(),
@@ -735,7 +748,9 @@ export class ProjectBoardStore {
       return {
         ...current,
         agents: [...current.agents, agent],
-        boards: current.boards.map((board) => ({ ...board, agentIds: [...board.agentIds, agent.id] })),
+        boards: current.boards.map((board) => board.id === input.boardId
+          ? { ...board, agentIds: [...board.agentIds, agent.id] }
+          : board),
       }
     })
   }
@@ -746,10 +761,9 @@ export class ProjectBoardStore {
       if (!existing) throw new Error('Agent not found.')
       if (existing.builtIn) throw new Error('Built-in agents are read-only. Create a custom agent instead.')
       const changes = asRecord(changesValue) ?? {}
-      const changesRole = 'role' in changes && normalizeAgentRole(changes.role) !== existing.role
       const changesAccess = 'sandbox' in changes && changes.sandbox !== existing.sandbox
-      if ((changesRole || changesAccess) && current.cards.some((card) => card.assignedAgentId === id)) {
-        throw new Error('Create a new profile to change role or access after an agent has been assigned.')
+      if (changesAccess && current.cards.some((card) => card.assignedAgentId === id)) {
+        throw new Error('Create a new profile to change access after an agent has been assigned.')
       }
       const now = this.now()
       return {
@@ -797,10 +811,12 @@ export class ProjectBoardStore {
       const record = asRecord(inputValue) ?? {}
       this.assertPublicCardFields(record)
       if ('status' in record && record.status !== 'backlog') throw new Error('New cards must start in Backlog.')
+      if ('taskPurpose' in record && !TASK_PURPOSES.has(record.taskPurpose as ProjectBoardTaskPurpose)) throw new Error('Unknown task purpose.')
       const input: ProjectBoardCardCreateInput = {
         boardId: readString(record.boardId, 200),
         parentCardId: readString(record.parentCardId, 200),
         type: record.type === 'task' || record.type === 'qa_batch' ? record.type : 'feature',
+        taskPurpose: record.type === 'task' && record.taskPurpose === 'verification' ? 'verification' : 'work',
         title: readString(record.title, 240),
         description: readString(record.description),
         acceptanceCriteria: readString(record.acceptanceCriteria),
@@ -832,6 +848,7 @@ export class ProjectBoardStore {
         boardId: board.id,
         parentCardId: input.parentCardId ?? '',
         type: input.type ?? 'feature',
+        taskPurpose: input.taskPurpose ?? 'work',
         title: input.title,
         description: input.description ?? '',
         acceptanceCriteria: input.acceptanceCriteria ?? '',
@@ -850,8 +867,8 @@ export class ProjectBoardStore {
         completedAtIso: '',
       }
       let next = { ...current, cards: [card, ...current.cards] }
-      const qaBlocker = qaOrderingBlocker(next, card)
-      if (qaBlocker) throw new Error(qaBlocker)
+      const verificationBlocker = verificationOrderingBlocker(next, card)
+      if (verificationBlocker) throw new Error(verificationBlocker)
       next = recalculateParent(next, card.parentCardId, now)
       return next
     })
@@ -864,15 +881,20 @@ export class ProjectBoardStore {
       const changes = asRecord(changesValue) ?? {}
       this.assertPublicCardFields(changes, true)
       if ('status' in changes && !STATUSES.has(changes.status as ProjectBoardStatus)) throw new Error('Unknown card status.')
-      const workflowChange = ['status', 'verificationPolicy', 'assignedAgentId'].some((key) => key in changes)
+      if ('taskPurpose' in changes && !TASK_PURPOSES.has(changes.taskPurpose as ProjectBoardTaskPurpose)) throw new Error('Unknown task purpose.')
+      const workflowChange = ['status', 'verificationPolicy', 'assignedAgentId', 'taskPurpose'].some((key) => key in changes)
       if (workflowChange) assertManualEdit(current, existing)
       const board = current.boards.find((entry) => entry.id === existing.boardId)
       if (!board) throw new Error('Project board not found.')
       const assignedAgentId = 'assignedAgentId' in changes
         ? readString(changes.assignedAgentId, 200)
         : existing.assignedAgentId
-      if (existing.type === 'task' && existing.status === 'done' && assignedAgentId !== existing.assignedAgentId) {
-        throw new Error('Reopen the completed task before changing its agent.')
+      const taskPurpose = existing.type === 'task' && 'taskPurpose' in changes
+        ? changes.taskPurpose as ProjectBoardTaskPurpose
+        : existing.taskPurpose
+      if (existing.type === 'task' && existing.status === 'done'
+        && (assignedAgentId !== existing.assignedAgentId || taskPurpose !== existing.taskPurpose)) {
+        throw new Error('Reopen the completed task before changing its agent or purpose.')
       }
       if (assignedAgentId && !board.agentIds.includes(assignedAgentId)) {
         throw new Error('Assigned agent is not enabled for this board.')
@@ -892,6 +914,7 @@ export class ProjectBoardStore {
             ? normalizeVerificationPolicy(changes.verificationPolicy)
             : card.verificationPolicy,
           assignedAgentId,
+          taskPurpose,
           autoRun: 'autoRun' in changes ? changes.autoRun === true : card.autoRun,
         }, 'status' in changes ? normalizeStatus(changes.status) : card.status, now)),
       }
@@ -901,7 +924,7 @@ export class ProjectBoardStore {
           throw new Error('Needs You is set by a question from the Lead.')
         }
         if (['working', 'review', 'done'].includes(updated.status)) {
-          const blocker = dependencyBlocker(next, updated) || qaOrderingBlocker(next, updated)
+          const blocker = dependencyBlocker(next, updated) || verificationOrderingBlocker(next, updated)
           if (blocker) throw new Error(blocker)
         }
         if (updated.status === 'done') {
@@ -1125,7 +1148,7 @@ export class ProjectBoardStore {
       const payload = asRecord(payloadValue) ?? {}
       const now = this.now()
       if (action === 'start' || action === 'complete') {
-        const blocker = dependencyBlocker(current, feature) || dependencyBlocker(current, task) || qaOrderingBlocker(current, task)
+        const blocker = dependencyBlocker(current, feature) || dependencyBlocker(current, task) || verificationOrderingBlocker(current, task)
         if (blocker) throw new Error(blocker)
         if (current.questions.some((question) => question.status === 'open' && (question.cardId === featureId || question.cardId === taskId))) {
           throw new Error('Answer the open question before continuing this task.')
@@ -1366,7 +1389,7 @@ export class ProjectBoardStore {
   }
 
   private assertPublicCardFields(record: Record<string, unknown>, updating = false): void {
-    const allowed = new Set(['title', 'description', 'acceptanceCriteria', 'status', 'priority', 'verificationPolicy', 'assignedAgentId', 'autoRun'])
+    const allowed = new Set(['title', 'description', 'acceptanceCriteria', 'status', 'priority', 'verificationPolicy', 'assignedAgentId', 'taskPurpose', 'autoRun'])
     if (!updating) for (const field of ['boardId', 'parentCardId', 'type', 'dependencyIds']) allowed.add(field)
     const unknown = Object.keys(record).find((field) => !allowed.has(field))
     if (unknown) throw new Error(`Card field "${unknown}" is server-owned or cannot be changed here.`)

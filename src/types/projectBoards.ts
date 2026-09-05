@@ -9,6 +9,7 @@ export type ProjectBoardStatus =
   | 'done'
 
 export type ProjectBoardCardType = 'feature' | 'task' | 'qa_batch'
+export type ProjectBoardTaskPurpose = 'work' | 'verification'
 export type ProjectBoardVerificationPolicy = 'none' | 'self' | 'independent' | 'batch'
 export type ProjectBoardPriority = 'low' | 'normal' | 'high' | 'urgent'
 export type ProjectBoardAgentRole = 'lead' | 'product' | 'design' | 'engineering' | 'qa' | 'custom'
@@ -57,6 +58,7 @@ export type ProjectBoardCard = {
   boardId: string
   parentCardId: string
   type: ProjectBoardCardType
+  taskPurpose: ProjectBoardTaskPurpose
   title: string
   description: string
   acceptanceCriteria: string
@@ -135,6 +137,7 @@ export type ProjectBoardCardCreateInput = {
   boardId: string
   parentCardId?: string
   type?: ProjectBoardCardType
+  taskPurpose?: ProjectBoardTaskPurpose
   title: string
   description?: string
   acceptanceCriteria?: string
@@ -147,6 +150,8 @@ export type ProjectBoardCardCreateInput = {
 }
 
 export type ProjectBoardAgentCreateInput = {
+  /** Enable the new profile on this board; omitted means library only. */
+  boardId?: string
   name: string
   role?: ProjectBoardAgentRole
   description?: string
@@ -161,7 +166,10 @@ export type ProjectBoardPlanTask = {
   title: string
   description: string
   acceptanceCriteria: string
-  agentRole: ProjectBoardAgentRole
+  agentId?: string
+  /** Compatibility for plans created before explicit agent assignment. */
+  agentRole?: ProjectBoardAgentRole
+  taskPurpose?: ProjectBoardTaskPurpose
   dependsOn: string[]
 }
 

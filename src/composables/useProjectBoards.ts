@@ -12,6 +12,9 @@ import {
   getProjectBoards,
   isProjectBoardSnapshot,
   startProjectBoardFeature,
+  planProjectBoard,
+  startProjectBoardQueue,
+  stopProjectBoardQueue,
   updateProjectBoard,
   updateProjectBoardAgent,
   updateProjectBoardCard,
@@ -20,8 +23,10 @@ import {
   type ProjectBoardCommentInput,
   type ProjectBoardQuestionAnswerInput,
   type ProjectBoardUpdateInput,
+  type ProjectBoardPlanInput,
 } from '../api/projectBoards'
 import { subscribeInPageRpcNotifications } from '../api/codexRpcClient'
+import { isWebPushLocallyEnabled } from './useWebPushNotifications'
 import type {
   ProjectBoardAgentCreateInput,
   ProjectBoardCardCreateInput,
@@ -31,7 +36,8 @@ import type {
 import {
   markProjectBoardAttentionSeen,
   projectBoardNeedsInputDeepLink,
-  showProjectBoardNeedsInputNotification,
+  showProjectBoardNotification,
+  isProjectBoardNotification,
   type ProjectBoardNeedsInput,
 } from '../utils/projectBoardNotifications'
 
@@ -127,14 +133,18 @@ export function useProjectBoards(options: UseProjectBoardsOptions = {}) {
     } catch {
       // A consumer callback must not stop future board events.
     }
-    if (options.showBrowserNotifications !== false) {
-      showProjectBoardNeedsInputNotification(attention, deepLink, options.notifyWhenFocused === true)
-    }
   }
 
   function startLiveUpdates(): void {
     if (unsubscribe) return
     unsubscribe = subscribeInPageRpcNotifications((notification) => {
+      if (notification.method === 'codexui/projectBoards/notification') {
+        const event = notification.params
+        if (isProjectBoardNotification(event) && options.showBrowserNotifications !== false && !isWebPushLocallyEnabled()) {
+          showProjectBoardNotification(event, options.notifyWhenFocused === true)
+        }
+        return
+      }
       if (notification.method === 'codexui/projectBoards/updated') {
         if (isProjectBoardSnapshot(notification.params)) applySnapshot(notification.params)
         return
@@ -173,6 +183,7 @@ export function useProjectBoards(options: UseProjectBoardsOptions = {}) {
     isLoading,
     isMutating,
     error,
+    clearError: () => { error.value = '' },
     openQuestions,
     needsInputCount,
     load,
@@ -205,7 +216,12 @@ export function useProjectBoards(options: UseProjectBoardsOptions = {}) {
       mutate(() => addProjectBoardComment(cardId, input)),
     answerQuestion: (questionId: string, input: ProjectBoardQuestionAnswerInput) =>
       mutate(() => answerProjectBoardQuestion(questionId, input)),
-    startFeature: (featureId: string, allowWorkspaceWrite = false) =>
-      mutate(() => startProjectBoardFeature(featureId, allowWorkspaceWrite)),
+    startFeature: (featureId: string, allowWorkspaceWrite = false, mode: 'plan' | 'execute' = 'execute') =>
+      mutate(() => startProjectBoardFeature(featureId, allowWorkspaceWrite, mode)),
+    planBoard: (boardId: string, input: ProjectBoardPlanInput) =>
+      mutate(() => planProjectBoard(boardId, input)),
+    startQueue: (boardId: string, featureIds: string[], allowWorkspaceWrite: boolean) =>
+      mutate(() => startProjectBoardQueue(boardId, featureIds, allowWorkspaceWrite)),
+    stopQueue: (boardId: string) => mutate(() => stopProjectBoardQueue(boardId)),
   }
 }

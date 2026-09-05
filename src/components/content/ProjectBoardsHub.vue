@@ -6,6 +6,7 @@
         <p>Track larger builds across chats. Choose an agent to lead each feature, bring in other agents, and ask for decisions when needed.</p>
       </div>
       <div class="boards-header-actions">
+        <Button v-if="activeBoard" type="button" variant="outline" :disabled="boardPlanningActive || isMutating" @click="$emit('plan-board', activeBoard.id)"><Sparkles aria-hidden="true" /> Plan features</Button>
         <Button type="button" variant="outline" @click="agentDialogOpen = true">
           <Users aria-hidden="true" /> Agents
         </Button>
@@ -43,10 +44,25 @@
           @change="toggleAutoDispatch"
         />
         <span class="boards-live-dot" aria-hidden="true" />
-        Automatic handoffs
+        Continue within features
         <small>{{ boardAgents.length }} agents</small>
       </label>
     </div>
+
+    <section v-if="activeBoard" class="board-workflow" aria-label="Project delivery">
+      <div class="workflow-state">
+        <strong>{{ boardPlanningActive ? 'Planning your features…' : activeQueue?.status === 'running' ? 'Delivery is running' : activeQueue?.status === 'paused' ? 'Delivery paused' : 'Ready when you are' }}</strong>
+        <p>{{ activeQueue?.reason || (boardPlanningActive ? 'Your coordinator is reading the plan and preparing cards. No implementation yet.' : 'Plan the project, review its features, then run one feature or a selected queue.') }}</p>
+      </div>
+      <div class="boards-header-actions">
+        <Button v-if="activeBoard.sourceThreadId" type="button" size="sm" variant="ghost" @click="$emit('select-thread', activeBoard.sourceThreadId)">Planning chat</Button>
+        <Button v-if="activeBoard.planningThreadId" type="button" size="sm" variant="ghost" @click="$emit('select-thread', activeBoard.planningThreadId)">Coordinator chat</Button>
+        <Button v-if="activeQueue?.status === 'running'" type="button" size="sm" variant="outline" :disabled="isMutating" @click="pauseQueue">Pause delivery</Button>
+        <Button v-else type="button" size="sm" :disabled="queueCandidates.length === 0 || boardPlanningActive || isMutating" @click="openQueue">{{ activeQueue ? 'Resume selected features' : 'Run selected features' }}</Button>
+      </div>
+      <details v-if="activeBoard.plan" class="board-plan-summary"><summary>Project plan</summary><p>{{ activeBoard.plan }}</p></details>
+      <p v-if="latestBoardPlanRun?.status === 'failed' || latestBoardPlanRun?.status === 'interrupted'" class="boards-alert" role="alert">{{ latestBoardPlanRun.error || 'Planning stopped. Open the coordinator chat or plan again.' }}</p>
+    </section>
 
     <p v-if="error" class="boards-alert" role="alert">{{ error }}</p>
     <div v-if="isLoading && snapshot.boards.length === 0" class="boards-empty">Loading project boards…</div>
@@ -103,6 +119,7 @@
                 </div>
                 <strong>{{ card.title }}</strong>
                 <p v-if="card.progressNote || card.description">{{ card.progressNote || card.description }}</p>
+                <p v-if="dependencyLabel(card)" class="dependency-note">{{ dependencyLabel(card) }}</p>
                 <div class="board-card-meta">
                   <span><ListChecks aria-hidden="true" /> {{ taskProgress(card) }}</span>
                   <span v-if="agentFor(card.assignedAgentId)">
@@ -151,12 +168,13 @@
                 data-testid="start-feature"
                 @click="startSelectedCard"
               >
-                <Play aria-hidden="true" /> {{ selectedCard.threadId ? 'Continue' : 'Plan & start' }}
+                <Play aria-hidden="true" /> {{ selectedCard.planStatus === 'ready' && !selectedTasks.some(task => task.status === 'done') ? 'Start work' : selectedCard.threadId ? 'Continue' : 'Plan & start' }}
               </Button>
+              <Button v-if="canStartSelectedCard && !selectedTasks.some(task => task.status === 'working' || task.status === 'done')" type="button" variant="outline" :disabled="selectedRunIsActive || Boolean(selectedOpenQuestion) || isMutating" @click="planSelectedFeature"><Sparkles aria-hidden="true" />{{ selectedCard.planStatus === 'ready' ? 'Revise plan' : 'Plan first' }}</Button>
               <Button v-if="selectedCard.threadId" type="button" variant="outline" @click="$emit('select-thread', selectedCard.threadId)">
                 <MessageSquare aria-hidden="true" /> Open Lead chat
               </Button>
-              <Button type="button" variant="outline" @click="openEditSelectedCard">
+              <Button type="button" variant="outline" :disabled="selectedRunIsActive" @click="openEditSelectedCard">
                 <Pencil aria-hidden="true" /> Edit
               </Button>
               <label class="detail-status-select">
@@ -166,6 +184,10 @@
                 </select>
               </label>
             </div>
+
+            <p v-if="dependencyLabel(selectedCard)" class="dependency-note">{{ dependencyLabel(selectedCard) }}</p>
+            <section v-if="selectedCard.planSummary" class="detail-section"><h3>{{ selectedCard.planStatus === 'ready' ? 'Plan ready' : 'Plan' }}</h3><p class="detail-prewrap">{{ selectedCard.planSummary }}</p><p v-if="selectedCard.planStatus === 'ready'" class="detail-muted">Review the tasks below. Start work when you are ready, or revise the brief and plan again.</p></section>
+            <p class="detail-muted">Lead settings: {{ selectedCard.model || agentFor(selectedCard.assignedAgentId)?.model || 'App default model' }} · {{ selectedCard.reasoningEffort || agentFor(selectedCard.assignedAgentId)?.reasoningEffort || 'Default' }} reasoning.</p>
 
             <p v-if="selectedCard.type === 'qa_batch'" class="detail-muted">QA batch cards track later verification. Automated batch runs are not available yet.</p>
             <p v-if="cardIsLocked(selectedCard)" class="detail-muted">Status is controlled by the active run or open questions.</p>
@@ -268,6 +290,8 @@
               <label><span>Verification</span><select v-model="featureDraft.verificationPolicy"><option value="none">None</option><option value="self">Self-check</option><option value="independent">Independent verification</option><option value="batch">Review later</option></select></label>
               <label><span>Lead for this feature</span><select v-model="featureDraft.assignedAgentId" aria-label="Lead for this feature"><option v-if="draftLeadUnavailable" :value="featureDraft.assignedAgentId" disabled>{{ agentFor(featureDraft.assignedAgentId)?.name ?? 'Assigned agent' }} · not on this board</option><option v-for="agent in boardAgents" :key="agent.id" :value="agent.id">{{ agent.name }}</option></select></label>
             </div>
+            <BoardExecutionSettings v-model:model="featureDraft.model" v-model:reasoning-effort="featureDraft.reasoningEffort" :inherited-model="agentFor(featureDraft.assignedAgentId)?.model" :inherited-effort="agentFor(featureDraft.assignedAgentId)?.reasoningEffort" />
+            <fieldset v-if="dependencyCandidates.length" class="dependency-picker"><legend>Depends on</legend><p class="detail-muted">Shared groundwork belongs in one feature. Select anything this feature needs first.</p><label v-for="feature in dependencyCandidates" :key="feature.id" class="checkbox-row"><input v-model="featureDraft.dependencyIds" type="checkbox" :value="feature.id" /><span>{{ feature.title }} · {{ statusLabel(feature.status) }}</span></label></fieldset>
             <p v-if="draftLeadUnavailable" class="boards-alert">Choose another Lead or enable the assigned agent in the Agent library.</p>
             <p class="verification-help">{{ verificationHelp[featureDraft.verificationPolicy] }}</p>
             <footer><Button type="button" variant="ghost" @click="featureDialogOpen = false">Cancel</Button><Button type="submit" :disabled="isMutating || !featureDraft.title.trim()">{{ editingCardId ? 'Save feature' : 'Create feature' }}</Button></footer>
@@ -318,6 +342,7 @@
               <div class="board-form-grid"><label><span>Specialty</span><select v-model="agentDraft.role" aria-label="Specialty"><option value="custom">Custom</option><option value="product">Product</option><option value="design">Design</option><option value="engineering">Engineering</option><option value="qa">QA</option><option value="lead">Coordination</option></select></label><label><span>Access</span><select v-model="agentDraft.sandbox" aria-label="Access" :disabled="editingAgentAccessLocked"><option value="read-only">Read only</option><option value="workspace-write">Can edit project</option></select></label></div>
               <p v-if="editingAgentAccessLocked" class="agent-help">This agent has assigned work. Make a copy to change its access.</p>
               <label><span>Description</span><Input v-model="agentDraft.description" maxlength="500" placeholder="What this specialist is for" /></label>
+              <BoardExecutionSettings :model="agentDraft.model" :reasoning-effort="agentDraft.reasoningEffort" inherit-label="Use app default" label="Agent" :show-specialist-note="false" :allow-inherited-effort="false" @update:model="agentDraft.model = $event" @update:reasoning-effort="agentDraft.reasoningEffort = $event || agentDraft.reasoningEffort" />
               <label><span>Instructions</span><Textarea v-model="agentDraft.instructions" class="agent-instructions" maxlength="20000" required rows="9" placeholder="Describe the agent’s expertise, how it should work, and when it should ask for help." /></label>
               <p class="agent-help">This is the agent’s prompt. Saved changes apply when a feature starts or continues. New agents are added to this board.</p>
               <p v-if="agentDraftIsDirty" class="agent-draft-note">Unsaved changes. Save or cancel before choosing another agent.</p>
@@ -327,6 +352,16 @@
         </DialogContent>
       </DialogPortal>
     </DialogRoot>
+    <DialogRoot v-model:open="queueDialogOpen"><DialogPortal><DialogOverlay class="board-dialog-backdrop" /><DialogContent class="board-dialog" aria-describedby="queue-description" @open-auto-focus="rememberFocus('queue')" @close-auto-focus="restoreFocus('queue', $event)">
+      <header><div><DialogTitle>Run selected features</DialogTitle><p id="queue-description">The coordinator runs these features one at a time, following dependencies and each feature’s model and verification settings.</p></div><Button type="button" variant="ghost" size="icon-sm" aria-label="Close queue" @click="queueDialogOpen = false"><X /></Button></header>
+      <form class="board-form" @submit.prevent="runQueue">
+        <p v-if="error" class="boards-alert" role="alert">{{ error }}</p>
+        <div class="queue-list"><label v-for="feature in queueCandidates" :key="feature.id" class="queue-feature"><input v-model="queueFeatureIds" type="checkbox" :value="feature.id" /><span><strong>{{ feature.title }}</strong><small>{{ dependencyLabel(feature) || 'Ready when the project is free' }}</small></span></label></div>
+        <p class="detail-muted">Pauses for a question, failure, or review. New features are not added to this selection automatically. After a restart, select the remaining features again.</p>
+        <label v-if="boardAgents.some(agent => agent.sandbox === 'workspace-write')" class="checkbox-row"><input v-model="queueAllowEdits" type="checkbox" /><span>Allow project edits for these selected features and their agents.</span></label>
+        <footer><Button type="button" variant="ghost" @click="queueDialogOpen = false">Cancel</Button><Button type="submit" :disabled="isMutating || !queueFeatureIds.length || (boardAgents.some(agent => agent.sandbox === 'workspace-write') && !queueAllowEdits)">Start selected features</Button></footer>
+      </form>
+    </DialogContent></DialogPortal></DialogRoot>
 
     <DialogRoot v-model:open="startDialogOpen">
       <DialogPortal>
@@ -370,6 +405,8 @@ import type { ProjectBoardUpdateInput, ProjectBoardCardUpdateInput, ProjectBoard
 import Button from '../ui/button/Button.vue'
 import Input from '../ui/input/Input.vue'
 import Textarea from '../ui/textarea/Textarea.vue'
+import BoardExecutionSettings from './BoardExecutionSettings.vue'
+import type { ReasoningEffort } from '../../types/codex'
 import type {
   ProjectBoard,
   ProjectBoardAgent,
@@ -385,6 +422,7 @@ import type {
 
 type ProjectOption = { path: string; name: string }
 type BoardActions = {
+  clearError: () => void
   ensureBoard: (input: { projectPath: string; projectName: string }) => Promise<unknown>
   createBoard: (input: { projectPath: string; projectName: string; name: string; isDefault: boolean }) => Promise<unknown>
   updateBoard: (boardId: string, changes: ProjectBoardUpdateInput) => Promise<unknown>
@@ -395,7 +433,9 @@ type BoardActions = {
   deleteCard: (cardId: string) => Promise<unknown>
   addComment: (cardId: string, text: string) => Promise<unknown>
   answerQuestion: (questionId: string, answer: string) => Promise<unknown>
-  startFeature: (featureId: string, allowWorkspaceWrite: boolean) => Promise<unknown>
+  startFeature: (featureId: string, allowWorkspaceWrite: boolean, mode?: 'plan' | 'execute') => Promise<unknown>
+  startQueue: (boardId: string, featureIds: string[], allowWorkspaceWrite: boolean) => Promise<unknown>
+  stopQueue: (boardId: string) => Promise<unknown>
 }
 
 const props = defineProps<{
@@ -416,6 +456,7 @@ const emit = defineEmits<{
   'select-board': [boardId: string]
   'select-feature': [featureId: string, boardId: string, questionId?: string]
   'select-thread': [threadId: string]
+  'plan-board': [boardId: string]
 }>()
 
 const columns: Array<{ key: string; label: string; statuses: ProjectBoardStatus[]; moveStatus: ProjectBoardStatus; tone: string }> = [
@@ -450,6 +491,12 @@ const boardIsDefault = ref(false)
 const questionAnswer = ref('')
 const commentText = ref('')
 const startDialogOpen = ref(false)
+const queueDialogOpen = ref(false)
+const queueFeatureIds = ref<string[]>([])
+const queueAllowEdits = ref(false)
+watch([featureDialogOpen, boardDialogOpen, agentDialogOpen, startDialogOpen, queueDialogOpen], (open, previous) => {
+  if (open.some((value, index) => value && !previous[index])) props.actions.clearError()
+})
 const isDockedDetail = useMediaQuery('(min-width: 1280px) and (pointer: fine)')
 const focusBeforeDialog = new Map<string, HTMLElement>()
 
@@ -460,6 +507,9 @@ const featureDraft = reactive({
   priority: 'normal' as ProjectBoardPriority,
   verificationPolicy: 'self' as ProjectBoardVerificationPolicy,
   assignedAgentId: '',
+  dependencyIds: [] as string[],
+  model: '',
+  reasoningEffort: '' as ReasoningEffort | '',
 })
 
 const agentDraft = reactive({
@@ -514,6 +564,11 @@ const activeBoard = computed<ProjectBoard | null>(() => {
 })
 const boardAgents = computed(() => props.snapshot.agents.filter((agent) => activeBoard.value?.agentIds.includes(agent.id)))
 const featureCards = computed(() => props.snapshot.cards.filter((card) => card.boardId === activeBoard.value?.id && !card.parentCardId))
+const dependencyCandidates = computed(() => featureCards.value.filter((card) => card.type === 'feature' && card.id !== editingCardId.value))
+const activeQueue = computed(() => props.snapshot.queues?.find((queue) => queue.boardId === activeBoard.value?.id))
+const queueCandidates = computed(() => featureCards.value.filter((card) => card.type === 'feature' && card.status !== 'done' && card.status !== 'review' && !cardIsLocked(card)))
+const latestBoardPlanRun = computed(() => props.snapshot.runs.filter((run) => run.boardId === activeBoard.value?.id && run.kind === 'board_plan').sort((a, b) => b.startedAtIso.localeCompare(a.startedAtIso))[0])
+const boardPlanningActive = computed(() => latestBoardPlanRun.value?.status === 'running' || latestBoardPlanRun.value?.status === 'queued')
 const selectedCard = computed(() => featureCards.value.find((card) => card.id === props.initialFeatureId) ?? null)
 const selectedTasks = computed(() => props.snapshot.cards.filter((card) => card.parentCardId === selectedCard.value?.id).sort((a, b) => a.createdAtIso.localeCompare(b.createdAtIso)))
 const selectedTaskIds = computed(() => new Set(selectedTasks.value.map((task) => task.id)))
@@ -530,6 +585,7 @@ watch([() => activeBoard.value?.id, () => props.initialFeatureId, selectedProjec
   commentText.value = ''
   featureDialogOpen.value = false
   startDialogOpen.value = false
+  queueDialogOpen.value = false
 })
 watch(() => selectedOpenQuestion.value?.id, () => { questionAnswer.value = '' })
 
@@ -581,6 +637,9 @@ function openFeatureEditor(): void {
   featureDraft.acceptanceCriteria = ''
   featureDraft.priority = 'normal'
   featureDraft.verificationPolicy = 'self'
+  featureDraft.model = ''
+  featureDraft.reasoningEffort = ''
+  featureDraft.dependencyIds = []
   featureDraft.assignedAgentId = boardAgents.value.find((agent) => agent.role === 'lead')?.id ?? boardAgents.value[0]?.id ?? ''
   featureDialogOpen.value = true
 }
@@ -594,6 +653,9 @@ function openEditSelectedCard(): void {
   featureDraft.priority = selectedCard.value.priority
   featureDraft.verificationPolicy = selectedCard.value.verificationPolicy
   featureDraft.assignedAgentId = selectedCard.value.assignedAgentId
+  featureDraft.dependencyIds = [...selectedCard.value.dependencyIds]
+  featureDraft.model = selectedCard.value.model || ''
+  featureDraft.reasoningEffort = selectedCard.value.reasoningEffort || ''
   featureDialogOpen.value = true
 }
 
@@ -604,6 +666,7 @@ function createFeature(): void {
     title: featureDraft.title.trim(), description: featureDraft.description,
     acceptanceCriteria: featureDraft.acceptanceCriteria, priority: featureDraft.priority,
     verificationPolicy: featureDraft.verificationPolicy, assignedAgentId: featureDraft.assignedAgentId,
+    dependencyIds: [...featureDraft.dependencyIds], model: featureDraft.model, reasoningEffort: featureDraft.reasoningEffort,
   }
   void submitMutation(() => editingCardId.value
     ? props.actions.updateCard(editingCardId.value, changes)
@@ -697,6 +760,30 @@ function startSelectedCard(): void {
 }
 
 function confirmStart(): void { runSelectedFeature(true) }
+function planSelectedFeature(): void {
+  const cardId = selectedCard.value?.id
+  if (cardId) void submitMutation(() => props.actions.startFeature(cardId, false, 'plan'))
+}
+function openQueue(): void {
+  const previous = new Set(activeQueue.value?.featureIds || [])
+  queueFeatureIds.value = queueCandidates.value.filter((card) => !previous.size || previous.has(card.id)).map((card) => card.id)
+  queueAllowEdits.value = false
+  queueDialogOpen.value = true
+}
+function runQueue(): void {
+  const boardId = activeBoard.value?.id
+  if (boardId) void submitMutation(() => props.actions.startQueue(boardId, [...queueFeatureIds.value], queueAllowEdits.value), () => { queueDialogOpen.value = false })
+}
+function pauseQueue(): void {
+  const boardId = activeBoard.value?.id
+  if (boardId) void submitMutation(() => props.actions.stopQueue(boardId))
+}
+function dependencyLabel(card: ProjectBoardCard): string {
+  if (!card.dependencyIds.length) return ''
+  const dependencies = card.dependencyIds.map((id) => props.snapshot.cards.find((entry) => entry.id === id))
+  const waiting = dependencies.filter((entry) => !entry || entry.status !== 'done')
+  return `${waiting.length ? 'Waiting for' : 'Builds on'}: ${(waiting.length ? waiting : dependencies).map((entry) => entry?.title || 'Missing feature').join(', ')}`
+}
 function runSelectedFeature(allowWorkspaceWrite: boolean): void {
   const cardId = selectedCard.value?.id
   if (cardId) void submitMutation(() => props.actions.startFeature(cardId, allowWorkspaceWrite), () => { startDialogOpen.value = false })
@@ -773,6 +860,23 @@ function formatTime(value: string): string { const date = new Date(value); retur
 .boards-auto-toggle input { @apply h-4 w-4 accent-blue-600; }
 .boards-auto-toggle small { background: var(--surface-muted); @apply rounded-full px-2 py-0.5 text-[10px]; }
 .boards-live-dot { @apply h-2 w-2 rounded-full bg-emerald-500; }
+.board-workflow { @apply mb-3 flex flex-wrap items-center justify-between gap-3 rounded-xl border px-4 py-3; background: var(--surface-muted); border-color: var(--border-soft); }
+.workflow-state { @apply min-w-0 flex-1; }
+.workflow-state strong { @apply text-sm font-medium; }
+.workflow-state p { @apply mt-1 mb-0 text-xs leading-5; color: var(--text-secondary); }
+.board-plan-summary { @apply w-full text-xs; color: var(--text-secondary); }
+.board-plan-summary summary { @apply cursor-pointer py-1; }
+.board-plan-summary p { @apply max-h-60 overflow-y-auto whitespace-pre-wrap leading-5; }
+.dependency-note { @apply text-xs leading-5; color: var(--text-tertiary); }
+.dependency-picker { @apply flex max-h-52 flex-col gap-2 overflow-y-auto rounded-lg border p-3; border-color: var(--border-soft); }
+.dependency-picker legend { @apply px-1 text-xs font-medium; }
+.dependency-picker .checkbox-row { @apply flex-row items-center gap-2; }
+.queue-list { @apply flex max-h-[40dvh] flex-col gap-2 overflow-y-auto; }
+.queue-feature { @apply flex flex-row items-start gap-3 rounded-lg border p-3; border-color: var(--border-soft); }
+.queue-feature input { @apply mt-1 h-4 w-4 flex-none; }
+.queue-feature span { @apply flex min-w-0 flex-col gap-1; }
+.queue-feature strong { @apply text-sm font-medium; color: var(--text-primary); }
+.queue-feature small { @apply text-xs font-normal; color: var(--text-tertiary); }
 .boards-alert { @apply m-0 rounded-lg border px-3 py-2 text-sm; color: var(--text-primary); background: color-mix(in srgb, var(--surface-elevated) 90%, #e11d48); border-color: color-mix(in srgb, var(--border-strong) 60%, #e11d48); }
 .boards-empty { @apply m-auto flex max-w-lg flex-col items-center justify-center gap-2 px-6 py-12 text-center; color: var(--text-secondary); }
 .boards-empty svg { @apply h-8 w-8; color: var(--text-muted); }
@@ -850,7 +954,7 @@ function formatTime(value: string): string { const date = new Date(value); retur
 .danger-button { @apply text-rose-600 hover:bg-rose-50 hover:text-rose-700; }
 .board-dialog { @apply fixed top-1/2 left-1/2 z-[70] max-h-[92dvh] w-[calc(100%_-_2rem)] max-w-2xl -translate-x-1/2 -translate-y-1/2 overflow-y-auto overscroll-contain rounded-xl border shadow-2xl outline-none; background: var(--surface-elevated); color: var(--text-primary); border-color: var(--border-soft); }
 .board-dialog-small { @apply max-w-md; }
-.board-dialog > header { @apply flex items-start justify-between gap-4 border-b px-5 py-4; border-color: var(--border-soft); }
+.board-dialog > header { @apply sticky top-0 z-10 flex items-start justify-between gap-4 border-b px-5 py-4; border-color: var(--border-soft); background: var(--surface-elevated); }
 .board-dialog header :deep(h2) { @apply m-0 text-lg font-semibold; }
 .board-dialog header p { @apply mt-1 mb-0 text-sm; color: var(--text-secondary); }
 .board-form { @apply space-y-4 p-5; }
@@ -858,7 +962,7 @@ function formatTime(value: string): string { const date = new Date(value); retur
 .board-form-grid { @apply grid grid-cols-2 gap-3; }
 .board-form-grid label { @apply flex flex-col gap-1.5; }
 .board-form footer { @apply flex justify-end gap-2 pt-2; }
-.checkbox-row { @apply flex-row items-center; }
+.board-form .checkbox-row { @apply flex-row items-start gap-2; }
 .checkbox-row input, .agent-row input { @apply h-4 w-4 accent-blue-600; }
 .agent-dialog { @apply max-w-5xl; }
 .agent-dialog > header { position: sticky; top: 0; z-index: 1; background: var(--surface-elevated); }

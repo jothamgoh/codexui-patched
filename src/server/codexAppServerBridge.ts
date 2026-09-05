@@ -18,6 +18,9 @@ import { AutomationStore } from './automationStore'
 import { AUTOMATION_DYNAMIC_TOOL_SPEC, AutomationService } from './automationService'
 import { ProjectBoardStore } from './projectBoardStore'
 import { ProjectBoardService } from './projectBoardService'
+import { readProjectBoardModels, resolveProjectBoardExecutionSettings } from './projectBoardModels'
+import type { ProjectBoardSnapshot } from '../types/projectBoards'
+import { buildThreadReferenceSection, type ThreadReferenceMessage } from '../utils/threadReferences'
 import { getCodexUiChildEnv } from './envFile'
 import {
   paginateThreadReadResult,
@@ -1572,6 +1575,9 @@ type CodexBridgeMiddleware = ((req: IncomingMessage, res: ServerResponse, next: 
   dispose: () => void
   listThreads: (params: Record<string, unknown>) => Promise<unknown>
   readThread: (threadId: string) => Promise<unknown>
+  readProjectBoards: () => Promise<ProjectBoardSnapshot>
+  takeProjectBoardRecoveryBaseline: () => Promise<ProjectBoardSnapshot> | null
+  publishLocalNotification: (method: string, params: unknown) => void
   subscribeNotifications: (listener: (value: { method: string; params: unknown; atIso: string }) => void) => () => void
 }
 
@@ -1581,6 +1587,7 @@ type SharedBridgeState = {
   methodCatalog: MethodCatalog
   automationService: AutomationService
   projectBoardService: ProjectBoardService
+  projectBoardRecoveryBaseline: Promise<ProjectBoardSnapshot> | null
 }
 
 const SHARED_BRIDGE_KEY = '__codexRemoteSharedBridge__'
@@ -1611,10 +1618,20 @@ function getSharedBridgeState(): SharedBridgeState {
     store: projectBoardStore,
     appServer,
     prepareThreadStartParams: (params) => automationService.augmentThreadStartParams(params),
+    resolveExecutionSettings: async (settings) => resolveProjectBoardExecutionSettings(
+      await readProjectBoardModels((method, params) => appServer.rpc(method, params)), settings,
+    ),
   })
   appServer.registerDynamicToolHandler(
     'automation_update',
-    (params) => automationService.handleDynamicToolCall(params),
+    (params) => {
+      const request = asRecord(params)
+      if (typeof request?.threadId === 'string' && projectBoardService.isPlanningThread(request.threadId)
+        && asRecord(request.arguments)?.action !== 'view') {
+        throw new Error('Planning is read-only. Start implementation before creating or changing automations.')
+      }
+      return automationService.handleDynamicToolCall(params)
+    },
   )
   appServer.registerDynamicToolHandler(
     'project_board_update',
@@ -1629,6 +1646,8 @@ function getSharedBridgeState(): SharedBridgeState {
   void automationService.start().catch((error) => {
     console.warn('[automations] Failed to start scheduler:', getErrorMessage(error, 'Unknown scheduler error'))
   })
+  const projectBoardRecoveryBaseline = projectBoardStore.read()
+  void projectBoardRecoveryBaseline.catch(() => undefined)
   void projectBoardService.start().catch((error) => {
     console.warn('[project-boards] Failed to start service:', getErrorMessage(error, 'Unknown project-board error'))
   })
@@ -1639,6 +1658,7 @@ function getSharedBridgeState(): SharedBridgeState {
     methodCatalog: new MethodCatalog(),
     automationService,
     projectBoardService,
+    projectBoardRecoveryBaseline,
   }
   globalScope[SHARED_BRIDGE_KEY] = created
   return created
@@ -1894,6 +1914,49 @@ export function createCodexBridgeMiddleware(): CodexBridgeMiddleware {
         }
 
         setJson(res, 200, { result: await resumeThreadLite(appServer, threadId) })
+        return
+      }
+
+      if (req.method === 'GET' && url.pathname === '/codex-api/project-board-models') {
+        setJson(res, 200, { data: await readProjectBoardModels((method, params) => appServer.rpc(method, params)) })
+        return
+      }
+
+      const boardPlanMatch = url.pathname.match(/^\/codex-api\/project-boards\/([^/]+)\/plan$/u)
+      if (req.method === 'POST' && boardPlanMatch) {
+        const input = asRecord(await readJsonBody(req)) ?? {}
+        const sourceThreadId = typeof input.sourceThreadId === 'string' ? input.sourceThreadId.trim() : ''
+        let sourceContext = ''
+        if (sourceThreadId) {
+          const result = asRecord(await appServer.rpc('thread/read', { threadId: sourceThreadId, includeTurns: true }))
+          const thread = asRecord(result?.thread)
+          if (!thread) throw new Error('The source chat could not be read. Paste its plan into the brief instead.')
+          const turns = Array.isArray(thread.turns) ? thread.turns : []
+          const messages: ThreadReferenceMessage[] = []
+          for (const turn of turns.slice(-12)) {
+            const items = asRecord(turn)?.items
+            for (const value of Array.isArray(items) ? items : []) {
+              const item = asRecord(value)
+              if (item?.type === 'agentMessage' && typeof item.text === 'string') messages.push({ role: 'assistant', text: item.text })
+              if (item?.type === 'userMessage' && Array.isArray(item.content)) {
+                const text = item.content.map((value) => { const part = asRecord(value); return part?.type === 'text' && typeof part.text === 'string' ? part.text : '' }).filter(Boolean).join('\n')
+                if (text) messages.push({ role: 'user', text })
+              }
+            }
+          }
+          sourceContext = buildThreadReferenceSection([{ id: sourceThreadId, name: typeof thread.name === 'string' ? thread.name : 'Planning chat', path: `thread://${sourceThreadId}`, messages, hasEarlier: turns.length > 12 }])
+        }
+        setJson(res, 202, { data: await projectBoardService.startBoardPlan(decodeURIComponent(boardPlanMatch[1]), input, sourceContext) })
+        return
+      }
+
+      const boardQueueMatch = url.pathname.match(/^\/codex-api\/project-boards\/([^/]+)\/queue$/u)
+      if (boardQueueMatch && req.method === 'POST') {
+        setJson(res, 202, { data: await projectBoardService.startBoardQueue(decodeURIComponent(boardQueueMatch[1]), await readJsonBody(req)) })
+        return
+      }
+      if (boardQueueMatch && req.method === 'DELETE') {
+        setJson(res, 200, { data: await projectBoardService.stopBoardQueue(decodeURIComponent(boardQueueMatch[1])) })
         return
       }
 
@@ -2547,6 +2610,14 @@ export function createCodexBridgeMiddleware(): CodexBridgeMiddleware {
     threadId,
     includeTurns: false,
   })
+  middleware.readProjectBoards = () => projectBoardService.read()
+  middleware.takeProjectBoardRecoveryBaseline = () => {
+    const shared = getSharedBridgeState()
+    const baseline = shared.projectBoardRecoveryBaseline
+    shared.projectBoardRecoveryBaseline = null
+    return baseline
+  }
+  middleware.publishLocalNotification = (method: string, params: unknown) => appServer.publishLocalNotification(method, params)
   middleware.subscribeNotifications = (
     listener: (value: { method: string; params: unknown; atIso: string }) => void,
   ) => {

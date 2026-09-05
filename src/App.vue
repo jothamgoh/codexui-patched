@@ -172,6 +172,7 @@
             </span>
           </template>
           <template #actions>
+            <Button v-if="route.name === 'thread' && selectedThreadId" type="button" variant="ghost" size="icon-sm" title="Turn this chat into a board" aria-label="Turn this chat into a board" @click="openChatBoardPlan"><SquareKanban /></Button>
             <WorkspaceSummaryButton
               v-if="showWorkspaceSummary"
               :thread-id="selectedThreadId"
@@ -185,6 +186,8 @@
               :threads="notificationThreads"
               :active-thread-id="selectedThreadId"
               :board-attention="projectBoardAttention"
+              :board-thread-ids="boardManagedThreadIds"
+              :board-activity-titles="boardActivityTitles"
               @select-thread="onSelectThread"
               @select-board-question="openProjectBoardQuestion"
             />
@@ -212,7 +215,10 @@
                 createCard: onCreateProjectBoardCard, updateCard: updateProjectBoardCard,
                 deleteCard: deleteProjectBoardCard, addComment: onAddProjectBoardComment,
                 answerQuestion: onAnswerProjectBoardQuestion, startFeature: onStartProjectBoardFeature,
+                startQueue: startProjectBoardQueue, stopQueue: stopProjectBoardQueue,
+                clearError: clearProjectBoardError,
               }"
+              @plan-board="openBoardPlanner"
               @select-thread="onSelectThread"
             />
           </template>
@@ -331,6 +337,14 @@
     @close="closeChatSearch"
     @select="onSelectSearchThread"
   />
+  <BoardPlanDialog
+    v-model:open="boardPlanDialogOpen"
+    :board-id="boardPlanTargetId" :source-thread-id="boardPlanSourceThreadId"
+    :initial-plan="boardPlanInitialText" :initial-project-path="boardPlanProjectPath"
+    :initial-coordinator-id="boardPlanTarget?.coordinatorAgentId"
+    :projects="projectBoardProjectOptions" :agents="boardPlanAgents"
+    :on-plan="onPlanProjectBoard"
+  />
   <div class="build-badge" aria-label="Worktree name">
     WT {{ worktreeName }}
   </div>
@@ -352,6 +366,8 @@ import McpHub from './components/content/McpHub.vue'
 import PluginsHub from './components/content/PluginsHub.vue'
 import ScheduledTasksHub from './components/content/ScheduledTasksHub.vue'
 import ProjectBoardsHub from './components/content/ProjectBoardsHub.vue'
+import BoardPlanDialog, { type BoardPlanDraft } from './components/content/BoardPlanDialog.vue'
+import Button from './components/ui/button/Button.vue'
 import ChatSearchDialog from './components/content/ChatSearchDialog.vue'
 import RateLimitsSummary from './components/content/RateLimitsSummary.vue'
 import ThemeToggleButton from './components/content/ThemeToggleButton.vue'
@@ -402,6 +418,7 @@ const {
   availableModelIds,
   selectedModelId,
   selectedReasoningEffort,
+  setBoardManagedThreadIds,
   fastModeAvailable,
   fastModeEnabled,
   isUpdatingFastMode,
@@ -503,7 +520,28 @@ const {
   addComment: addProjectBoardComment,
   answerQuestion: answerProjectBoardQuestion,
   startFeature: startProjectBoardFeature,
+  planBoard: planProjectBoard,
+  startQueue: startProjectBoardQueue,
+  stopQueue: stopProjectBoardQueue,
+  clearError: clearProjectBoardError,
 } = useProjectBoards({ showBrowserNotifications: true })
+const boardPlanDialogOpen = ref(false)
+const boardPlanTargetId = ref('')
+const boardPlanSourceThreadId = ref('')
+const boardPlanInitialText = ref('')
+const boardPlanProjectPath = ref('')
+const boardPlanTarget = computed(() => projectBoardSnapshot.value.boards.find((board) => board.id === boardPlanTargetId.value))
+const boardPlanAgents = computed(() => projectBoardSnapshot.value.agents.filter((agent) => !boardPlanTarget.value || boardPlanTarget.value.agentIds.includes(agent.id)))
+const boardManagedThreadIds = computed(() => Array.from(new Set([
+  ...projectBoardSnapshot.value.cards.map((card) => card.threadId),
+  ...projectBoardSnapshot.value.boards.map((board) => board.planningThreadId),
+  ...projectBoardSnapshot.value.runs.map((run) => run.threadId),
+].filter(Boolean))))
+const boardActivityTitles = computed(() => Object.fromEntries([
+  ...projectBoardSnapshot.value.boards.map((board) => [board.id, board.name]),
+  ...projectBoardSnapshot.value.cards.map((card) => [card.id, card.title]),
+]))
+watch(boardManagedThreadIds, (ids) => setBoardManagedThreadIds(ids), { immediate: true })
 const isRouteSyncInProgress = ref(false)
 const hasInitialized = ref(false)
 const newThreadCwd = ref(loadNewThreadCwd())
@@ -888,9 +926,47 @@ async function onAnswerProjectBoardQuestion(questionId: string, answer: string):
   await answerProjectBoardQuestion(questionId, { answer })
 }
 
-async function onStartProjectBoardFeature(featureId: string, allowWorkspaceWrite: boolean): Promise<void> {
+async function onStartProjectBoardFeature(featureId: string, allowWorkspaceWrite: boolean, mode: 'plan' | 'execute' = 'execute'): Promise<void> {
   requestBrowserTurnNotificationsPermission()
-  await startProjectBoardFeature(featureId, allowWorkspaceWrite)
+  await startProjectBoardFeature(featureId, allowWorkspaceWrite, mode)
+}
+
+function openChatBoardPlan(): void {
+  clearProjectBoardError()
+  boardPlanTargetId.value = ''
+  boardPlanSourceThreadId.value = selectedThreadId.value
+  boardPlanProjectPath.value = selectedThread.value?.cwd || newThreadCwd.value
+  boardPlanInitialText.value = [...messages.value].reverse().find((message) => message.role === 'assistant' && message.text.trim() && !message.commandExecution && !message.toolCall)?.text.slice(0, 12000) || ''
+  boardPlanDialogOpen.value = true
+}
+
+function openBoardPlanner(boardId: string): void {
+  clearProjectBoardError()
+  const board = projectBoardSnapshot.value.boards.find((entry) => entry.id === boardId)
+  boardPlanTargetId.value = boardId
+  boardPlanSourceThreadId.value = board?.sourceThreadId || ''
+  boardPlanProjectPath.value = board?.projectPath || ''
+  boardPlanInitialText.value = board?.plan || ''
+  boardPlanDialogOpen.value = true
+}
+
+async function onPlanProjectBoard(draft: BoardPlanDraft): Promise<void> {
+  let boardId = draft.boardId
+  if (!boardId) {
+    const projectPath = await openProjectRoot(draft.projectPath, { createIfMissing: draft.createFolder })
+    const previousIds = new Set(projectBoardSnapshot.value.boards.map((board) => board.id))
+    const projectName = projectBoardProjectOptions.value.find((project) => project.path === projectPath)?.name || projectPath.split('/').filter(Boolean).at(-1) || 'Project'
+    const snapshot = await createProjectBoard({ projectPath, projectName, name: draft.name, isDefault: !projectBoardSnapshot.value.boards.some((board) => board.projectPath === projectPath) })
+    boardId = snapshot.boards.find((board) => !previousIds.has(board.id))?.id || ''
+    if (!boardId) throw new Error('Could not find the new board.')
+    // A retry after planning fails must reuse the board already created.
+    boardPlanTargetId.value = boardId
+    const board = snapshot.boards.find((entry) => entry.id === boardId)
+    if (board && draft.coordinatorAgentId && !board.agentIds.includes(draft.coordinatorAgentId)) await updateProjectBoard(boardId, { agentIds: [...board.agentIds, draft.coordinatorAgentId] })
+  }
+  requestBrowserTurnNotificationsPermission()
+  await planProjectBoard(boardId, draft)
+  openProjectBoard(boardId)
 }
 
 function openMcpHub(): void {

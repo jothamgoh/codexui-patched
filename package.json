@@ -53,7 +53,7 @@
     "test:ui-font-size": "node --test tests/uiFontSize.test.mjs",
     "test:service-tier": "node --test tests/serviceTier.test.mjs",
     "test:automations": "node --test tests/automationStore.test.mjs",
-    "test:project-boards": "node --test tests/projectBoardStore.test.mjs tests/projectBoardService.test.mjs tests/projectBoardNotifications.test.mjs",
+    "test:project-boards": "node --test tests/projectBoardStore.test.mjs tests/projectBoardService.test.mjs tests/projectBoardNotifications.test.mjs tests/projectBoardModels.test.mjs",
     "test:e2e:project-boards": "node tests/projectBoards.e2e.mjs",
     "check:project-boards": "npm test && npm run build && npm run test:e2e:project-boards",
     "test:composer-drafts": "node --test tests/composerDrafts.test.mjs",

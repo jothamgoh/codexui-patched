@@ -7,10 +7,12 @@ import type {
   ProjectBoardCreateInput,
   ProjectBoardSnapshot,
 } from '../types/projectBoards'
+import type { ReasoningEffort } from '../types/codex'
+import type { ProjectBoardModelCatalog } from '../types/projectBoardModels'
 
 export type ProjectBoardUpdateInput = Partial<Pick<
   ProjectBoard,
-  'name' | 'isDefault' | 'agentIds' | 'autoDispatch'
+  'name' | 'isDefault' | 'agentIds' | 'autoDispatch' | 'plan' | 'coordinatorAgentId'
 >>
 
 export type ProjectBoardAgentUpdateInput = Partial<Pick<
@@ -29,7 +31,18 @@ export type ProjectBoardCardUpdateInput = Partial<Pick<
   | 'taskPurpose'
   | 'assignedAgentId'
   | 'autoRun'
+  | 'dependencyIds'
+  | 'model'
+  | 'reasoningEffort'
 >>
+
+export type ProjectBoardPlanInput = {
+  plan: string
+  sourceThreadId?: string
+  coordinatorAgentId?: string
+  model?: string
+  reasoningEffort?: ReasoningEffort | ''
+}
 
 export type ProjectBoardCommentInput = {
   text: string
@@ -201,9 +214,29 @@ export function answerProjectBoardQuestion(
   )
 }
 
-export function startProjectBoardFeature(featureId: string, allowWorkspaceWrite = false): Promise<ProjectBoardSnapshot> {
+export function startProjectBoardFeature(featureId: string, allowWorkspaceWrite = false, mode: 'plan' | 'execute' = 'execute'): Promise<ProjectBoardSnapshot> {
   return requestProjectBoardSnapshot(
     projectBoardPath(`project-board-cards/${encodeURIComponent(featureId)}/start`),
-    jsonRequest('POST', { allowWorkspaceWrite }),
+    jsonRequest('POST', { allowWorkspaceWrite, mode }),
   )
+}
+
+export function planProjectBoard(boardId: string, input: ProjectBoardPlanInput): Promise<ProjectBoardSnapshot> {
+  return requestProjectBoardSnapshot(projectBoardPath(`project-boards/${encodeURIComponent(boardId)}/plan`), jsonRequest('POST', input))
+}
+
+export function startProjectBoardQueue(boardId: string, featureIds: string[], allowWorkspaceWrite: boolean): Promise<ProjectBoardSnapshot> {
+  return requestProjectBoardSnapshot(projectBoardPath(`project-boards/${encodeURIComponent(boardId)}/queue`), jsonRequest('POST', { featureIds, allowWorkspaceWrite }))
+}
+
+export function stopProjectBoardQueue(boardId: string): Promise<ProjectBoardSnapshot> {
+  return requestProjectBoardSnapshot(projectBoardPath(`project-boards/${encodeURIComponent(boardId)}/queue`), { method: 'DELETE' })
+}
+
+export async function getProjectBoardModels(): Promise<ProjectBoardModelCatalog> {
+  const response = await fetch(projectBoardPath('project-board-models'))
+  const payload = asRecord(await response.json().catch(() => null))
+  const data = asRecord(payload?.data)
+  if (!response.ok || !Array.isArray(data?.models)) throw new Error(typeof payload?.error === 'string' ? payload.error : 'Could not load model settings.')
+  return data as ProjectBoardModelCatalog
 }

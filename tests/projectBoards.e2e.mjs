@@ -135,6 +135,10 @@ try {
   await waitForServer()
   browser = await chromium.launch({ headless: true })
   page = await browser.newPage({ viewport: { width: 1600, height: 1000 }, deviceScaleFactor: 1 })
+  await page.route('**/codex-api/project-board-models', (route) => route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ data: { defaultModel: 'build-model', defaultReasoningEffort: 'high', models: [
+    { id: 'build-model', label: 'Build model', reasoningEfforts: ['medium', 'high'], defaultReasoningEffort: 'high' },
+    { id: 'review-model', label: 'Review model', reasoningEfforts: ['low', 'medium'], defaultReasoningEffort: 'medium' },
+  ] } }) }))
   page.on('framenavigated', (frame) => { if (frame === page.mainFrame()) navigations.push(frame.url()) })
   page.on('pageerror', (error) => { pageErrors.push(error.message) })
   page.on('websocket', (socket) => {
@@ -234,10 +238,10 @@ try {
   await form.getByPlaceholder('Add project progress board').fill('Dogfood the board')
   await form.getByPlaceholder('What should be built, and why?').fill('Use the dashboard to track its own improvements.')
   await page.evaluate(async () => {
-    const response = await fetch('/codex-api/project-board-cards/feature-done', { method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ title: 'Storage snapshot refreshed' }) })
-    if (!response.ok) throw new Error('Fixture update failed')
+    const response = await fetch('/codex-api/project-board-cards/feature-review', { method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ title: 'Mobile snapshot refreshed' }) })
+    if (!response.ok) throw new Error(`Fixture update failed: ${await response.text()}`)
   })
-  await page.locator('[data-feature-id="feature-done"]').getByText('Storage snapshot refreshed', { exact: true }).waitFor()
+  await page.locator('[data-feature-id="feature-review"]').getByText('Mobile snapshot refreshed', { exact: true }).waitFor()
   assert.equal(await form.getByPlaceholder('Add project progress board').inputValue(), 'Dogfood the board', 'Live snapshots must preserve the current form')
   await rejectOnce('project-board-cards', 'Feature could not be saved.')
   await form.getByRole('button', { name: 'Create feature' }).click()
@@ -249,6 +253,10 @@ try {
   await newFeatureButton.click()
   await form.getByPlaceholder('Add project progress board').fill('Dogfood the board')
   await form.getByLabel('Lead for this feature', { exact: true }).selectOption(customAgent.id)
+  await form.getByLabel('Lead model', { exact: true }).selectOption('review-model')
+  await form.getByLabel('Lead reasoning', { exact: true }).selectOption('medium')
+  await form.getByRole('checkbox', { name: 'Persistent board storage · Done' }).check()
+  await page.screenshot({ path: join(outputDirectory, 'project-board-feature-settings.png'), fullPage: true })
   await form.getByRole('button', { name: 'Create feature' }).click()
   await detail.getByText('Dogfood the board', { exact: true }).waitFor()
   const selectedAgentId = await page.evaluate(async () => {
@@ -256,6 +264,10 @@ try {
     return data.cards.find((card) => card.title === 'Dogfood the board').assignedAgentId
   })
   assert.equal(selectedAgentId, customAgent.id)
+  const savedFeature = await page.evaluate(async () => (await (await fetch('/codex-api/project-boards')).json()).data.cards.find((card) => card.title === 'Dogfood the board'))
+  assert.equal(savedFeature.model, 'review-model')
+  assert.equal(savedFeature.reasoningEffort, 'medium')
+  assert.deepEqual(savedFeature.dependencyIds, ['feature-done'])
 
   // Server owns completion truth; failed moves keep the current value and explain why.
   await detail.locator('.detail-status-select select').selectOption('done')
@@ -278,8 +290,54 @@ try {
   assert.equal(startConsent, undefined)
   await consent.getByRole('button', { name: 'Allow edits & start' }).click()
   await consent.getByRole('alert').waitFor()
-  assert.deepEqual(startConsent, { allowWorkspaceWrite: true })
+  assert.deepEqual(startConsent, { allowWorkspaceWrite: true, mode: 'execute' })
   await page.keyboard.press('Escape')
+  await detail.getByRole('button', { name: 'Plan first', exact: true }).click()
+  await detail.getByRole('alert').getByText('Smoke test does not run a Lead.').waitFor()
+  assert.deepEqual(startConsent, { allowWorkspaceWrite: false, mode: 'plan' })
+
+  await page.getByRole('button', { name: 'Close feature', exact: true }).click()
+  await visitBoard()
+  let queueRequest
+  await page.route('**/codex-api/project-boards/board-1/queue', (route) => {
+    queueRequest = route.request().postDataJSON()
+    return route.fulfill({ status: 409, contentType: 'application/json', body: JSON.stringify({ error: 'Queue is paused for this smoke.' }) })
+  })
+  await page.getByRole('button', { name: 'Run selected features', exact: true }).click()
+  const queueDialog = page.getByRole('dialog', { name: 'Run selected features', exact: true })
+  assert.equal(await queueDialog.getByRole('button', { name: 'Start selected features' }).isDisabled(), true)
+  await queueDialog.getByRole('checkbox', { name: 'Allow project edits', exact: false }).check()
+  await page.screenshot({ path: join(outputDirectory, 'project-board-queue.png'), fullPage: true })
+  await page.setViewportSize({ width: 390, height: 844 })
+  assert.ok(await queueDialog.evaluate((element) => element.scrollWidth <= element.clientWidth), 'Queue consent must fit mobile width')
+  await page.screenshot({ path: join(outputDirectory, 'project-board-queue-mobile.png'), fullPage: true })
+  await page.setViewportSize({ width: 1600, height: 1000 })
+  await queueDialog.getByRole('button', { name: 'Start selected features' }).click()
+  await queueDialog.getByRole('alert').getByText('Queue is paused for this smoke.').waitFor()
+  assert.equal(queueRequest.allowWorkspaceWrite, true)
+  assert.ok(queueRequest.featureIds.includes(savedFeature.id))
+  assert.ok(!queueRequest.featureIds.includes('feature-done'))
+  await page.keyboard.press('Escape')
+
+  await visitBoard()
+  let planRequest
+  await page.route('**/codex-api/project-boards/*/plan', (route) => {
+    planRequest = route.request().postDataJSON()
+    return route.fulfill({ status: 409, contentType: 'application/json', body: JSON.stringify({ error: 'Planning request kept for review.' }) })
+  })
+  await page.getByRole('button', { name: 'Plan features', exact: true }).click()
+  const planning = page.getByRole('dialog', { name: 'Plan project features', exact: true })
+  await planning.getByLabel('Goal or plan', { exact: true }).fill('Build shared groundwork once, then two related features. Keep completed work.')
+  await planning.getByLabel('Coordinator model', { exact: true }).selectOption('build-model')
+  await planning.getByLabel('Coordinator reasoning', { exact: true }).selectOption('high')
+  await page.screenshot({ path: join(outputDirectory, 'project-board-plan.png'), fullPage: true })
+  await planning.getByRole('button', { name: 'Create feature plan' }).click()
+  await planning.getByRole('alert').getByText('Planning request kept for review.').waitFor()
+  assert.match(await planning.getByLabel('Goal or plan', { exact: true }).inputValue(), /shared groundwork/)
+  assert.equal(planRequest.model, 'build-model')
+  assert.equal(planRequest.reasoningEffort, 'high')
+  await page.keyboard.press('Escape')
+  await page.locator(`[data-feature-id="${savedFeature.id}"] .board-card-main`).click()
 
   const comment = page.getByPlaceholder('Add context for the Lead')
   await rejectOnce('project-board-cards/*/comments', 'Comment could not be saved.')
@@ -293,6 +351,7 @@ try {
   await visitBoard('?feature=qa-batch')
   await detail.getByText('QA batch cards track later verification.', { exact: false }).waitFor()
   assert.equal(await page.getByTestId('start-feature').count(), 0)
+  if (await page.getByRole('button', { name: 'Expand sidebar', exact: true }).count()) await page.getByRole('button', { name: 'Expand sidebar', exact: true }).click()
   await page.getByRole('button', { name: 'New chat', exact: true }).click()
   await page.getByText("Let's build", { exact: true }).waitFor()
   await page.locator('button[aria-label^="Notifications:"]').waitFor()
@@ -337,8 +396,63 @@ try {
   assert.equal(await library.getByLabel('Access', { exact: true }).isDisabled(), true, 'Access is explained and locked once the profile owns work')
   assert.ok(await library.evaluate((element) => element.scrollWidth <= element.clientWidth), 'Agent library must fit mobile width')
   await page.screenshot({ path: join(outputDirectory, 'project-board-agent-mobile.png'), fullPage: true })
+  await page.keyboard.press('Escape')
 
-  console.log('Project board smoke passed: seeded questions, preserved drafts, guarded moves, consent transport, scoped routes, dark dialogs, mobile scrolling, and ordinary chat navigation. Lead orchestration is covered separately by the fake service adapter.')
+  // Start in an ordinary chat, preserve its plan and source link, and reuse a new
+  // board when planning fails. Model execution is covered by the native probe.
+  const sourcePlan = 'Create shared foundations, then build two related features with one final review.'
+  const sourceThread = { id: 'planning-source-chat', cwd: emptyProject, preview: 'Planning a new project', createdAt: Date.now() / 1000, updatedAt: Date.now() / 1000, status: { type: 'idle' }, turns: [{ id: 'source-turn', status: 'completed', items: [
+    { id: 'source-user', type: 'userMessage', content: [{ type: 'text', text: 'Please make a project plan.' }] },
+    { id: 'source-plan', type: 'agentMessage', text: sourcePlan, phase: 'final_answer' },
+  ] }] }
+  await page.route('**/codex-api/rpc', async (route) => {
+    const { method, params } = route.request().postDataJSON()
+    let result
+    if (method === 'thread/list') result = { data: [sourceThread], nextCursor: null }
+    else if ((method === 'thread/read' || method === 'thread/resume') && params.threadId === sourceThread.id) result = { thread: sourceThread, model: 'build-model', reasoningEffort: 'high', cwd: emptyProject }
+    else if (method === 'thread/goal/get') result = { goal: null }
+    else return route.fallback()
+    return route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ result }) })
+  })
+  await page.route('**/codex-api/thread-resume-lite', (route) => route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ result: { thread: sourceThread, model: 'build-model', reasoningEffort: 'high' } }) }))
+  await page.route('**/codex-api/thread-page', (route) => route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ result: { thread: sourceThread, page: { startTurnIndex: 0, endTurnIndex: 1, totalTurns: 1, hasEarlier: false } } }) }))
+  await page.goto(`${origin}/?chat-import-smoke=1#/thread/${sourceThread.id}`, { waitUntil: 'domcontentloaded' })
+  await page.getByText(sourcePlan, { exact: true }).waitFor()
+  await page.getByRole('button', { name: 'Turn this chat into a board', exact: true }).click()
+  const chatPlan = page.getByRole('dialog', { name: 'Turn this chat into a board', exact: true })
+  assert.equal(await chatPlan.getByLabel('Goal or plan', { exact: true }).inputValue(), sourcePlan)
+  await chatPlan.getByLabel('Board name', { exact: true }).fill('Plan from chat')
+  assert.ok(await chatPlan.evaluate((element) => element.scrollWidth <= element.clientWidth), 'Chat planning must fit mobile width')
+  await page.screenshot({ path: join(outputDirectory, 'project-board-chat-plan-mobile.png'), fullPage: true })
+  await chatPlan.getByRole('button', { name: 'Create feature plan' }).click()
+  await chatPlan.getByRole('alert').getByText('Planning request kept for review.').waitFor()
+  assert.equal(planRequest.sourceThreadId, sourceThread.id)
+  assert.equal(planRequest.plan, sourcePlan)
+  const afterFirstPlan = (await (await fetch(`${origin}/codex-api/project-boards`)).json()).data
+  const importedBoard = afterFirstPlan.boards.find((board) => board.name === 'Plan from chat')
+  assert.ok(importedBoard)
+  await chatPlan.getByRole('button', { name: 'Create feature plan' }).click()
+  await chatPlan.getByRole('alert').getByText('Planning request kept for review.').waitFor()
+  const afterRetry = (await (await fetch(`${origin}/codex-api/project-boards`)).json()).data
+  assert.equal(afterRetry.boards.filter((board) => board.name === 'Plan from chat').length, 1, 'Retry must reuse the created board')
+  await page.keyboard.press('Escape')
+
+  // Existing Activity displays a board outcome and navigates directly to its card.
+  const outcome = { id: 'project-board-completed:feature-done:smoke', kind: 'completed', boardId: 'board-1', featureId: 'feature-done', cardId: 'feature-done', occurredAt: now }
+  const historyItem = { id: outcome.id, threadId: 'project-board:feature-done', turnId: outcome.id, status: 'completed', title: 'Feature completed', body: 'The feature is done. Open the board to review the result.', completedAt: now, readAt: null, projectBoard: outcome }
+  await page.route('**/codex-api/push/history', (route) => route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ data: { items: [historyItem], unreadCount: 1, dismissals: [] } }) }))
+  await page.route('**/codex-api/push/history/read', (route) => route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ data: { items: [{ ...historyItem, readAt: now }], unreadCount: 0, dismissals: [] } }) }))
+  await visitBoard()
+  await page.locator('button[aria-label^="Notifications:"]').click()
+  const notificationCenter = page.locator('.notification-popover')
+  await notificationCenter.getByText('Persistent board storage', { exact: true }).waitFor()
+  await page.screenshot({ path: join(outputDirectory, 'project-board-activity-mobile.png'), fullPage: true })
+  await notificationCenter.getByText('Persistent board storage', { exact: true }).click()
+  await page.waitForURL('**/#/board/board-1?feature=feature-done')
+  await detail.waitFor()
+
+  assert.deepEqual(pageErrors, [])
+  console.log('Project board smoke passed: questions, draft/retry preservation, model settings, Plan first, queue consent, chat-to-board entry, Activity deep links, dark dialogs, mobile layout, and ordinary chat navigation. Model execution is verified separately by the native runtime probe.')
 } catch (error) {
   await page?.screenshot({ path: join(outputDirectory, 'project-board-failure.png'), fullPage: true }).catch(() => undefined)
   const renderedCards = await page?.locator('.board-card-main > strong').allTextContents().catch(() => [])

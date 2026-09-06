@@ -363,6 +363,7 @@ function normalizeRun(value: unknown): ProjectBoardRun | null {
     cardId,
     agentId: readString(record.agentId, 200),
     kind,
+    planningFollowUp: kind === 'board_plan' && record.planningFollowUp === true ? true : undefined,
     createdCardIds: readStringArray(record.createdCardIds),
     status: allowedStatuses.has(rawStatus) ? rawStatus as ProjectBoardRun['status'] : 'failed',
     stoppedByUser: record.stoppedByUser === true ? true : undefined,
@@ -1286,24 +1287,25 @@ export class ProjectBoardStore {
     }).then((snapshot) => ({ snapshot, run: createdRun }))
   }
 
-  startBoardPlan(boardId: string, agentId: string, plan: string, sourceThreadId: string, settings?: { model: string; reasoningEffort: ReasoningEffort }, expectedTeam?: string): Promise<{ snapshot: ProjectBoardSnapshot; run: ProjectBoardRun }> {
+  startBoardPlan(boardId: string, agentId: string, plan: string, sourceThreadId: string, settings?: { model: string; reasoningEffort: ReasoningEffort }, expectedTeam?: string, planningFollowUp = false): Promise<{ snapshot: ProjectBoardSnapshot; run: ProjectBoardRun }> {
     let run!: ProjectBoardRun
     return this.mutate((current) => {
       const board = current.boards.find((entry) => entry.id === boardId)
       if (!board || !board.agentIds.includes(agentId)) throw new Error('Choose a coordinator enabled on this board.')
       if (expectedTeam !== undefined && projectBoardTeamFingerprint(board) !== expectedTeam) throw new Error('The board Team changed while starting. Review its settings and start again.')
       if (current.runs.some((entry) => entry.boardId === boardId && entry.kind !== 'follow_up' && entry.status === 'running')) throw new Error('Wait for this board’s active run to finish.')
-      if (!readString(plan)) throw new Error('A project plan is required.')
+      if (planningFollowUp && !board.planningThreadId) throw new Error('A planning conversation must already exist before replying.')
+      if (!planningFollowUp && !readString(plan)) throw new Error('A project plan is required.')
       const now = this.now().toISOString()
       run = {
-        id: randomUUID(), boardId, cardId: '', agentId, kind: 'board_plan', createdCardIds: [], status: 'running', threadId: '',
+        id: randomUUID(), boardId, cardId: '', agentId, kind: 'board_plan', planningFollowUp: planningFollowUp || undefined, createdCardIds: [], status: 'running', threadId: '',
         requestedModel: settings?.model, requestedReasoningEffort: settings?.reasoningEffort,
         startedAtIso: now, finishedAtIso: '', summary: '', error: '',
       }
       return {
         ...current,
         runs: [run, ...current.runs],
-        boards: current.boards.map((entry) => entry.id === boardId ? {
+        boards: planningFollowUp ? current.boards : current.boards.map((entry) => entry.id === boardId ? {
           ...entry, plan: readString(plan), sourceThreadId: readString(sourceThreadId, 200), coordinatorAgentId: agentId, updatedAtIso: now,
         } : entry),
       }

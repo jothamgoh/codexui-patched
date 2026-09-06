@@ -676,7 +676,7 @@ export class ProjectBoardService {
     if (this.activeBoardIds.has(boardId)) throw new Error('Another feature is running on this board. Let it finish before planning.')
     this.activeBoardIds.add(boardId)
     try {
-      const { snapshot: started, run } = await this.store.startBoardPlan(boardId, agent.id, readString(record.plan).slice(0, 20_000), sourceThreadId, settings, projectBoardTeamFingerprint(board))
+      const { snapshot: started, run } = await this.store.startBoardPlan(boardId, agent.id, readString(record.plan).slice(0, 20_000), sourceThreadId, settings, projectBoardTeamFingerprint(board), Boolean(message))
       if (generation !== this.processGeneration) {
         this.publish(await this.store.failRun(run.id, 'Codex app-server exited during planning start.', 'interrupted'))
         throw new Error('Codex app-server exited. Try planning again.')
@@ -700,6 +700,7 @@ export class ProjectBoardService {
     return {
       board: { id: board.id, name: board.name, projectPath: board.projectPath, plan: board.plan, sourceThreadId: board.sourceThreadId, coordinatorAgentId: board.coordinatorAgentId, model: board.model || '', reasoningEffort: board.reasoningEffort || '' },
       executionSettings: run ? { model: run.requestedModel, reasoningEffort: run.requestedReasoningEffort } : undefined,
+      planningFollowUp: run?.planningFollowUp === true,
       features: snapshot.cards.filter((card) => card.boardId === board.id && card.type === 'feature').slice(0, 100).map((card) => ({
         id: card.id, title: card.title, status: card.status, description: card.description.slice(0, 300),
         acceptanceCriteria: card.acceptanceCriteria.slice(0, 300), summary: card.summary.slice(0, 500), dependencyIds: card.dependencyIds,
@@ -1162,7 +1163,7 @@ export class ProjectBoardService {
             kind: 'application',
             value: context.kind === 'follow_up'
               ? `This is a normal conversation about a completed feature, in its existing Lead chat. Keep Done, completed tasks, QA evidence, and the result intact when answering explanations, links, how-to questions, or running requested checks. Read project_board_update read_context as needed; use native questions for clarification. Reply naturally and end the turn when answered. Do not call finish_feature again or automatically continue the old implementation. If the user requests actual changes, or asks you to fix a problem discovered during checks, first ${feature!.toolSchemaVersion >= 3 ? 'call reopen_feature with reason' : feature!.toolSchemaVersion >= 2 ? 'call reopen_task with taskId and summary explaining the repair; reopen dependent verification before the work it checks. This also reopens the feature atomically' : 'explain that this legacy chat cannot reopen tasks through its tool; use the existing feature reopen action'}. Only after that transition succeeds may you edit the implementation or change workflow state. Permission to access files does not replace this workflow transition. Preserve handoffs and verify repaired behavior before finishing again. Other feature work can continue during this conversation; if reopening is blocked by active work or completed dependents, explain the dependency and continue answering without changing files.`
-              : context.kind === 'board_plan' ? `You coordinate project planning with profile ${lead.id}. This turn is planning only, read-only. Use save_features to propose top-level feature cards once, then stop. Never implement or start feature tasks. This overrides earlier execution instructions in this chat.` : context.kind === 'plan' ? `${buildCoordinatorInstructions(lead, currentTools)}\nPLANNING ONLY: inspect read-only, save tasks, then stop. Do not execute tasks or request elevated write permissions.` : buildCoordinatorInstructions(lead, currentTools),
+              : context.kind === 'board_plan' ? `You coordinate project planning with profile ${lead.id}. This turn is read-only. ${run.planningFollowUp ? 'The user is continuing this existing conversation. Answer results, status, links, explanations, and next-step questions naturally, then end the turn. Saving cards is optional: call save_features only when the user asks to add or plan new work, and only for genuinely new scope. Do not turn a discussion or request for advice into new cards. Keep the saved plan, completed features, and handoffs intact.' : 'Use save_features to propose top-level feature cards once, then stop.'} Never implement or start feature tasks. This overrides earlier execution instructions in this chat.` : context.kind === 'plan' ? `${buildCoordinatorInstructions(lead, currentTools)}\nPLANNING ONLY: inspect read-only, save tasks, then stop. Do not execute tasks or request elevated write permissions.` : buildCoordinatorInstructions(lead, currentTools),
           },
         },
         cwd: context.projectPath,
@@ -1229,7 +1230,8 @@ export class ProjectBoardService {
       }
       if (context.kind === 'board_plan') {
         const snapshot = await this.store.read()
-        if (!snapshot.cards.some((card) => card.lastRunId === context.runId)) this.publish(await this.store.failRun(context.runId, context.responseText || 'No feature cards were saved. Refine the plan and try again.'))
+        const run = snapshot.runs.find((entry) => entry.id === context.runId)
+        if (!run?.planningFollowUp && !snapshot.cards.some((card) => card.lastRunId === context.runId)) this.publish(await this.store.failRun(context.runId, context.responseText || 'No feature cards were saved. Refine the plan and try again.'))
         else this.publish(await this.store.completeRun(context.runId, context.responseText))
         return
       }

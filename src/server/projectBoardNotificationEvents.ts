@@ -28,7 +28,7 @@ export function collectProjectBoardNotifications(
     if (run.kind === 'follow_up') continue
     if (previousRuns.get(run.id)?.status === run.status) continue
     const failed = run.status === 'failed' || run.status === 'interrupted'
-    const planReady = run.kind === 'board_plan' && run.status === 'succeeded'
+    const planReady = run.kind === 'board_plan' && run.status === 'succeeded' && (!run.planningFollowUp || run.createdCardIds.length > 0)
     if (!failed && !planReady) continue
     const card = next.cards.find((candidate) => candidate.id === run.cardId)
     events.push({

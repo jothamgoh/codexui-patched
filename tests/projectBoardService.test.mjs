@@ -1245,6 +1245,74 @@ test('imports a plan into linked feature cards once, scopes planner authority, a
   assert.equal(snapshot.cards.find((card) => card.id === ui.id).status, 'backlog')
 })
 
+test('planner replies discuss completed work without requiring cards, but explicit planning still requires a saved plan', async (t) => {
+  const { appServer, board, feature, service, store } = await createHarness(t, 'full-access')
+  const complete = (threadId, turnId, status = 'completed') => service.handleNotification({ method: 'turn/completed', params: { threadId, turn: { id: turnId, status } } })
+  const getTurn = (index) => waitFor(() => appServer.calls.filter((call) => call.method === 'turn/start')[index], 'No expected conversation turn')
+  await service.updateCard(feature.id, { verificationPolicy: 'self' })
+  await service.startFeature(feature.id)
+  await getTurn(0)
+  await service.handleDynamicToolCall(toolCall('lead-thread', 'replace_plan', { plan: { summary: 'Deliver the result.', tasks: [
+    { key: 'work', title: 'Deliver', description: 'Implement and check.', acceptanceCriteria: 'Works.', agentId: 'builtin-engineer', taskPurpose: 'work', dependsOn: [] },
+  ] } }))
+  const task = (await store.read()).cards.find((card) => card.parentCardId === feature.id)
+  for (const [action, fields] of [
+    ['start_task', { taskId: task.id }],
+    ['complete_task', { taskId: task.id, summary: 'Passing implementation handoff.' }],
+    ['finish_feature', { summary: 'The completed result is ready.' }],
+  ]) await service.handleDynamicToolCall(toolCall('lead-thread', action, fields))
+  await complete('lead-thread', 'lead-turn-1')
+
+  await service.startBoardPlan(board.id, { plan: 'Consider the next release.', sourceThreadId: 'original-chat' })
+  await getTurn(1)
+  await complete('lead-thread-2', 'lead-turn-2')
+  const original = await store.read()
+  assert.equal(original.runs[0].status, 'failed', 'Explicit planning must still save feature cards')
+  assert.equal(original.runs[0].planningFollowUp, undefined)
+  assert.equal(original.cards.find((card) => card.id === feature.id).status, 'done')
+  const input = [{ type: 'text', text: 'Where is the completed result, and what could we do next?' }]
+  await service.sendChatMessage('lead-thread-2', { input, clientUserMessageId: 'planner-question' })
+  const reply = await getTurn(2)
+  assert.equal(reply.params.threadId, 'lead-thread-2')
+  assert.deepEqual(reply.params.input, input)
+  assert.equal(reply.params.clientUserMessageId, 'planner-question')
+  assert.equal(reply.params.sandboxPolicy.type, 'readOnly')
+  assert.match(reply.params.additionalContext.codexui_project_board_coordinator.value, /Saving cards is optional/u)
+  assert.match(reply.params.additionalContext.codexui_project_board_coordinator.value, /Do not turn a discussion or request for advice into new cards/u)
+  const context = JSON.parse((await service.handleDynamicToolCall(toolCall('lead-thread-2', 'read_context'))).contentItems[0].text)
+  assert.equal(context.planningFollowUp, true)
+  await assert.rejects(service.handleDynamicToolCall({ ...toolCall('lead-thread-2', 'finish_feature'), turnId: 'lead-turn-3' }), /only save proposed feature cards/u)
+  await complete('lead-thread-2', 'lead-turn-3')
+  let snapshot = await store.read()
+  assert.equal(snapshot.runs[0].planningFollowUp, true, 'The reply marker survives store normalization')
+  assert.equal(snapshot.runs[0].status, 'succeeded')
+  assert.deepEqual(snapshot.runs[0].createdCardIds, [])
+  for (const field of ['boards', 'cards', 'comments', 'artifacts', 'questions']) assert.deepEqual(snapshot[field], original[field], `Conversation preserves ${field}`)
+  assert.equal(appServer.calls.filter((call) => call.method === 'thread/start').length, 2, 'The reply reuses the saved planning chat')
+
+  await service.sendChatMessage('lead-thread-2', { input: [{ type: 'text', text: 'Add a feature card for exporting this result.' }] })
+  await getTurn(3)
+  await service.handleDynamicToolCall({ ...toolCall('lead-thread-2', 'save_features', { features: [
+    { key: 'export', title: 'Export result', description: 'Export the completed result.', acceptanceCriteria: 'A downloadable export.', agentId: 'builtin-lead', dependsOn: [feature.id] },
+  ] }), turnId: 'lead-turn-4' })
+  await complete('lead-thread-2', 'lead-turn-4')
+  snapshot = await store.read()
+  assert.equal(snapshot.runs[0].status, 'succeeded')
+  assert.equal(snapshot.runs[0].createdCardIds.length, 1, 'Explicitly requested new planning still saves cards')
+  assert.deepEqual(snapshot.cards.filter((card) => card.id === feature.id || card.id === task.id), original.cards)
+  const plannedCards = snapshot.cards
+  for (const [index, status] of [[4, 'failed'], [5, 'interrupted']]) {
+    await service.sendChatMessage('lead-thread-2', { input: [{ type: 'text', text: 'Explain the result.' }] })
+    await getTurn(index)
+    await complete('lead-thread-2', `lead-turn-${index + 1}`, status)
+    snapshot = await store.read()
+    assert.equal(snapshot.runs[0].status, status)
+    assert.equal(snapshot.runs[0].planningFollowUp, true)
+    assert.deepEqual(snapshot.cards, plannedCards, `${status} conversation does not reopen or rewrite completed cards`)
+    assert.deepEqual(snapshot.boards, original.boards)
+  }
+})
+
 test('notifies once after the last approved feature turn finishes and gives later batches distinct identities', async (t) => {
   const { appServer, board, feature, service, store } = await createHarness(t)
   const batchEvents = () => appServer.notifications.filter((event) => event.method === 'codexui/projectBoards/batchCompleted').map((event) => event.params)

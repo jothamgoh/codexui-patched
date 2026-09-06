@@ -133,6 +133,33 @@ test('board activity shows an unlisted Lead and planning run once, preserving ex
   assert.equal(stopped[0].summary, 'The server restarted')
 })
 
+test('planner conversations finish without review attention while newly requested cards remain reviewable', () => {
+  const snapshot = {
+    boards: [{ id: 'board', name: 'Completed project', planningThreadId: 'planner' }],
+    cards: [{ id: 'feature', boardId: 'board', type: 'feature', title: 'Completed work', status: 'done', threadId: 'lead' }],
+    runs: [{ id: 'reply', boardId: 'board', cardId: '', kind: 'board_plan', planningFollowUp: true, createdCardIds: [], status: 'running', threadId: 'planner' }],
+    questions: [], updatedAtIso: '2026-09-07T02:00:00Z',
+  }
+  const activity = () => collectProjectBoardActivity(snapshot).find((entry) => !entry.featureId)
+  assert.equal(activity().status, 'running')
+  assert.equal(activity().title, 'Discuss Completed project')
+  assert.equal(activity().planningFollowUp, true)
+  const before = structuredClone(snapshot)
+  snapshot.runs[0].status = 'succeeded'
+  assert.equal(activity().status, 'done')
+  assert.equal(activity().threadId, 'planner')
+  assert.deepEqual(collectProjectBoardNotifications(before, snapshot), [], 'A casual reply is not a new plan or completion alert')
+  snapshot.runs[0].createdCardIds = ['new-feature']
+  assert.equal(activity().status, 'review')
+  assert.equal(activity().title, 'Plan Completed project')
+  assert.deepEqual(collectProjectBoardNotifications(before, snapshot).map((event) => event.kind), ['plan_ready'])
+  snapshot.runs[0].createdCardIds = []
+  snapshot.runs[0].status = 'interrupted'
+  snapshot.runs[0].stoppedByUser = true
+  assert.equal(activity().status, 'blocked')
+  assert.equal(collectProjectBoardNotifications(before, snapshot)[0].quiet, true)
+})
+
 test('follow-up conversations stay visible without replacing the completed feature result', () => {
   const snapshot = {
     boards: [{ id: 'board', name: 'Product fixes' }],

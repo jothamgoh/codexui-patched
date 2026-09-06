@@ -8,6 +8,7 @@ export type ProjectBoardActivity = {
   boardName: string
   status: 'running' | 'needs_input' | 'review' | 'blocked' | 'paused' | 'done' | 'backlog'
   runKind?: ProjectBoardRunKind
+  planningFollowUp?: boolean
   featureStatus?: ProjectBoardStatus
   updatedAtIso: string
   summary: string
@@ -40,14 +41,16 @@ export function collectProjectBoardActivity(snapshot: ProjectBoardSnapshot): Pro
     const activeRun = runs.find((run) => run.status === 'queued' || run.status === 'running')
     const latestRun = activeRun || runs[0]
     if (!latestRun || !(latestRun.threadId || board.planningThreadId)) continue
+    const conversation = latestRun.planningFollowUp && latestRun.createdCardIds.length === 0
     activity.push({
       boardId: board.id,
       featureId: '',
       threadId: latestRun.threadId || board.planningThreadId,
-      title: `Plan ${board.name}`,
+      title: `${conversation ? 'Discuss' : 'Plan'} ${board.name}`,
       boardName: board.name,
-      status: activeRun ? 'running' : latestRun.status === 'succeeded' ? 'review' : 'blocked',
+      status: activeRun ? 'running' : latestRun.status === 'succeeded' ? conversation ? 'done' : 'review' : 'blocked',
       runKind: latestRun.kind,
+      planningFollowUp: latestRun.planningFollowUp,
       updatedAtIso: latestRun.finishedAtIso || latestRun.startedAtIso || board.updatedAtIso,
       summary: latestRun.error || latestRun.summary || '',
     })

@@ -128,6 +128,8 @@ export type ProjectBoardRun = {
   cardId: string
   agentId: string
   kind: ProjectBoardRunKind
+  /** An ordinary reply in the existing planner; saving more cards is optional. */
+  planningFollowUp?: boolean
   createdCardIds: string[]
   status: ProjectBoardRunStatus
   stoppedByUser?: boolean

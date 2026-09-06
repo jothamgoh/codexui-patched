@@ -316,15 +316,15 @@
                 <p v-else-if="selectedChatNativeQuestion">The Lead is waiting for your decision below.</p>
                 <p v-else-if="selectedChatRun?.error">{{ selectedChatRun.error }}</p>
                 <p v-else-if="selectedChatStatus === 'Needs review'">Review the result below. Open the feature for its plan and checks.</p>
+                <p v-if="selectedChatFeature?.status === 'done'" class="board-chat-mode-help">Ask questions or request changes here. Questions keep the card done; the Lead reopens it when starting changes.</p>
                 <div v-if="selectedChatFeature && !selectedChatIsRunning && canPlanChatFeature" class="board-chat-mode">
                   <label><span>Next message</span><select v-model="boardReplyMode" aria-label="Lead reply mode"><option value="plan">Plan only</option><option value="execute">Continue work</option></select></label>
                   <span>{{ boardReplyMode === 'plan' ? 'Read-only. Switch back here at any time.' : 'Work starts when you send.' }}</span>
                 </div>
                 <p v-else-if="selectedChatFeature && selectedChatIsRunning && selectedChatRun?.kind === 'plan'" class="board-chat-mode-help">Planning is read-only. Finish or stop this run to switch to work.</p>
                 <p v-else-if="!selectedChatFeature" class="board-chat-mode-help">This chat plans board cards. Review the cards to start work, or return to a normal chat.</p>
-                <details v-if="selectedChatFeature && !selectedChatIsRunning" ref="boardChatOptionsRef" class="board-chat-options"><summary>{{ selectedChatFeature.status === 'done' ? 'Reopen to continue' : selectedChatFeature.status === 'review' ? 'Request changes' : 'Reply settings' }}<span v-if="boardChatSendDisabled && !selectedChatQuestion && !selectedChatNativeQuestion"> · choose access</span></summary><div class="board-chat-reply-controls">
+                <details v-if="selectedChatFeature && !selectedChatIsRunning" ref="boardChatOptionsRef" class="board-chat-options"><summary>{{ selectedChatFeature.status === 'review' ? 'Request changes' : 'Reply settings' }}<span v-if="boardChatSendDisabled && !selectedChatQuestion && !selectedChatNativeQuestion"> · choose access</span></summary><div class="board-chat-reply-controls">
                   <span v-if="boardReplyMode === 'execute' && chatExecutionAccess === 'full-access'">Full access · no approval prompts</span>
-                  <label v-if="selectedChatFeature.status === 'done'"><input v-model="boardReplyReopen" type="checkbox" />Reopen feature</label>
                   <label v-if="boardReplyMode === 'execute' && chatLeadNeedsWrite"><input v-model="boardReplyWrite" type="checkbox" />Allow workspace changes</label>
                   <button type="button" @click="openLinkedFeature">Lead settings</button>
                 </div></details>
@@ -627,7 +627,7 @@ const boardActivity = computed(() => collectProjectBoardActivity(projectBoardSna
 const boardPendingThreadIds = computed(() => new Set(pendingServerRequests.value.map((request) => request.threadId).filter(Boolean)))
 const boardThreads = computed(() => Object.fromEntries(boardActivity.value.filter((item) => item.threadId).map((item) => [item.threadId, {
   boardId: item.boardId, featureId: item.featureId, title: item.title,
-  status: (boardPendingThreadIds.value.has(item.threadId) ? 'needs_input' : item.status === 'running' || item.status === 'paused' ? 'working' : item.status) as ProjectBoardStatus,
+  status: (boardPendingThreadIds.value.has(item.threadId) ? 'needs_input' : item.runKind === 'follow_up' ? item.featureStatus : item.status === 'running' || item.status === 'paused' ? 'working' : item.status) as ProjectBoardStatus,
 }])))
 const sidebarProjectGroups = computed<UiProjectGroup[]>(() => {
   const groups = projectGroups.value.map((group) => ({ ...group, threads: group.threads.map((thread) => boardThreads.value[thread.id]?.status === 'needs_input' ? { ...thread, inProgress: false } : thread) }))
@@ -665,7 +665,8 @@ const sourceChatBoardProgress = computed(() => {
   const statuses = features.map((card) => boardPendingThreadIds.value.has(card.threadId) || questionFeatures.has(card.id)
     ? 'needs_input' : boardActivity.value.find((item) => item.featureId === card.id)?.status || card.status)
   const needsYou = statuses.filter((status) => ['blocked', 'needs_input', 'review'].includes(status)).length
-  return `${statuses.filter((status) => status === 'done').length}/${features.length} done${needsYou ? ` · ${needsYou} need you` : ''}`
+  const done = features.filter((card, index) => boardActivity.value.find((item) => item.featureId === card.id)?.runKind === 'follow_up' ? card.status === 'done' : statuses[index] === 'done').length
+  return `${done}/${features.length} done${needsYou ? ` · ${needsYou} need you` : ''}`
 })
 const selectedChatRun = computed(() => {
   const runs = projectBoardSnapshot.value.runs.filter((run) => run.threadId === selectedThreadId.value && selectedThreadId.value)
@@ -678,7 +679,7 @@ const selectedChatNativeQuestion = computed(() => selectedThreadServerRequests.v
 const selectedChatStatus = computed(() => {
   if (selectedChatNativeQuestion.value) return selectedThreadServerRequests.value.some((request) => request.method.includes('requestApproval')) ? 'Approval needed' : 'Answer needed'
   if (selectedChatQuestion.value) return 'Answer needed'
-  if (selectedChatIsRunning.value) return 'Working'
+  if (selectedChatIsRunning.value) return selectedChatRun.value?.kind === 'follow_up' ? 'Conversation' : 'Working'
   if (selectedChatFeature.value?.status === 'review') return 'Needs review'
   if (selectedChatFeature.value?.status === 'done') return 'Done'
   if (selectedChatFeature.value?.status === 'blocked') return 'Blocked'
@@ -698,15 +699,13 @@ function collapseBoardReplyOptions(event: FocusEvent): void {
 }
 const boardReplyMode = ref<'plan' | 'execute'>('execute')
 const boardReplyWrite = ref(false)
-const boardReplyReopen = ref(false)
 watch([() => selectedThreadId.value, () => selectedChatRun.value?.id, () => selectedChatIsRunning.value], () => {
-  boardReplyWrite.value = false; boardReplyReopen.value = false
+  boardReplyWrite.value = false
   boardReplyMode.value = canPlanChatFeature.value && selectedChatRun.value?.kind === 'plan' && selectedChatFeature.value?.planStatus !== 'ready' ? 'plan' : 'execute'
 })
 const boardChatSendDisabled = computed(() => Boolean(selectedChatQuestion.value || selectedChatNativeQuestion.value)
   || (selectedChatIsRunning.value ? !selectedThreadActiveTurnId.value : Boolean(selectedChatFeature.value && (
-    (selectedChatFeature.value.status === 'done' && !boardReplyReopen.value)
-    || (boardReplyMode.value === 'execute' && chatLeadNeedsWrite.value && !boardReplyWrite.value)))))
+    selectedChatFeature.value.status !== 'done' && boardReplyMode.value === 'execute' && chatLeadNeedsWrite.value && !boardReplyWrite.value))))
 const trackFeatureOpen = ref(false)
 const chatBoardMenuOpen = ref(false)
 const trackSourceThreadId = ref('')
@@ -1150,7 +1149,7 @@ async function onSubmitBoardChatMessage(payload: SubmitPayload): Promise<void> {
   const threadId = selectedThreadId.value
   if (!selectedChatBoard.value || boardChatSendDisabled.value) throw new Error('Resolve the request or choose how to continue before sending.')
   const options = { expectedTurnId: selectedChatIsRunning.value ? selectedThreadActiveTurnId.value : undefined,
-    mode: boardReplyMode.value, allowWorkspaceWrite: boardReplyWrite.value, executionAccess: chatExecutionAccess.value, reopenAndSend: boardReplyReopen.value }
+    mode: boardReplyMode.value, allowWorkspaceWrite: boardReplyWrite.value, executionAccess: chatExecutionAccess.value }
   const prepared = await prepareThreadMessageInput(threadId, payload)
   requestBrowserTurnNotificationsPermission()
   try { await sendProjectBoardChatMessage(threadId, { ...prepared, ...options, clientUserMessageId: crypto.randomUUID() }) }

@@ -116,7 +116,8 @@
                   <span class="notification-unread-pill is-attention">Needs you</span>
                 </span>
                 <span class="notification-row-meta">
-                  <span>Project board</span><span aria-hidden="true">·</span><span>{{ formatRelative(item.createdAtIso) }}</span>
+                  <span class="notification-board-label"><SquareKanban />{{ boardNameFor(item.boardId) }}</span>
+                  <span aria-hidden="true">·</span><span>{{ formatRelative(item.createdAtIso) }}</span>
                 </span>
                 <span v-if="item.prompt" class="notification-row-preview">{{ item.prompt }}</span>
               </span>
@@ -135,7 +136,8 @@
                   <span class="notification-unread-pill is-attention">{{ item.label }}</span>
                 </span>
                 <span class="notification-row-meta">
-                  <span>{{ item.board ? 'Project board' : 'Chat' }}</span><span aria-hidden="true">·</span><span>{{ formatRelative(item.receivedAtIso) }}</span>
+                  <span v-if="item.board" class="notification-board-label"><SquareKanban />{{ item.board.boardName }}</span>
+                  <span v-else>Chat</span><span aria-hidden="true">·</span><span>{{ formatRelative(item.receivedAtIso) }}</span>
                 </span>
                 <span class="notification-row-preview">Open the chat to {{ item.label === 'Approval needed' ? 'review and approve or decline.' : 'answer and continue.' }}</span>
               </span>
@@ -143,29 +145,62 @@
           </section>
 
           <template v-if="activityFilter === 'all'">
-            <section v-if="runningActivity.length > 0" class="notification-section">
+            <section v-if="boardWorkActivity.length > 0" class="notification-section notification-board-work" aria-label="Board work">
               <div class="notification-section-header">
-                <span>Running</span>
-                <span class="notification-section-count">{{ runningActivity.length }}</span>
+                <SquareKanban class="notification-section-icon" />
+                <span>Board work</span>
+                <span class="notification-section-count">{{ boardWorkActivity.length }}</span>
+              </div>
+              <div v-for="item in boardWorkActivity" :key="`board-work:${item.boardId}:${item.featureId}`" class="notification-board-work-row">
+                <button
+                  class="notification-row notification-board-main"
+                  type="button"
+                  :aria-label="`${item.threadId ? 'Open Lead chat' : 'Open feature'} for ${item.title}`"
+                  @click="item.threadId ? openThread(item.threadId) : openActivityBoard(item)"
+                >
+                  <span class="notification-row-icon" :class="{ 'is-running': item.status === 'running' }">
+                    <LoaderCircle v-if="item.status === 'running'" />
+                    <SquareKanban v-else />
+                  </span>
+                  <span class="notification-row-copy">
+                    <span class="notification-row-title">{{ item.title }}</span>
+                    <span class="notification-row-meta notification-board-meta">
+                      <span class="notification-board-status" :data-status="item.status">{{ boardWorkStatusLabel(item) }}</span>
+                      <span aria-hidden="true">·</span><span>{{ item.threadId ? 'Lead chat' : 'Starting Lead' }}</span>
+                      <kbd v-if="shortcutNumber(`board:${item.boardId}:${item.featureId}`)" class="notification-shortcut">⌘{{ shortcutNumber(`board:${item.boardId}:${item.featureId}`) }}</kbd>
+                    </span>
+                    <span class="notification-board-name">{{ item.boardName }}</span>
+                  </span>
+                </button>
+                <button class="notification-board-open" type="button" :aria-label="`View board for ${item.title}`" @click="openActivityBoard(item)">
+                  <SquareKanban /><span>Board</span>
+                </button>
+              </div>
+            </section>
+
+            <section v-if="runningThreads.length > 0" class="notification-section" aria-label="Chats running">
+              <div class="notification-section-header">
+                <span>Chats running</span>
+                <span class="notification-section-count">{{ runningThreads.length }}</span>
               </div>
               <button
-                v-for="item in runningActivity"
-                :key="`running:${item.id}`"
+                v-for="thread in runningThreads"
+                :key="`running:${thread.id}`"
                 class="notification-row"
                 type="button"
-                @click="openRunningItem(item)"
+                @click="openThread(thread.id)"
               >
                 <span class="notification-row-icon is-running">
                   <LoaderCircle />
                 </span>
                 <span class="notification-row-copy">
-                  <span class="notification-row-title">{{ item.title }}</span>
+                  <span class="notification-row-title">{{ threadTitle(thread) }}</span>
                   <span class="notification-row-meta">
-                    <span>{{ item.board ? 'Board · In progress' : 'In progress' }}</span>
+                    <span>In progress</span>
                     <span aria-hidden="true">·</span>
-                    <span>{{ formatRelative(item.updatedAtIso) }}</span>
-                    <kbd v-if="shortcutNumber(item.id)" class="notification-shortcut">
-                      ⌘{{ shortcutNumber(item.id) }}
+                    <span>{{ formatRelative(thread.updatedAtIso) }}</span>
+                    <kbd v-if="shortcutNumber(thread.id)" class="notification-shortcut">
+                      ⌘{{ shortcutNumber(thread.id) }}
                     </kbd>
                   </span>
                 </span>
@@ -555,7 +590,7 @@ const {
 } = useWebPushNotifications()
 
 const activityThreads = computed(() => {
-  const excluded = new Set(props.boardThreadIds ?? [])
+  const excluded = new Set([...(props.boardThreadIds ?? []), ...(props.boardActivity ?? []).map((item) => item.threadId).filter(Boolean)])
   return props.threads.filter((thread) => !excluded.has(thread.id))
 })
 const requestAttention = computed(() => {
@@ -580,6 +615,11 @@ const requestAttention = computed(() => {
 })
 const waitingThreadIds = computed(() => new Set(requestAttention.value.map((item) => item.threadId)))
 const needsYouCount = computed(() => props.boardAttention.length + requestAttention.value.length)
+const boardWorkActivity = computed(() => (props.boardActivity ?? []).filter((item) =>
+  ['running', 'paused', 'blocked', 'review', 'needs_input'].includes(item.status) &&
+  (item.threadId || item.status === 'running') && !waitingThreadIds.value.has(item.threadId) &&
+  !props.boardAttention.some((question) => question.boardId === item.boardId && question.featureId === item.featureId),
+).sort((left, right) => Number(right.status === 'running') - Number(left.status === 'running') || Date.parse(right.updatedAtIso) - Date.parse(left.updatedAtIso)))
 const runningThreads = computed(() => activityThreads.value.filter((thread) => thread.inProgress && !waitingThreadIds.value.has(thread.id)))
 const runningActivity = computed<RunningActivityItem[]>(() => [
   ...(props.boardActivity ?? []).filter((item) => item.status === 'running' && !waitingThreadIds.value.has(item.threadId)).map((item) => ({
@@ -724,6 +764,7 @@ const unreadAttentionCount = computed(() => unreadActivity.value.length)
 const totalAttentionCount = computed(() => unreadAttentionCount.value + needsYouCount.value)
 const hasUnreadActivity = computed(() => unreadActivity.value.length > 0)
 const hasActivity = computed(() =>
+  boardWorkActivity.value.length > 0 ||
   runningActivity.value.length > 0 ||
   unreadThreads.value.length > 0 ||
   recentHistory.value.length > 0,
@@ -736,6 +777,8 @@ const activitySummary = computed(() => {
   if (runningActivity.value.length > 0) {
     parts.push(`${runningActivity.value.length.toString()} running`)
   }
+  const waitingBoardWork = boardWorkActivity.value.filter((item) => item.status !== 'running').length
+  if (waitingBoardWork > 0) parts.push(`${waitingBoardWork.toString()} board ${waitingBoardWork === 1 ? 'item' : 'items'} waiting`)
   if (needsYouCount.value > 0) parts.push(`${needsYouCount.value.toString()} need you`)
   if (unreadAttentionCount.value > 0) parts.push(`${unreadAttentionCount.value.toString()} unread`)
   return parts.length > 0 ? parts.join(' · ') : 'No work needs attention'
@@ -951,6 +994,14 @@ function openBoardQuestion(item: { boardId: string; featureId: string; questionI
 function openRunningItem(item: RunningActivityItem): void {
   if (item.threadId) openThread(item.threadId)
   else if (item.board) openActivityBoard(item.board)
+}
+
+function boardNameFor(boardId: string): string {
+  return props.boardActivity?.find((item) => item.boardId === boardId)?.boardName || 'Project board'
+}
+
+function boardWorkStatusLabel(item: ProjectBoardActivity): string {
+  return ({ running: 'Working', paused: 'Paused', blocked: 'Blocked', review: 'Needs review', needs_input: 'Waiting for you', done: 'Complete', backlog: 'Not started' })[item.status]
 }
 
 function openActivityBoard(item: { boardId: string; featureId: string }): void {
@@ -1399,6 +1450,67 @@ function onModeChange(event: Event): void {
   @apply inline-flex min-w-4 items-center justify-center rounded-full px-1 text-[10px];
   background: var(--surface-muted);
   color: var(--text-secondary);
+}
+
+.notification-section-icon {
+  @apply h-3.5 w-3.5;
+}
+
+.notification-board-work-row {
+  @apply flex min-w-0 items-center pr-3;
+}
+
+.notification-board-main {
+  @apply min-w-0 flex-1 pr-2;
+}
+
+.notification-board-main .notification-row-title {
+  @apply block;
+}
+
+.notification-board-meta {
+  @apply flex-wrap;
+}
+
+.notification-board-status {
+  @apply font-medium;
+  color: var(--text-secondary);
+}
+
+.notification-board-status[data-status='running'] {
+  color: var(--accent-blue);
+}
+
+.notification-board-name {
+  @apply mt-1 block truncate text-[11px];
+  color: var(--text-muted);
+}
+
+.notification-board-label {
+  @apply inline-flex min-w-0 items-center gap-1 truncate;
+}
+
+.notification-board-label svg {
+  @apply h-3 w-3 shrink-0;
+}
+
+.notification-board-open {
+  @apply inline-flex min-h-11 shrink-0 items-center justify-center gap-1.5 rounded-lg px-2 text-xs font-medium transition;
+  color: var(--text-secondary);
+}
+
+.notification-board-open svg {
+  @apply h-3.5 w-3.5;
+}
+
+.notification-board-open:hover {
+  background: var(--surface-muted);
+  color: var(--text-primary);
+}
+
+.notification-board-open:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: -2px;
 }
 
 .notification-row {

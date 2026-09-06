@@ -2,7 +2,7 @@
 
 Updated: 2026-09-06
 
-Status: released through 97500b3. Main was published, CI passed, the verified
+Status: released through 2cb29f5. Main was published, CI passed, the verified
 frontend/CLI build was deployed, and one authorized independent-Terminal
 restart completed. Post-restart bridge, boards, models, and pending-request
 endpoints returned healthy responses; no runs or native requests were left
@@ -26,7 +26,16 @@ user’s request; its code edits remain saved.
   A real loaded native chat with a scripted local provider preserved the skill
   pointer, exact chat/connection, prior context, model, and reasoning; no model
   service call or tool execution was involved. Full 233 tests/build and Gitleaks
-  passed. Publication/deployment are pending.
+  passed. Main was published and CI run 34007893126 passed. The committed build
+  and bundled skill were deployed through one authorized Terminal restart.
+  Post-restart bridge, boards, models, and pending-request endpoints returned
+  healthy responses; the deployed helper resolved the exact source chat/project.
+  No board runs or native requests remained active. Public UI/API still redirect
+  through the authenticated gateway. The saved message-display edits are intact.
+
+Next: dogfood one real user-selected plan through review, execution, and result
+review. Improve demonstrated friction before adding more orchestration. Ordinary
+planning remains in chat unless the user explicitly requests a board.
 
 - Board-icon correction: Open project board browses existing work; Track on
   board opens the creation form. The brief uses only the unsent draft and

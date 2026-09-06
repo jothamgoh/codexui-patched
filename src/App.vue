@@ -289,8 +289,14 @@
                 <NewThreadFolderPicker :model-value="newThreadCwd"
                   :options="newThreadFolderOptions" placeholder="Choose folder"
                   :default-add-value="defaultNewProjectName"
-                  :disabled="false" @update:model-value="onSelectNewThreadFolder"
+                  :disabled="projectRegistrationBusy" @update:model-value="onSelectNewThreadFolder"
                   @add="onAddNewProject" />
+                <p v-if="projectRegistrationBusy" class="new-thread-project-status" role="status">Opening project…</p>
+                <div v-else-if="projectRegistrationError" class="new-thread-project-error" role="alert">
+                  <p>{{ projectRegistrationError }}</p>
+                  <p v-if="projectRegistrationRequest" class="new-thread-project-path">{{ projectRegistrationRequest.path }}</p>
+                  <Button v-if="projectRegistrationRequest" variant="outline" type="button" @click="onAddNewProject('', true)">Retry opening project</Button>
+                </div>
               </div>
 
               <ThreadComposer ref="threadComposerRef" :active-thread-id="composerThreadContextId"
@@ -301,6 +307,7 @@
                 :thread-token-usage="null"
                 :show-context-usage="false"
                 :goal="null"
+                :send-disabled="projectRegistrationBusy"
                 :turn-activity-label="composerTurnActivityLabel"
                 :is-turn-in-progress="false"
                 :is-interrupting-turn="false" @submit="onSubmitThreadMessage"
@@ -760,6 +767,9 @@ watch(boardManagedThreadIds, (ids) => setBoardManagedThreadIds(ids), { immediate
 const isRouteSyncInProgress = ref(false)
 const hasInitialized = ref(false)
 const newThreadCwd = ref(loadNewThreadCwd())
+const projectRegistrationBusy = ref(false)
+const projectRegistrationError = ref('')
+const projectRegistrationRequest = ref<{ path: string; createIfMissing: boolean; label: string } | null>(null)
 const isSidebarCollapsed = ref(loadSidebarCollapsed())
 const isSidebarToolsOpen = ref(loadSidebarToolsOpen())
 const isChatSearchOpen = ref(false)
@@ -1566,34 +1576,42 @@ function onUpdateGoalStatus(payload: { status: 'active' | 'paused' | 'blocked' |
 
 function onSelectNewThreadFolder(cwd: string): void {
   const nextCwd = cwd.trim()
+  projectRegistrationError.value = ''
+  projectRegistrationRequest.value = null
   newThreadCwd.value = nextCwd
   saveNewThreadCwd(nextCwd)
 }
 
-async function onAddNewProject(rawInput: string): Promise<void> {
+async function onAddNewProject(rawInput: string, retry = false): Promise<void> {
   const normalizedInput = rawInput.trim()
-  if (!normalizedInput) return
-
-  const isPath = looksLikePath(normalizedInput)
-  const baseDir = await resolveProjectBaseDirectory()
-  const targetPath = isPath
-    ? normalizedInput
-    : joinPath(baseDir, normalizedInput)
-  if (!targetPath) return
+  if (projectRegistrationBusy.value || (!retry && !normalizedInput) || (retry && !projectRegistrationRequest.value)) return
+  projectRegistrationBusy.value = true
+  projectRegistrationError.value = ''
 
   try {
-    const normalizedPath = await openProjectRoot(targetPath, {
-      createIfMissing: !isPath,
-      label: isPath ? '' : normalizedInput,
-    })
-    if (normalizedPath) {
-      newThreadCwd.value = normalizedPath
-      saveNewThreadCwd(normalizedPath)
-      pinProjectToTop(getPathLeafName(normalizedPath))
-      void refreshDefaultProjectName()
+    if (!retry) {
+      projectRegistrationRequest.value = null
+      const isPath = looksLikePath(normalizedInput)
+      const baseDir = isPath ? '' : await resolveProjectBaseDirectory()
+      if (!isPath && !baseDir) throw new Error('Choose a folder first, then try creating the project again.')
+      projectRegistrationRequest.value = {
+        path: isPath ? normalizedInput : joinPath(baseDir, normalizedInput),
+        createIfMissing: !isPath,
+        label: isPath ? '' : normalizedInput,
+      }
     }
-  } catch {
-    // Error is surfaced on next request if path is invalid.
+    const request = projectRegistrationRequest.value!
+    const normalizedPath = await openProjectRoot(request.path, request)
+    if (!normalizedPath) throw new Error('The project folder was not confirmed. Try again.')
+    newThreadCwd.value = normalizedPath
+    saveNewThreadCwd(normalizedPath)
+    pinProjectToTop(getPathLeafName(normalizedPath))
+    projectRegistrationRequest.value = null
+    void refreshDefaultProjectName()
+  } catch (error) {
+    projectRegistrationError.value = error instanceof Error ? error.message : 'Could not open this project. Try again.'
+  } finally {
+    projectRegistrationBusy.value = false
   }
 }
 
@@ -2160,6 +2178,15 @@ async function submitFirstMessageForNewThread(
 .new-thread-hero {
   @apply m-0 text-2xl sm:text-[2.5rem] font-normal leading-[1.05] text-zinc-900;
 }
+
+.new-thread-project-status,
+.new-thread-project-error { @apply mt-3 max-w-full text-center text-sm; }
+.new-thread-project-status,
+.new-thread-project-path { color: var(--text-secondary); }
+.new-thread-project-error { @apply flex w-full max-w-lg flex-col items-center gap-2; color: var(--color-red-500, #ef4444); }
+.new-thread-project-error p { @apply m-0 max-w-full; }
+.new-thread-project-path { @apply break-all text-xs; }
+.new-thread-project-error button { min-height: 44px; }
 
 .build-badge {
   @apply hidden;

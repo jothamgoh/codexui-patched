@@ -13,11 +13,15 @@ const output = `${root}/output/host-folders`
 await mkdir(output, { recursive: true })
 await writeFile(`${output}/fixture.js`, `import {createApp,h,ref} from 'vue';
 import FolderPicker from '/src/components/content/NewThreadFolderPicker.vue';
+import BoardPlanDialog from '/src/components/content/BoardPlanDialog.vue';
 import '/src/style.css';
-window.selections=[];
-createApp({setup(){const path=ref('');return()=>h('main',{style:'padding:48px 12px;'},[
+window.selections=[];window.plans=[];
+const agents=[{id:'builtin-lead',name:'Lead',role:'lead',description:'Coordinate delivery.',instructions:'Coordinate delivery.',model:'',reasoningEffort:'',sandbox:'read-only',builtIn:true,createdAtIso:'',updatedAtIso:''}];
+createApp({setup(){const path=ref('');const planOpen=ref(false);return()=>h('main',{style:'padding:48px 12px;'},[
  h(FolderPicker,{modelValue:path.value,options:[{value:'/home/demo/Projects/Existing',label:'Existing project'}],defaultAddValue:'New project',
-  'onUpdate:modelValue':value=>{path.value=value},onAdd:value=>{path.value=value;window.selections.push(value)}})
+  'onUpdate:modelValue':value=>{path.value=value},onAdd:value=>{path.value=value;window.selections.push(value)}}),
+ h('button',{onClick:()=>planOpen.value=true},'Plan a project'),
+ h(BoardPlanDialog,{open:planOpen.value,projects:[],agents,'onUpdate:open':value=>planOpen.value=value,onPlan:async value=>window.plans.push(value)})
 ])}}).mount('#app');`)
 await writeFile(`${output}/index.html`, '<html><head><meta name="viewport" content="width=device-width, initial-scale=1"></head><body style="margin:0"><div id="app"></div><script type="module" src="/output/host-folders/fixture.js"></script></body></html>')
 const server = await createServer({ root, configFile: false, plugins: [vue(), tailwind()], resolve: { alias: { '@': `${root}/src` } }, optimizeDeps: { include: ['vue'] }, server: { host: '127.0.0.1', port: 4198, strictPort: true, watch: null } })
@@ -30,6 +34,7 @@ try {
     const context = await browser.newContext(mobile ? { ...devices['iPhone 13'], deviceScaleFactor: 1 } : { viewport: { width: 1200, height: 900 } })
     const page = await context.newPage()
     page.on('pageerror', error => errors.push(`${label}: ${error.message}`))
+    await page.route('**/codex-api/project-board-models*', route => route.fulfill({ json: { data: { defaultModel: 'build-model', defaultReasoningEffort: 'high', models: [{ id: 'build-model', label: 'Build model', reasoningEfforts: ['high'], defaultReasoningEffort: 'high' }] } } }))
     await page.route('**/codex-api/host-folders?**', async route => {
       const url = new URL(route.request().url())
       const path = url.searchParams.get('path') || '/home/demo'
@@ -87,6 +92,26 @@ try {
     await page.getByRole('textbox', { name: 'Project name or absolute path' }).fill('A new project')
     await page.getByRole('button', { name: 'Open', exact: true }).click()
     assert.deepEqual(await page.evaluate(() => window.selections), ['/home/demo/Projects/Empty folder', 'A new project'], 'Keep the existing typed creation path')
+    await page.getByRole('button', { name: 'Plan a project', exact: true }).click()
+    const planning = page.getByRole('dialog', { name: 'Plan project features' })
+    await planning.getByRole('textbox', { name: 'Goal or plan', exact: true }).fill('Keep this plan while choosing its project folder.')
+    await planning.getByRole('textbox', { name: 'Board name', exact: true }).fill('Preserved board title')
+    await planning.getByRole('checkbox', { name: 'Create this folder if it does not exist' }).check()
+    await planning.getByRole('button', { name: 'Browse computer folders' }).click()
+    const folders = page.getByRole('dialog', { name: 'Choose a folder' })
+    await folders.getByRole('button', { name: 'Projects', exact: true }).click()
+    await folders.getByRole('button', { name: 'Existing', exact: true }).click()
+    await folders.getByText('No subfolders here. You can use this folder.').waitFor()
+    await folders.getByRole('button', { name: 'Use folder', exact: true }).click()
+    assert.equal(await planning.getByRole('textbox', { name: 'Project folder', exact: true }).inputValue(), '/home/demo/Projects/Existing')
+    assert.equal(await planning.getByRole('textbox', { name: 'Goal or plan', exact: true }).inputValue(), 'Keep this plan while choosing its project folder.')
+    assert.equal(await planning.getByRole('textbox', { name: 'Board name', exact: true }).inputValue(), 'Preserved board title')
+    assert.equal(await planning.getByRole('checkbox', { name: 'Create this folder if it does not exist' }).isChecked(), false)
+    assert.deepEqual(await page.evaluate(() => window.plans), [], 'Selecting a folder must not start a planning run')
+    await page.screenshot({ path: `${output}/plan-folder-${label}.png` })
+    await planning.getByRole('button', { name: 'Create feature plan' }).click()
+    await planning.waitFor({ state: 'hidden' })
+    assert.equal(await page.evaluate(() => window.plans[0].projectPath), '/home/demo/Projects/Existing')
     await context.close()
   }
   assert.deepEqual(errors, [])

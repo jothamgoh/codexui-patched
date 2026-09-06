@@ -1018,8 +1018,160 @@ try {
   assert.deepEqual(afterDelete.cards.filter((feature) => feature.boardId === 'board-1'), beforeDelete.cards.filter((feature) => feature.boardId === 'board-1'))
   assert.deepEqual(afterDelete.boards.find((board) => board.id === 'board-1'), beforeDelete.boards.find((board) => board.id === 'board-1'))
 
+  // Exercise helper grouping in the real app with browser-only thread, board,
+  // event and question fixtures. No helper turn or reply reaches the runtime.
+  async function checkHelperGrouping(target, touch) {
+    const nativeThread = (id, name, parentThreadId) => ({ id, name, cwd: fixtureProject, preview: `Checking ${name}`, createdAt: Date.now() / 1000, updatedAt: Date.now() / 1000,
+      source: parentThreadId ? { subAgent: { thread_spawn: { parent_thread_id: parentThreadId } } } : 'vscode', status: { type: 'active' },
+      turns: [{ id: `${id}-turn`, status: 'inProgress', items: [{ id: `${id}-message`, type: 'agentMessage', text: `Context for ${id}.` }] }] })
+    const helperThreads = [nativeThread('helper-lead-1', 'Notification Lead'), nativeThread('helper-lead-2', 'Search Lead'),
+      nativeThread('layout-child', 'Layout check', 'helper-lead-1'), nativeThread('nested-child', 'Nested check', 'layout-child'),
+      nativeThread('search-child', 'Search check', 'helper-lead-2'), nativeThread('ordinary-same-name', 'Layout check')]
+    const helperSnapshot = { ...snapshot, agents: beforeDelete.agents, version: 10000,
+      boards: snapshot.boards.map((board) => ({ ...board, projectPath: fixtureProject })),
+      cards: [card({ id: 'helper-feature-1', title: 'Build notifications', status: 'working', threadId: 'helper-lead-1' }), card({ id: 'helper-feature-2', boardId: 'board-2', title: 'Build search', status: 'working', threadId: 'helper-lead-2' })],
+      runs: ['1', '2'].map((id) => ({ ...snapshot.runs[0], id: `helper-run-${id}`, boardId: `board-${id}`, cardId: `helper-feature-${id}`, threadId: `helper-lead-${id}` })), questions: [], comments: [], artifacts: [], queues: [] }
+    let helperHistory = [], helperRequests = []
+    const helperReplies = [], helperCatalogReads = []
+    await target.addInitScript(() => {
+      window.helperFixtureStreams = []
+      window.EventSource = class { static CLOSED = 2; readyState = 1; constructor() { window.helperFixtureStreams.push(this); queueMicrotask(() => this.onopen?.({})) } close() { this.readyState = 2 } }
+    })
+    const notify = (method, params) => target.evaluate(({ method, params }) => {
+      for (const stream of window.helperFixtureStreams) if (stream.readyState === 1) stream.onmessage?.({ data: JSON.stringify({ method, params }) })
+    }, { method, params })
+    await target.route('**/codex-api/**', (route) => {
+      const path = new URL(route.request().url()).pathname
+      const json = (value) => route.fulfill({ json: value })
+      if (path === '/codex-api/project-boards') return json({ data: helperSnapshot })
+      if (path === '/codex-api/push/history') return json({ data: { items: helperHistory, unreadCount: helperHistory.length, dismissals: [] } })
+      if (path === '/codex-api/server-requests/pending') return json({ requests: helperRequests })
+      if (path === '/codex-api/server-requests/respond') { helperReplies.push(route.request().postDataJSON()); helperRequests = []; return json({ ok: true }) }
+      if (path === '/codex-api/rpc') {
+        const { method, params } = route.request().postDataJSON()
+        if (method === 'thread/list') {
+          if (!params.sourceKinds?.length && !params.ancestorThreadId) return json({ result: { data: helperThreads.filter((thread) => thread.source === 'vscode'), nextCursor: null } })
+          helperCatalogReads.push(params)
+          const descendants = helperThreads.filter((thread) => {
+            let parent = thread.source?.subAgent?.thread_spawn?.parent_thread_id
+            if (!params.ancestorThreadId) return Boolean(parent)
+            while (parent) {
+              if (parent === params.ancestorThreadId) return true
+              parent = helperThreads.find((entry) => entry.id === parent)?.source?.subAgent?.thread_spawn?.parent_thread_id
+            }
+            return false
+          })
+          return json({ result: { data: descendants, nextCursor: null } })
+        }
+        if (method === 'thread/read' || method === 'thread/resume') return json({ result: { thread: helperThreads.find((thread) => thread.id === params.threadId), model: 'build-model', reasoningEffort: 'high' } })
+        if (method === 'thread/goal/get') return json({ result: { goal: null } })
+      }
+      if (path === '/codex-api/thread-page' || path === '/codex-api/thread-resume-lite') {
+        const thread = helperThreads.find((entry) => entry.id === route.request().postDataJSON().threadId)
+        return json({ result: { thread, model: 'build-model', reasoningEffort: 'high', page: { startTurnIndex: 0, endTurnIndex: 1, totalTurns: 1, hasEarlier: false } } })
+      }
+      return route.fallback()
+    })
+    const press = (locator) => touch ? locator.tap() : locator.click()
+    await target.setViewportSize({ width: touch ? 390 : 1600, height: touch ? 844 : 1000 })
+    await target.goto(`${origin}/?helper-grouping=${touch ? 'touch' : 'desktop'}#/board/board-1`, { waitUntil: 'domcontentloaded' })
+    await target.getByTestId('project-board').waitFor()
+    const trigger = target.locator('button[aria-label^="Notifications:"]')
+    await target.getByRole('button', { name: 'Notifications: 3 running', exact: true }).waitFor()
+    await press(trigger)
+    const activity = target.locator('.notification-popover')
+    const boardWork = activity.getByRole('region', { name: 'Board work', exact: true })
+    const owner = (title) => boardWork.locator(':scope > div').filter({ has: target.getByRole('button', { name: `Open Lead chat for ${title}`, exact: true }) })
+    const primary = owner('Build notifications'), secondary = owner('Build search')
+    assert.equal(await boardWork.locator('.notification-board-main').count(), 2, 'Two independent boards retain two Lead rows')
+    assert.equal(await primary.locator('details').getAttribute('open'), null)
+    assert.equal(await secondary.locator('details').getAttribute('open'), null)
+    assert.equal(await primary.getByRole('button', { name: 'View helper Nested check', exact: true }).isVisible(), false)
+    await primary.locator('summary').getByText('2 helpers', { exact: true }).waitFor()
+    assert.ok(helperCatalogReads.some((params) => params.ancestorThreadId === 'helper-lead-1'), 'Activity loads helpers omitted from the ordinary chat catalog')
+    await primary.locator('summary').getByText('2 working', { exact: true }).waitFor()
+    await press(primary.locator('summary'))
+    await press(secondary.locator('summary'))
+    await primary.getByRole('button', { name: 'View helper Layout check', exact: true }).getByText('Working', { exact: true }).waitFor()
+    await primary.getByRole('button', { name: 'View helper Nested check', exact: true }).waitFor()
+    assert.equal(await primary.getByRole('button', { name: 'View helper Search check', exact: true }).count(), 0)
+    await secondary.getByRole('button', { name: 'View helper Search check', exact: true }).waitFor()
+    const ordinary = activity.getByRole('region', { name: 'Chats running', exact: true })
+    assert.equal(await ordinary.locator('.notification-row').count(), 1)
+    await ordinary.getByText('Layout check', { exact: true }).waitFor()
+    if (touch) for (const width of [320, 390]) {
+      await target.setViewportSize({ width, height: 844 })
+      assert.equal(await target.evaluate(() => matchMedia('(pointer: coarse)').matches && document.documentElement.scrollWidth <= innerWidth), true)
+      assert.equal(await activity.evaluate((element) => element.scrollWidth <= element.clientWidth), true)
+      assert.equal(await activity.locator('.thread-helpers summary, .thread-helpers button').evaluateAll((elements) => elements.every((element) => element.getBoundingClientRect().height >= 44)), true)
+      await target.screenshot({ path: join(outputDirectory, `project-board-helpers-${width}-touch.png`), fullPage: true })
+    }
+    else await target.screenshot({ path: join(outputDirectory, 'project-board-helpers-desktop.png'), fullPage: true })
+    await press(primary.getByRole('button', { name: 'View helper Nested check', exact: true }))
+    await target.waitForURL('**#/thread/nested-child')
+    const helperHeader = target.getByRole('region', { name: 'Helper chat', exact: true })
+    await helperHeader.getByText('Managed by the Lead · Build notifications', { exact: true }).waitFor()
+    await target.getByText('Context for nested-child.', { exact: true }).waitFor()
+    await target.reload({ waitUntil: 'domcontentloaded' })
+    await helperHeader.getByText('Managed by the Lead · Build notifications', { exact: true }).waitFor()
+    await press(helperHeader.getByRole('button', { name: 'Open Lead', exact: true }))
+    await target.waitForURL('**#/thread/helper-lead-1')
+    await target.getByRole('region', { name: 'Tracked work', exact: true }).getByText('Build notifications', { exact: true }).waitFor()
+
+    const nested = helperThreads.find((thread) => thread.id === 'nested-child')
+    nested.status = { type: 'idle' }; nested.turns[0].status = 'completed'
+    helperHistory = [{ id: 'helper-completion', threadId: nested.id, turnId: nested.turns[0].id, status: 'completed', title: 'Nested helper completed', body: 'Internal helper receipt', completedAt: now, readAt: null }]
+    await notify('turn/completed', { threadId: nested.id, turn: { id: nested.turns[0].id, status: 'completed' } })
+    await press(trigger)
+    await press(primary.locator('summary'))
+    await primary.getByRole('button', { name: 'View helper Nested check', exact: true }).getByText('Idle', { exact: true }).waitFor()
+    assert.equal(await trigger.getAttribute('aria-label'), 'Notifications: 3 running', 'A helper completion cannot add a separate unread badge')
+    assert.equal(await activity.getByText('Nested helper completed', { exact: true }).count(), 0, 'Internal completion history stays out of user-facing activity')
+    await press(trigger)
+    const helperRequest = { id: 8701, receivedAtIso: now, method: 'item/tool/requestUserInput', params: { threadId: 'layout-child', turnId: 'layout-child-turn', itemId: 'helper-question', questions: [{ id: 'scope', question: 'Can the helper keep the current layout?', options: [{ label: 'Keep the current layout', description: 'Continue the reviewed plan.' }, { label: 'Ask the Lead to revise', description: 'Return to planning.' }] }] } }
+    helperRequests = [helperRequest]
+    await notify('server/request', helperRequest)
+    await press(trigger)
+    const questionRow = activity.locator('.notification-row').filter({ hasText: 'Answer needed' })
+    await questionRow.getByText('Layout check', { exact: true }).waitFor()
+    await questionRow.getByText('Product build', { exact: true }).waitFor()
+    await press(questionRow)
+    await target.waitForURL('**#/thread/layout-child')
+    const questionCard = target.locator('.question-card')
+    await questionCard.getByText('Can the helper keep the current layout?', { exact: true }).waitFor()
+    await questionCard.getByRole('radio', { name: /Keep the current layout/ }).check()
+    if (touch) await target.screenshot({ path: join(outputDirectory, 'project-board-helper-question-touch.png'), fullPage: true })
+    await press(questionCard.getByRole('button', { name: 'Submit', exact: true }))
+    await questionCard.waitFor({ state: 'detached' })
+    assert.deepEqual(helperReplies, [{ id: 8701, result: { answers: { scope: { answers: ['Keep the current layout'] } } } }])
+    const leadRequest = { ...helperRequest, id: 8702, params: { ...helperRequest.params, threadId: 'helper-lead-1', turnId: 'helper-lead-1-turn' } }
+    helperRequests = [leadRequest]
+    await notify('server/request', leadRequest)
+    await press(trigger)
+    const leadWaiting = activity.locator('section').filter({ has: target.locator('.notification-section-header').getByText('Needs you', { exact: true }) })
+    await leadWaiting.getByText('Build notifications', { exact: true }).waitFor()
+    await leadWaiting.locator('summary').getByText('2 helpers', { exact: true }).waitFor()
+    await press(leadWaiting.locator('summary'))
+    await leadWaiting.getByRole('button', { name: 'View helper Layout check', exact: true }).waitFor()
+    const waitingTitle = await leadWaiting.locator('.notification-row-title').evaluate((element) => {
+      const range = document.createRange(); range.selectNodeContents(element)
+      const bounds = element.getBoundingClientRect()
+      return { width: bounds.width, height: bounds.height,
+        textFits: [...range.getClientRects()].every((rect) => rect.left >= bounds.left - 1 && rect.right <= bounds.right + 1) }
+    })
+    assert.ok(waitingTitle.width >= 100 && waitingTitle.height >= 16 && waitingTitle.textFits, 'The waiting Lead title remains readable beside its status pill')
+    assert.equal(await boardWork.getByRole('button', { name: 'Open Lead chat for Build notifications', exact: true }).count(), 0, 'A waiting Lead keeps its helper disclosure in one Needs you row')
+    await boardWork.getByRole('button', { name: 'Open Lead chat for Build search', exact: true }).waitFor()
+    if (touch) {
+      await target.evaluate(() => new Promise((resolvePaint) => requestAnimationFrame(() => requestAnimationFrame(resolvePaint))))
+      await target.screenshot({ path: join(outputDirectory, 'project-board-waiting-lead-helpers-touch.png'), fullPage: true })
+    }
+  }
+  await checkHelperGrouping(page, false)
+  await checkHelperGrouping(mobilePage, true)
+
   assert.deepEqual(pageErrors, [])
-  console.log(`Project board smoke passed: inbox decisions and run receipts, questions, draft/retry preservation, direct model settings and inheritance, Plan first, queue consent, chat-to-board entry, Activity and unlisted-child links, voice/manual save, dark dialogs, ${mobileEngineName} touch/mobile layout at 320/390/640px, active-board delete guard and confirmed idle-board removal, and ordinary chat navigation. Model execution is verified separately by the native runtime probe.`)
+  console.log(`Project board smoke passed: inbox decisions and run receipts, questions, draft/retry preservation, direct model settings and inheritance, Plan first, queue consent, chat-to-board entry, grouped helper Activity and nested reload recovery, voice/manual save, dark dialogs, ${mobileEngineName} touch/mobile layout at 320/390/640px, active-board delete guard and confirmed idle-board removal, and ordinary chat navigation. Model execution is verified separately by the native runtime probe.`)
 } catch (error) {
   await mobilePage?.screenshot({ path: join(outputDirectory, 'project-board-mobile-failure.png'), fullPage: true }).catch(() => undefined)
   await page?.screenshot({ path: join(outputDirectory, 'project-board-failure.png'), fullPage: true }).catch(() => undefined)

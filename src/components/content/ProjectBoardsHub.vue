@@ -1156,11 +1156,12 @@ select:disabled { cursor: not-allowed; opacity: 0.65; }
   .boards-hub > * { flex-shrink: 0; }
   .boards-header { @apply py-2; }
   .boards-header-actions { @apply w-full; }
-  .boards-header-actions button { @apply flex-1; }
+  .boards-header-actions button { @apply min-w-0 flex-1; height: auto; min-height: 44px; padding-block: .5rem; white-space: normal; overflow-wrap: anywhere; line-height: 1.3; }
   .boards-header > .boards-header-actions { @apply grid grid-cols-3; }
   .boards-header > .boards-header-actions button { padding-inline: .5rem; font-size: .75rem; }
   .boards-header > .boards-header-actions svg { display: none; }
-  .boards-header-actions button { white-space: normal; }
+  .board-options-panel > .boards-header-actions { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); align-items: stretch; }
+  .board-options-panel > .boards-header-actions button { justify-content: flex-start; text-align: left; }
   .board-workflow { padding: .75rem; gap: .5rem; }
   .board-workflow .boards-header-actions { gap: .5rem; }
   .boards-toolbar { @apply items-stretch; }

@@ -316,7 +316,7 @@
       </div>
 
       <p v-if="submitError" class="thread-composer-dictation-status" role="alert">{{ submitError }}</p>
-      <p v-if="dictationStatus" class="thread-composer-dictation-status" role="status">
+      <p v-if="dictationStatus" :class="dictationError ? 'thread-composer-dictation-status' : 'sr-only'" :role="dictationError ? 'alert' : 'status'" data-dictation-status>
         {{ dictationStatus }}
         <button v-if="canRetryDictation" type="button" class="underline" @click="retryTranscription">Retry transcription</button>
       </p>
@@ -409,6 +409,14 @@
         <span class="thread-composer-separator" />
 
         <div class="thread-composer-actions">
+          <button
+            v-if="dictationState !== 'idle' || isStartingDictation"
+            class="thread-composer-dictation-cancel"
+            type="button"
+            aria-label="Cancel dictation"
+            title="Cancel dictation"
+            @click="cancelRecording"
+          ><X class="thread-composer-mic-icon" aria-hidden="true" /></button>
           <button
             v-if="isDictationSupported"
             class="thread-composer-mic"
@@ -632,7 +640,7 @@ const responseTextAnnotations = computed({
 })
 
 let dictationDraftThreadId = ''
-const { state: dictationState, statusText: dictationStatus, isStarting: isStartingDictation, canRetry: canRetryDictation, retryTranscription, isSupported: isDictationSupported, startRecording, stopRecording, cancelRecording } = useDictation({
+const { state: dictationState, statusText: dictationStatus, errorMessage: dictationError, isStarting: isStartingDictation, canRetry: canRetryDictation, retryTranscription, isSupported: isDictationSupported, startRecording, stopRecording, cancelRecording } = useDictation({
   onTranscript: (text) => {
     const targetDraft = composerDraftStore.draftFor(dictationDraftThreadId || props.activeThreadId)
     targetDraft.text = targetDraft.text ? `${targetDraft.text}\n${text}` : text
@@ -2291,6 +2299,17 @@ watch(
 
 .thread-composer-mic {
   @apply inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-full border border-sky-200 bg-sky-50 text-sky-700 shadow-sm transition hover:border-sky-300 hover:bg-sky-100 hover:text-sky-800 disabled:cursor-not-allowed disabled:border-zinc-200 disabled:bg-zinc-100 disabled:text-zinc-400 sm:h-9 sm:w-9;
+}
+
+.thread-composer-dictation-cancel {
+  @apply inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-full sm:h-9 sm:w-9;
+  color: var(--text-secondary);
+}
+
+.thread-composer-dictation-cancel:hover { background: var(--surface-hover); }
+
+@media (max-width: 640px), (pointer: coarse) {
+  .thread-composer-mic, .thread-composer-dictation-cancel { min-width: 44px; min-height: 44px; }
 }
 
 .thread-composer-mic--recording {

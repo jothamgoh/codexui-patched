@@ -255,6 +255,57 @@ try {
  results.bottomRendering.preservedHistoryReading=true;
  await page.screenshot({path:`${output}/long-chat-mobile.png`});
  assert.equal(await page.evaluate(()=>document.documentElement.scrollWidth<=innerWidth),true);
+ // Main composer dictation uses visual controls without helper prose taking
+ // space. Preserve accessible status, errors/retry, cancellation and manual send.
+ await page.evaluate(()=>window.deferMicrophonePermission=false);
+ let mainTranscriptions=0;
+ let resolveMainTranscript;
+ let rejectMainTranscript=true;
+ await page.route('**/codex-api/transcribe',async route=>{
+   mainTranscriptions++;
+   if(rejectMainTranscript){rejectMainTranscript=false;await route.fulfill({status:503,body:'temporary error'});return}
+   await new Promise(resolve=>resolveMainTranscript=resolve);
+   await route.fulfill({json:{text:'Dictated addition.'}});
+ });
+ const mainComposer=page.locator('.thread-composer');
+ const mainInput=page.locator('.thread-composer-input');
+ for(const [label,width,height] of [['desktop',1100,850],['mobile',390,844]]){
+   await page.setViewportSize({width,height});
+   await mainInput.fill('Typed context.');
+   const attemptsBeforeCancel=mainTranscriptions;
+   await mainComposer.getByRole('button',{name:'Start dictation',exact:true}).click();
+   const mic=mainComposer.getByRole('button',{name:'Stop dictation',exact:true});
+   await mic.waitFor();
+   assert.equal(await mic.getAttribute('aria-pressed'),'true');
+   const quietStatus=mainComposer.locator('[data-dictation-status]');
+   const statusBounds=await quietStatus.boundingBox();
+   assert.ok(statusBounds.height<=1&&statusBounds.width<=1,'Routine speech status is available to screen readers without adding visible prose');
+   assert.equal(await mainComposer.getByRole('button',{name:'Send message',exact:true}).isDisabled(),true);
+   if(label==='mobile'){
+     assert.ok((await mic.boundingBox()).height>=44);
+     assert.ok((await mainComposer.getByRole('button',{name:'Cancel dictation',exact:true}).boundingBox()).width>=44);
+   }
+   await page.screenshot({path:`${output}/main-dictation-${label}.png`});
+   await mainComposer.getByRole('button',{name:'Cancel dictation',exact:true}).click();
+   assert.equal(await mainInput.inputValue(),'Typed context.');
+   assert.equal(mainTranscriptions,attemptsBeforeCancel,'Cancel must not upload or insert discarded audio');
+   await mainComposer.getByRole('button',{name:'Start dictation',exact:true}).click();
+   await mainComposer.getByRole('button',{name:'Stop dictation',exact:true}).click();
+   if(label==='desktop'){
+     await mainComposer.getByRole('alert').filter({hasText:'Transcription failed: 503'}).waitFor();
+     await mainComposer.getByRole('button',{name:'Retry transcription',exact:true}).click();
+   }
+   await mainComposer.locator('.thread-composer-mic-spinner').waitFor();
+   const deadline=Date.now()+5000;
+   while(!resolveMainTranscript&&Date.now()<deadline)await new Promise(resolve=>setTimeout(resolve,10));
+   assert.ok(resolveMainTranscript);
+   resolveMainTranscript();resolveMainTranscript=undefined;
+   await page.waitForFunction(()=>document.querySelector('.thread-composer-input').value==='Typed context.\nDictated addition.');
+   assert.equal(await mainComposer.getByRole('alert').count(),0);
+   assert.equal(await mainComposer.getByRole('button',{name:'Send message',exact:true}).isEnabled(),true);
+   assert.equal(await page.evaluate(()=>fixture.submits),0,'Finishing dictation does not send');
+   assert.equal(await mainComposer.locator('[data-dictation-status]').getAttribute('class'),'sr-only');
+ }
  // Persisted activity cards retain names, task context, lifecycle labels and child links.
  const activity=(id,kind,agentPath,extra={})=>({id,type:'subAgentActivity',kind,agentPath,agentThreadId:'child-'+id,...extra});
  const activities=[
@@ -295,7 +346,7 @@ try {
  await page.evaluate(()=>desktop.stopPolling());
  results.subagentActivity={persisted:true,liveNotifications:true,childNavigation:true,unknownFallback:true,mobileOverflow:false};
  assert.deepEqual(errors,[]);
- results.dictation={retry:true,manualSend:true,chatSwitchPreserved:true,pendingPermissionCancelled:true};
+ results.dictation={retry:true,manualSend:true,chatSwitchPreserved:true,pendingPermissionCancelled:true,quietMainComposer:true,mainCancelPreservesDraft:true};
  console.log(JSON.stringify(results,null,2));await writeFile(`${output}/smoke-results.json`,JSON.stringify(results,null,2));
  await page.close();
 } finally {await browser.close();await server.close()}

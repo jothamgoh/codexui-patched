@@ -577,6 +577,8 @@ try {
   assert.equal(await workingIndicator.locator('span').evaluate((element) => getComputedStyle(element).animationName), 'none', 'Reduced motion disables the working pulse')
   await page.emulateMedia({ reducedMotion: 'no-preference' })
   assert.notEqual(await workingIndicator.locator('span').evaluate((element) => getComputedStyle(element).animationName), 'none')
+  await page.getByTestId('project-board').evaluate((element) => { element.scrollTop = 0 })
+  await page.screenshot({ path: join(outputDirectory, 'project-board-active-mobile.png'), fullPage: true })
   await page.setViewportSize({ width: 1600, height: 1000 })
   const waitingSnapshot = { ...queueBaseline, runs: queueBaseline.runs.map((run) => run.id === queueRun.id ? queueRun : run), questions: [...queueBaseline.questions, { ...queueBaseline.questions[0], id: 'working-decision', cardId: 'feature-working', status: 'open' }] }
   await publishQueueSnapshot(waitingSnapshot)

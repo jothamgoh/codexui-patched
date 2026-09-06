@@ -710,6 +710,45 @@ try {
         assert.equal(await composer.inputValue(), shortcutDraft)
       }
       assert.equal(mutations.length, mutationsBeforeReview, 'Keyboard navigation never starts or changes board work')
+
+      // The main workspace picker keeps an unsuccessful target and retries it
+      // without losing the draft for a new chat or creating any runtime work.
+      await page.getByRole('button', { name: mobile ? 'Start new thread' : 'New chat', exact: true }).first().click()
+      const homeDraft = 'Keep my new-chat draft while I choose its folder.'
+      const folderPath = join(project, 'workspace picked for retry')
+      await composer.fill(homeDraft)
+      const folderRequests = []
+      let releaseFolderFailure
+      const heldFolderFailure = new Promise((resolve) => { releaseFolderFailure = resolve })
+      await page.route('**/codex-api/project-root', async (route) => {
+        folderRequests.push(route.request().postDataJSON())
+        if (folderRequests.length === 1) {
+          await heldFolderFailure
+          return route.fulfill({ status: 503, json: { error: 'Folder registration is temporarily unavailable.' } })
+        }
+        return route.fulfill({ json: { data: { path: folderPath } } })
+      })
+      const workspacePicker = page.getByRole('button', { name: 'Choose workspace folder', exact: true })
+      await workspacePicker.click()
+      await page.getByRole('button', { name: 'Create folder or enter a path', exact: true }).click()
+      await page.getByRole('textbox', { name: 'Project name or absolute path', exact: true }).fill(folderPath)
+      await page.getByRole('button', { name: 'Open', exact: true }).click()
+      await page.getByRole('status').getByText('Opening project…', { exact: true }).waitFor()
+      assert.equal(await workspacePicker.isDisabled(), true)
+      assert.equal(await page.getByRole('button', { name: 'Send message', exact: true }).isDisabled(), true, 'A draft cannot launch in the old folder while its replacement is opening')
+      releaseFolderFailure()
+      const folderError = page.locator('.new-thread-project-error[role="alert"]')
+      await folderError.getByText('Folder registration is temporarily unavailable.', { exact: true }).waitFor()
+      await folderError.getByText(folderPath, { exact: true }).waitFor()
+      assert.equal(await composer.inputValue(), homeDraft)
+      await page.screenshot({ path: join(output, `workspace-retry-${label}.png`), fullPage: true })
+      await folderError.getByRole('button', { name: 'Retry opening project', exact: true }).click()
+      await folderError.waitFor({ state: 'detached' })
+      await workspacePicker.getByText('workspace picked for retry', { exact: true }).waitFor()
+      assert.deepEqual(folderRequests, [{ path: folderPath, createIfMissing: false, label: '' }, { path: folderPath, createIfMissing: false, label: '' }])
+      assert.equal(await workspacePicker.textContent(), 'workspace picked for retry')
+      assert.equal(await composer.inputValue(), homeDraft)
+      assert.equal(mutations.length, mutationsBeforeReview)
     } catch (error) {
       await page.screenshot({ path: join(output, `failure-${label}.png`), fullPage: true })
       console.error(JSON.stringify({ label, url: page.url(), mutations, errors }, null, 2))

@@ -59,11 +59,16 @@
 
     <section v-if="activeBoard" class="board-workflow" :class="{ 'is-idle': !activeBoardRun && !boardPlanningActive && !activeQueue && !boardComplete && !['failed', 'interrupted'].includes(latestBoardPlanRun?.status || '') }" aria-label="Board delivery">
       <div class="workflow-state">
-        <strong>{{ activeBoardRequest ? 'Waiting for you' : boardPlanningActive ? 'Planning your features…' : activeQueue?.status === 'running' ? 'Delivery is running' : activeBoardRun ? 'Board work is running' : activeQueue?.status === 'paused' ? 'Delivery paused' : boardComplete ? 'All features complete' : 'Ready when you are' }}</strong>
-        <p :class="{ 'workflow-help': !activeBoardRun && !activeQueue?.reason && !boardPlanningActive }">{{ activeBoardRun && activeQueue?.status !== 'running' ? queueBusyMessage : activeQueue?.reason || (boardPlanningActive ? 'Your coordinator is reading the plan and preparing cards. No implementation yet.' : boardComplete ? 'Open a finished card to review the result, checks, and Lead chat.' : 'Review and edit the feature cards, then run the ones you approve. Open finished cards to inspect the results.') }}</p>
+        <strong>{{ activeBoardRequest ? 'Waiting for you' : boardPlanningActive ? 'Planning your features…' : activeQueue?.status === 'running' ? 'Delivery is running' : activeBoardRun ? 'Board work is running' : boardComplete ? 'All features complete' : activeQueue?.status === 'paused' ? 'Delivery paused' : 'Ready when you are' }}</strong>
+        <p :class="{ 'workflow-help': !boardComplete && !activeBoardRun && !activeQueue?.reason && !boardPlanningActive }">{{ boardComplete && !activeBoardRun && !boardPlanningActive ? 'Review the results or discuss what to do next. Asking questions keeps finished features Done.' : activeBoardRun && activeQueue?.status !== 'running' ? queueBusyMessage : activeQueue?.reason || (boardPlanningActive ? 'Your coordinator is reading the plan and preparing cards. No implementation yet.' : 'Review and edit the feature cards, then run the ones you approve. Open finished cards to inspect the results.') }}</p>
       </div>
       <div class="boards-header-actions">
         <Button v-if="activeBoardThreadId && (activeQueue?.status !== 'running' || activeBoardRequest)" type="button" size="sm" variant="outline" @click="$emit('select-thread', activeBoardThreadId)">{{ activeBoardRun?.kind === 'board_plan' ? 'Open planning chat' : activeBoardRequest ? 'Open request in Lead chat' : 'Open active Lead chat' }}</Button>
+        <template v-if="boardComplete && !activeBoardRun && !boardPlanningActive">
+          <Button v-if="completedBoardConversation" type="button" size="sm" @click="$emit('select-thread', completedBoardConversation.threadId, activeBoard.id)"><MessageSquare aria-hidden="true" />{{ completedBoardConversation.label }}</Button>
+          <Button v-else type="button" size="sm" @click="$emit('plan-board', activeBoard.id)">Plan next steps</Button>
+          <Button type="button" size="sm" variant="outline" @click="reviewCompletedFeatures">Review finished features</Button>
+        </template>
       </div>
       <details v-if="activeBoard.plan" class="board-plan-summary"><summary>Project plan</summary><p>{{ activeBoard.plan }}</p></details>
       <p v-if="latestBoardPlanRun?.status === 'failed' || latestBoardPlanRun?.status === 'interrupted'" class="boards-alert" role="alert">{{ latestBoardPlanRun.error || 'Planning stopped. Open the coordinator chat or plan again.' }}</p>
@@ -499,6 +504,7 @@ import BoardExecutionSettings from './BoardExecutionSettings.vue'
 import BoardTeamSettings from './BoardTeamSettings.vue'
 import { createBoardTeamDraft } from '../../utils/boardTeamDraft'
 import { resolveProjectBoardAgent } from '../../utils/projectBoardTeam'
+import { boardConversation } from '../../utils/boardConversation'
 import BoardRunSettings from './BoardRunSettings.vue'
 import BoardDailyViews from './BoardDailyViews.vue'
 import type { ReasoningEffort, UiServerRequest } from '../../types/codex'
@@ -555,7 +561,7 @@ const emit = defineEmits<{
   'select-project': [projectPath: string]
   'select-board': [boardId: string]
   'select-feature': [featureId: string, boardId: string, questionId?: string]
-  'select-thread': [threadId: string]
+  'select-thread': [threadId: string, boardId?: string]
   'plan-board': [boardId: string]
   'show-overview': []
 }>()
@@ -690,6 +696,13 @@ const teamSettingsLocked = computed(() => props.snapshot.runs.some((run) => run.
 const effectiveAgentFor = (id: string) => {
   const agent = props.snapshot.agents.find((agent) => agent.id === id)
   return agent && activeBoard.value ? resolveProjectBoardAgent(activeBoard.value, agent) : agent
+}
+const completedBoardConversation = computed(() => activeBoard.value ? boardConversation(activeBoard.value, props.snapshot) : null)
+function reviewCompletedFeatures(): void {
+  activeView.value = 'board'
+  mobileColumn.value = 'done'
+  featureSearch.value = ''
+  void nextTick(() => document.querySelector('[data-board-status="done"]')?.scrollIntoView({ block: 'start', inline: 'nearest' }))
 }
 const boardAgents = computed(() => props.snapshot.agents.filter((agent) => activeBoard.value?.agentIds.includes(agent.id)))
 const boardExecutionAccess = computed(() => activeBoard.value?.executionAccess ?? 'full-access')

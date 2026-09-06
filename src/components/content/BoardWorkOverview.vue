@@ -5,6 +5,7 @@ import Button from '../ui/button/Button.vue'
 import type { ProjectBoardSnapshot } from '../../types/projectBoards'
 import type { UiServerRequest } from '../../types/codex'
 import type { ProjectBoardActivity } from '../../utils/projectBoardActivity'
+import { boardConversation } from '../../utils/boardConversation'
 
 const props = defineProps<{
   snapshot: ProjectBoardSnapshot
@@ -17,7 +18,7 @@ const props = defineProps<{
 const emit = defineEmits<{
   'select-board': [boardId: string]
   'select-feature': [featureId: string, boardId: string, questionId?: string]
-  'select-thread': [threadId: string]
+  'select-thread': [threadId: string, boardId?: string]
   'select-project': [projectPath: string]
   'plan-project': [projectPath: string]
 }>()
@@ -54,7 +55,7 @@ const rows = computed(() => props.activity.filter((activity) => {
   const status = request || question ? 'needs_input' : activity.status
   const label = request ? request.method.includes('requestApproval') ? 'Approval needed' : 'Answer needed'
     : question || status === 'needs_input' ? 'Answer needed'
-    : status === 'running' ? run?.kind === 'follow_up' ? 'Conversation' : run?.kind === 'execute' ? 'Working' : 'Planning'
+    : status === 'running' ? run?.kind === 'follow_up' || run?.planningFollowUp ? 'Conversation' : run?.kind === 'execute' ? 'Working' : 'Planning'
     : status === 'review' ? activity.featureId ? 'Needs review' : 'Plan ready'
     : status === 'blocked' ? 'Blocked' : status === 'paused' ? 'Paused' : status === 'done' ? 'Done' : 'Ready'
   return { ...activity, status, label, agentName, questionId: question?.id || '',
@@ -77,7 +78,7 @@ const boards = computed(() => projectBoards.value.map((board) => {
   const done = features.filter((card) => card.status === 'done').length
   const working = currentLeads.value.filter((row) => row.boardId === board.id).length
   const attention = needsYou.value.filter((row) => row.boardId === board.id).length
-  return { ...board, total: features.length, done, working, attention }
+  return { ...board, total: features.length, done, working, attention, conversation: boardConversation(board, props.snapshot) }
 }).sort((a, b) => Number(Boolean(b.attention || b.working)) - Number(Boolean(a.attention || a.working)) || b.updatedAtIso.localeCompare(a.updatedAtIso)))
 function openRow(row: (typeof rows.value)[number]): void {
   if (row.openChat) emit('select-thread', row.threadId)
@@ -120,6 +121,7 @@ function openRow(row: (typeof rows.value)[number]): void {
             </div>
             <progress v-if="board.total" :value="board.done" :max="board.total" :aria-label="`${board.name} feature progress`" />
             <Button type="button" variant="outline" @click="$emit('select-board', board.id)">Open board<ArrowUpRight aria-hidden="true" /></Button>
+            <Button v-if="board.total && board.done === board.total && board.conversation" type="button" variant="ghost" @click="$emit('select-thread', board.conversation.threadId, board.id)">{{ board.conversation.label }}</Button>
           </article>
         </div>
         <div v-else class="overview-empty" role="status">

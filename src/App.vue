@@ -343,7 +343,7 @@
                   <span>{{ boardReplyMode === 'plan' ? 'Read-only. Switch back here at any time.' : 'Work starts when you send.' }}</span>
                 </div>
                 <p v-else-if="selectedChatFeature && selectedChatIsRunning && selectedChatRun?.kind === 'plan'" class="board-chat-mode-help">Planning is read-only. Finish or stop this run to switch to work.</p>
-                <p v-else-if="!selectedChatFeature" class="board-chat-mode-help">This chat plans board cards. Review the cards to start work, or return to a normal chat.</p>
+                <p v-else-if="!selectedChatFeature" class="board-chat-mode-help">Ask about results or plan what comes next here. Discussion keeps finished cards Done; new work is saved as draft cards for review.</p>
                 <details v-if="selectedChatFeature && !selectedChatIsRunning" ref="boardChatOptionsRef" class="board-chat-options"><summary>{{ selectedChatFeature.status === 'review' ? 'Request changes' : 'Reply settings' }}<span v-if="boardChatSendDisabled && !selectedChatQuestion && !selectedChatNativeQuestion"> · choose access</span></summary><div class="board-chat-reply-controls">
                   <span v-if="boardReplyMode === 'execute' && chatExecutionAccess === 'full-access'">Full access · no approval prompts</span>
                   <label v-if="boardReplyMode === 'execute' && chatLeadNeedsWrite"><input v-model="boardReplyWrite" type="checkbox" />Allow workspace changes</label>
@@ -678,8 +678,11 @@ const sourceChatBoards = computed(() => selectedThreadId.value
   ? projectBoardSnapshot.value.boards.filter((board) => board.sourceThreadId === selectedThreadId.value && board.id !== selectedChatBoard.value?.id) : [])
 const sourceChatBoardId = ref('')
 watch([() => selectedThreadId.value, sourceChatBoards], ([threadId, boards], previous) => {
-  if (threadId !== previous?.[0] || !boards.some((board) => board.id === sourceChatBoardId.value)) sourceChatBoardId.value = boards[0]?.id || ''
+  if (threadId !== previous?.[0] || !boards.some((board) => board.id === sourceChatBoardId.value)) sourceChatBoardId.value = boards.find((board) => board.id === route.query.board)?.id || boards[0]?.id || ''
 }, { immediate: true })
+watch(() => route.query.board, (boardId) => {
+  if (sourceChatBoards.value.some((board) => board.id === boardId)) sourceChatBoardId.value = boardId as string
+})
 const sourceChatBoard = computed(() => sourceChatBoards.value.find((board) => board.id === sourceChatBoardId.value))
 const sourceChatBoardProgress = computed(() => {
   const snapshot = projectBoardSnapshot.value
@@ -705,10 +708,11 @@ const selectedChatNativeQuestion = computed(() => selectedThreadServerRequests.v
 const selectedChatStatus = computed(() => {
   if (selectedChatNativeQuestion.value) return selectedThreadServerRequests.value.some((request) => request.method.includes('requestApproval')) ? 'Approval needed' : 'Answer needed'
   if (selectedChatQuestion.value) return 'Answer needed'
-  if (selectedChatIsRunning.value) return selectedChatRun.value?.kind === 'follow_up' ? 'Conversation' : 'Working'
+  if (selectedChatIsRunning.value) return selectedChatRun.value?.kind === 'follow_up' || selectedChatRun.value?.planningFollowUp ? 'Conversation' : 'Working'
   if (selectedChatFeature.value?.status === 'review') return 'Needs review'
   if (selectedChatFeature.value?.status === 'done') return 'Done'
   if (selectedChatFeature.value?.status === 'blocked') return 'Blocked'
+  if (selectedChatRun.value?.planningFollowUp && selectedChatRun.value.status === 'succeeded' && !selectedChatRun.value.createdCardIds.length) return 'Answered'
   if ((selectedChatFeature.value?.status === 'backlog' && selectedChatFeature.value.planStatus === 'ready' && canPlanChatFeature.value)
     || (selectedChatRun.value?.kind === 'board_plan' && selectedChatRun.value.status === 'succeeded')) return 'Plan ready'
   return 'Paused'
@@ -1318,11 +1322,11 @@ function openPluginsHub(): void {
   if (isMobile.value) setSidebarCollapsed(true)
 }
 
-function onSelectThread(threadId: string): void {
+function onSelectThread(threadId: string, boardId?: string): void {
   if (!threadId) return
   if (isMobile.value) setSidebarCollapsed(true)
-  if (route.name === 'thread' && routeThreadId.value === threadId) return
-  void router.push({ name: 'thread', params: { threadId } })
+  if (route.name === 'thread' && routeThreadId.value === threadId && (!boardId || route.query.board === boardId)) return
+  void router.push({ name: 'thread', params: { threadId }, ...(boardId ? { query: { board: boardId } } : {}) })
 }
 
 async function onSelectSearchThread(thread: UiThread): Promise<void> {

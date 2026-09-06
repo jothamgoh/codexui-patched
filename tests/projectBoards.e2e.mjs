@@ -1018,6 +1018,106 @@ try {
   assert.deepEqual(afterDelete.cards.filter((feature) => feature.boardId === 'board-1'), beforeDelete.cards.filter((feature) => feature.boardId === 'board-1'))
   assert.deepEqual(afterDelete.boards.find((board) => board.id === 'board-1'), beforeDelete.boards.find((board) => board.id === 'board-1'))
 
+  async function checkWorkOverview(target, touch) {
+    const overviewSnapshot = { ...snapshot, agents: beforeDelete.agents, version: 9000,
+      boards: [...snapshot.boards, { ...snapshot.boards[0], id: 'board-sibling', name: 'Design queue', isDefault: false }],
+      cards: [card({ id: 'overview-main-active', title: 'Build main release', status: 'working', threadId: 'overview-main-lead' }),
+        card({ id: 'overview-main-done', title: 'Main result', status: 'done', summary: 'Main release completed.' }),
+        card({ id: 'overview-review', boardId: 'board-sibling', title: 'Review mobile design', status: 'review' }),
+        card({ id: 'overview-other-active', boardId: 'board-2', title: 'Build other release', status: 'working', threadId: 'overview-other-lead' }),
+        card({ id: 'overview-other-done', boardId: 'board-2', title: 'Other result', status: 'done', summary: 'Other release completed.' })],
+      runs: [{ ...snapshot.runs[0], id: 'overview-main-run', cardId: 'overview-main-active', threadId: 'overview-main-lead' },
+        { ...snapshot.runs[0], id: 'overview-other-run', boardId: 'board-2', cardId: 'overview-other-active', threadId: 'overview-other-lead' }],
+      questions: [], comments: [], artifacts: [], queues: [] }
+    const boardWrites = []
+    await target.addInitScript((path) => localStorage.setItem('codex-web-local.new-thread-cwd.v1', path), emptyProject)
+    await target.route('**/codex-api/**', (route) => {
+      const request = route.request(), path = new URL(request.url()).pathname
+      if (/^\/codex-api\/project-board/.test(path) && request.method() !== 'GET') {
+        boardWrites.push({ path, method: request.method() })
+        return route.fulfill({ status: 409, json: { error: 'Overview navigation must not write board state.' } })
+      }
+      if (path === '/codex-api/project-boards') return route.fulfill({ json: { data: overviewSnapshot } })
+      if (path === '/codex-api/rpc' && request.postDataJSON().method === 'thread/list') return route.fulfill({ json: { result: { data: [{ id: 'overview-catalog', name: 'Main project chat', cwd: fixtureProject, preview: '', source: 'vscode', status: { type: 'idle' }, createdAt: 1, updatedAt: 2 }], nextCursor: null } } })
+      return route.fallback()
+    })
+    const press = (locator) => touch ? locator.tap() : locator.click()
+    await target.setViewportSize({ width: touch ? 390 : 1600, height: touch ? 844 : 1000 })
+    await target.goto(`${origin}/?overview-filter=${touch ? 'touch' : 'desktop'}#/boards`, { waitUntil: 'domcontentloaded' })
+    const overview = target.getByTestId('board-work-overview')
+    const filter = overview.getByRole('combobox', { name: 'Filter boards by project', exact: true })
+    await filter.waitFor()
+    assert.equal(await filter.inputValue(), '')
+    assert.equal(await filter.locator('option:checked').textContent(), 'All projects')
+    const yourBoards = overview.getByRole('region', { name: 'Your boards', exact: true })
+    const names = () => yourBoards.locator('article h4').allTextContents()
+    const counts = async (needs, active, done) => {
+      for (const text of [`${needs} need you`, `${active} active`, `${done} done`]) await overview.locator('.overview-counts').getByText(text, { exact: true }).waitFor()
+    }
+    await yourBoards.getByRole('heading', { name: 'Design queue', exact: true }).waitFor()
+    assert.deepEqual((await names()).sort(), ['Another board', 'Design queue', 'Product build'])
+    await counts(1, 2, 2)
+    assert.equal(await yourBoards.evaluate((element) => [...element.parentElement.querySelectorAll('[data-overview-section]')].every((section) => Boolean(element.compareDocumentPosition(section) & Node.DOCUMENT_POSITION_FOLLOWING))), true, 'Boards precede detailed requests, Leads and results')
+    assert.equal(await overview.getByRole('button', { name: 'Open project', exact: true }).count(), 0, 'The project filter has no second submit step')
+    for (const path of [fixtureProject, secondProject, emptyProject]) assert.equal(await filter.locator('option').evaluateAll((options, path) => options.filter((option) => option.value === path).length, path), 1)
+    await filter.selectOption(fixtureProject)
+    assert.deepEqual((await names()).sort(), ['Design queue', 'Product build'])
+    await counts(1, 1, 1)
+    await overview.getByRole('region', { name: 'Current Leads', exact: true }).getByText('Build main release', { exact: true }).waitFor()
+    assert.equal(await overview.getByText('Build other release', { exact: true }).count(), 0)
+    assert.equal(await overview.getByText('Other release completed.', { exact: true }).count(), 0)
+    assert.match(target.url(), /#\/boards$/)
+    if (touch) for (const width of [320, 390]) {
+      await target.setViewportSize({ width, height: 844 })
+      await overview.evaluate((element) => { element.scrollTop = 0 })
+      await target.evaluate(() => new Promise((resolvePaint) => requestAnimationFrame(() => requestAnimationFrame(resolvePaint))))
+      const first = await yourBoards.locator('article').first().boundingBox()
+      assert.ok(first.y >= 0 && first.y + first.height < 844, 'A whole board card is available in the first phone viewport')
+      assert.ok((await filter.boundingBox()).height >= 44)
+      assert.equal(await yourBoards.getByRole('button').evaluateAll((buttons) => buttons.every((button) => button.getBoundingClientRect().height >= 44)), true)
+      assert.equal(await overview.evaluate((element) => element.scrollWidth <= element.clientWidth && document.documentElement.scrollWidth <= innerWidth), true)
+      await target.screenshot({ path: join(outputDirectory, `work-overview-filter-${width}-touch.png`), fullPage: true })
+    }
+    else await target.screenshot({ path: join(outputDirectory, 'work-overview-filter-desktop.png'), fullPage: true })
+    await filter.selectOption(secondProject)
+    assert.deepEqual(await names(), ['Another board'], 'A snapshot-only project is immediately selectable')
+    await counts(0, 1, 1)
+    await overview.getByRole('region', { name: 'Current Leads', exact: true }).getByText('Build other release', { exact: true }).waitFor()
+    assert.equal(await overview.getByText('Build main release', { exact: true }).count(), 0)
+    await press(overview.getByRole('button', { name: 'New plan', exact: true }))
+    const plan = target.getByRole('dialog', { name: 'Plan project features', exact: true })
+    await plan.getByRole('textbox', { name: 'Goal or plan', exact: true }).fill('A canceled second-project plan.')
+    await press(plan.getByRole('button', { name: 'Cancel', exact: true }))
+    await filter.selectOption(emptyProject)
+    assert.deepEqual(await names(), [])
+    assert.equal(await overview.locator('[data-overview-section]').count(), 0, 'Empty projects cannot retain another project’s activity')
+    const emptyName = await filter.locator('option:checked').textContent()
+    assert.match(await overview.locator('.overview-empty').textContent(), /no boards/i)
+    assert.ok((await overview.locator('.overview-empty').textContent()).includes(emptyName))
+    await press(overview.getByRole('button', { name: 'New plan', exact: true }))
+    assert.equal(await plan.getByRole('combobox', { name: 'Plan project', exact: true }).inputValue(), emptyProject)
+    assert.equal(await plan.getByRole('textbox', { name: 'Goal or plan', exact: true }).inputValue(), '', 'Changing the chosen project cannot restore another project’s canceled plan')
+    await press(plan.getByRole('button', { name: 'Close planning', exact: true }))
+    await filter.selectOption('')
+    assert.equal((await names()).length, 3)
+    await counts(1, 2, 2)
+    assert.deepEqual(boardWrites, [], 'Filtering and opening the preselected planning form are read-only')
+    // Finished boards do not keep asking for review of their original plan.
+    overviewSnapshot.cards.find((feature) => feature.id === 'overview-other-active').status = 'done'
+    overviewSnapshot.runs.find((run) => run.id === 'overview-other-run').status = 'succeeded'
+    overviewSnapshot.runs.push({ ...snapshot.runs[1], id: 'overview-old-plan', kind: 'board_plan', boardId: 'board-2', cardId: '', status: 'succeeded', threadId: 'overview-old-planner' })
+    await target.reload({ waitUntil: 'domcontentloaded' })
+    await filter.selectOption(secondProject)
+    await counts(0, 0, 2)
+    assert.equal(await overview.getByRole('region', { name: 'Needs you', exact: true }).count(), 0)
+    await filter.selectOption('')
+    await press(yourBoards.locator('article').filter({ has: target.getByRole('heading', { name: 'Design queue', exact: true }) }).getByRole('button', { name: 'Open board', exact: true }))
+    await target.waitForURL('**#/board/board-sibling')
+    await target.locator('[data-feature-id="overview-review"]').waitFor()
+  }
+  await checkWorkOverview(page, false)
+  await checkWorkOverview(mobilePage, true)
+
   // Exercise helper grouping in the real app with browser-only thread, board,
   // event and question fixtures. No helper turn or reply reaches the runtime.
   async function checkHelperGrouping(target, touch) {

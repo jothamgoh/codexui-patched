@@ -1260,6 +1260,88 @@ export class ProjectBoardStore {
     })
   }
 
+  saveDraftPlan(inputValue: unknown): Promise<ProjectBoardSnapshot> {
+    return this.mutate((current) => {
+      const input = asRecord(inputValue)
+      if (!input || !Number.isSafeInteger(input.expectedVersion) || input.expectedVersion !== current.version) {
+        throw new Error('The board changed. Read its latest plan before saving again.')
+      }
+      const uuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/iu
+      const boardId = readString(input.boardId, 200).toLowerCase()
+      const projectPath = readString(input.projectPath, 4_000)
+      const sourceThreadId = readString(input.sourceThreadId, 200)
+      if (!uuid.test(boardId)) throw new Error('A stable board UUID is required.')
+      if (!projectPath) throw new Error('A project folder is required.')
+      if (typeof input.sourceThreadId !== 'string' || !sourceThreadId || input.sourceThreadId.trim().length > 200 || /[\s\u0000-\u001f\u007f]/u.test(sourceThreadId)) {
+        throw new Error('A valid source chat ID is required.')
+      }
+      if (typeof input.summary !== 'string') throw new Error('A plan summary is required.')
+      if (!Array.isArray(input.features) || !input.features.length || input.features.length > 30) throw new Error('Provide between 1 and 30 feature cards.')
+      const existingBoard = current.boards.find((board) => board.id === boardId)
+      if (existingBoard && existingBoard.projectPath !== projectPath) throw new Error('The board belongs to a different project.')
+      if (current.runs.some((run) => run.boardId === boardId && (run.status === 'running' || run.status === 'queued'))) {
+        throw new Error('Wait for this board’s active run to stop before revising its plan.')
+      }
+      const now = this.now().toISOString()
+      const board: ProjectBoard = {
+        ...(existingBoard ?? {
+          id: boardId, projectPath,
+          projectName: readString(input.projectName, 200) || projectPath.split('/').filter(Boolean).at(-1) || 'Project',
+          name: 'Project board', isDefault: !current.boards.some((entry) => entry.projectPath === projectPath),
+          agentIds: current.agents.map((agent) => agent.id), autoDispatch: true, maxConcurrentRuns: 1,
+          plan: '', sourceThreadId: '', planningThreadId: '', coordinatorAgentId: '', createdAtIso: now, updatedAtIso: now,
+        }),
+        name: readString(input.name, 120) || existingBoard?.name || 'Project board',
+        plan: readString(input.summary), sourceThreadId, updatedAtIso: now,
+      }
+      const ids = new Set<string>()
+      const savedCards = input.features.map((value) => {
+        const feature = asRecord(value)
+        const id = readString(feature?.id, 200).toLowerCase()
+        if (!feature || !uuid.test(id) || ids.has(id)) throw new Error('Feature IDs must be unique stable UUIDs.')
+        ids.add(id)
+        const allowed = new Set(['id', 'title', 'description', 'acceptanceCriteria', 'agentId', 'verificationPolicy', 'dependsOn', 'model', 'reasoningEffort'])
+        if (Object.keys(feature).some((field) => !allowed.has(field))) throw new Error('Draft plans can only change feature briefs, dependencies, and agent settings.')
+        const existing = current.cards.find((card) => card.id === id)
+        if (existing && (existing.boardId !== boardId || existing.type !== 'feature' || existing.status !== 'backlog'
+          || existing.threadId || current.cards.some((card) => card.parentCardId === id) || current.runs.some((run) => run.cardId === id))) {
+          throw new Error('Only unstarted Backlog features on this board can be revised. Keep existing work and add a follow-up feature instead.')
+        }
+        if (existing) assertManualEdit(current, existing)
+        if (typeof feature.description !== 'string' || typeof feature.acceptanceCriteria !== 'string') throw new Error('Every feature needs a brief and acceptance criteria.')
+        const description = readString(feature.description)
+        const title = (feature.title === undefined ? existing?.title : readString(feature.title, 240)) || projectBoardTitleFromBrief(description)
+        if (!title) throw new Error('Every feature needs a brief or a title.')
+        if (!Array.isArray(feature.dependsOn) || feature.dependsOn.some((dependency) => typeof dependency !== 'string' || !uuid.test(dependency))) throw new Error('Feature dependencies must be card UUIDs.')
+        const assignedAgentId = feature.agentId === undefined ? existing?.assignedAgentId || board.agentIds[0] || '' : readString(feature.agentId, 200)
+        if (!board.agentIds.includes(assignedAgentId)) throw new Error('Every feature must choose an enabled agent.')
+        if (feature.verificationPolicy !== undefined && !VERIFICATION_POLICIES.has(feature.verificationPolicy as ProjectBoardVerificationPolicy)) throw new Error('Unknown verification policy.')
+        const card: ProjectBoardCard = {
+          ...(existing ?? {
+            id, boardId, parentCardId: '', type: 'feature', taskPurpose: 'work', title: '', description: '', acceptanceCriteria: '',
+            status: 'backlog', priority: 'normal', verificationPolicy: 'self', assignedAgentId: '', dependencyIds: [], autoRun: false,
+            model: '', reasoningEffort: '', planSummary: '', planStatus: 'none', toolSchemaVersion: 1, threadId: '', lastRunId: '',
+            summary: '', progressNote: '', createdAtIso: now, updatedAtIso: now, completedAtIso: '',
+          }),
+          title, description, acceptanceCriteria: readString(feature.acceptanceCriteria), assignedAgentId,
+          verificationPolicy: feature.verificationPolicy === undefined ? existing?.verificationPolicy ?? 'self' : normalizeVerificationPolicy(feature.verificationPolicy),
+          dependencyIds: readStringArray(feature.dependsOn).map((dependency) => dependency.toLowerCase()),
+          model: feature.model === undefined ? existing?.model ?? '' : readString(feature.model, 200),
+          reasoningEffort: feature.reasoningEffort === undefined ? existing?.reasoningEffort ?? '' : readOptionalEffort(feature.reasoningEffort),
+          sourceThreadId, autoRun: false, progressNote: 'Review the proposed feature before starting', updatedAtIso: now,
+        }
+        return card
+      })
+      const next = {
+        ...current,
+        boards: existingBoard ? current.boards.map((entry) => entry.id === boardId ? board : entry) : [board, ...current.boards],
+        cards: [...savedCards.filter((card) => !current.cards.some((entry) => entry.id === card.id)), ...current.cards.map((card) => savedCards.find((entry) => entry.id === card.id) ?? card)],
+      }
+      assertCardDependencies(next)
+      return next
+    })
+  }
+
   completeFeaturePlan(featureId: string): Promise<ProjectBoardSnapshot> {
     return this.mutate((current) => {
       const feature = current.cards.find((card) => card.id === featureId)

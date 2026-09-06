@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict'
+import { randomUUID } from 'node:crypto'
 import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
@@ -75,6 +76,110 @@ function planTask(overrides) {
     ...overrides,
   }
 }
+
+function draftFeature(overrides = {}) {
+  return { id: randomUUID(), description: 'Build searchable project history.', acceptanceCriteria: 'Find a saved feature by its title.', dependsOn: [], ...overrides }
+}
+
+function draftPlan(snapshot, features, overrides = {}) {
+  return {
+    boardId: randomUUID(), projectPath: '/tmp/codexui-board-project', sourceThreadId: 'ordinary-planning-chat',
+    expectedVersion: snapshot.version, summary: 'Deliver the smallest useful project history.', features, ...overrides,
+  }
+}
+
+test('saves a whole draft graph and its ordinary chat link atomically without starting work', async (t) => {
+  const { store, reopen } = await createFixture(t)
+  const first = draftFeature({ model: 'gpt-6-astra', reasoningEffort: 'low', verificationPolicy: 'independent' })
+  const second = draftFeature({ title: 'Search UI', dependsOn: [first.id] })
+  const input = draftPlan(await store.read(), [first, second], { name: 'Search plan' })
+  const saved = await store.saveDraftPlan(input)
+  assert.equal(saved.version, input.expectedVersion + 1)
+  assert.equal(saved.boards[0].id, input.boardId)
+  assert.equal(saved.boards[0].sourceThreadId, input.sourceThreadId)
+  assert.equal(saved.boards[0].planningThreadId, '')
+  assert.equal(saved.boards[0].plan, input.summary)
+  assert.deepEqual(saved.cards.map((card) => card.id), [first.id, second.id])
+  assert.deepEqual(saved.cards[1].dependencyIds, [first.id])
+  assert.equal(saved.cards[0].title, first.description)
+  assert.equal(saved.cards[0].assignedAgentId, 'builtin-lead')
+  assert.equal(saved.cards[0].reasoningEffort, 'low')
+  assert.equal(saved.cards[0].verificationPolicy, 'independent')
+  assert.equal(saved.runs.length, 0)
+  assert.equal(saved.cards.every((card) => card.status === 'backlog' && !card.autoRun && !card.threadId && card.sourceThreadId === input.sourceThreadId), true)
+  assert.deepEqual(await reopen().read(), saved)
+  await assert.rejects(store.saveDraftPlan(input), /Read its latest plan/u)
+  assert.deepEqual(await store.read(), saved, 'Retry cannot duplicate a board or feature')
+})
+
+test('draft revisions retain IDs, chosen settings, omitted completed work, and its handoffs', async (t) => {
+  const { store, stateFilePath, advance } = await createFixture(t)
+  const first = draftFeature({ title: 'Chosen title', agentId: 'builtin-product', model: 'gpt-6-astra', reasoningEffort: 'low', verificationPolicy: 'independent' })
+  const second = draftFeature({ title: 'Previously delivered' })
+  const input = draftPlan(await store.read(), [first, second])
+  const saved = await store.saveDraftPlan(input)
+  const completed = saved.cards.find((card) => card.id === second.id)
+  Object.assign(completed, { status: 'done', summary: 'Delivered and reviewed.', completedAtIso: saved.updatedAtIso })
+  await writeFile(stateFilePath, JSON.stringify(saved))
+  advance()
+  const revised = await store.saveDraftPlan({ ...input, expectedVersion: saved.version, summary: 'Refined the remaining scope.', features: [draftFeature({ id: first.id, description: 'Search by title and owner.', dependsOn: [second.id] })] })
+  const changed = revised.cards.find((card) => card.id === first.id)
+  assert.equal(revised.cards.length, 2)
+  assert.equal(changed.title, first.title)
+  assert.equal(changed.assignedAgentId, first.agentId)
+  assert.equal(changed.model, first.model)
+  assert.equal(changed.reasoningEffort, first.reasoningEffort)
+  assert.equal(changed.verificationPolicy, first.verificationPolicy)
+  assert.equal(changed.createdAtIso, saved.cards[0].createdAtIso)
+  assert.deepEqual(changed.dependencyIds, [second.id])
+  assert.deepEqual(revised.cards.find((card) => card.id === second.id), completed)
+})
+
+test('invalid draft changes leave the entire board and dependency graph unchanged', async (t) => {
+  const { store, stateFilePath } = await createFixture(t)
+  const first = draftFeature()
+  const second = draftFeature({ dependsOn: [first.id] })
+  const input = draftPlan(await store.read(), [first, second])
+  const saved = await store.saveDraftPlan(input)
+  const original = await readFile(stateFilePath, 'utf8')
+  for (const change of [
+    { features: [{ ...first, dependsOn: [second.id] }] }, // Cycle includes an omitted existing card.
+    { features: [{ ...first, dependsOn: [randomUUID()] }] },
+    { features: [first, first] },
+    { features: [{ ...first, agentId: 'missing-agent' }] },
+    { features: [{ ...first, status: 'done' }] },
+    { projectPath: '/tmp/different-project' },
+    { expectedVersion: saved.version - 1 },
+  ]) {
+    await assert.rejects(store.saveDraftPlan({ ...input, expectedVersion: saved.version, ...change }))
+    assert.equal(await readFile(stateFilePath, 'utf8'), original)
+  }
+  const newBoardInput = draftPlan(saved, [{ ...first, id: randomUUID(), dependsOn: [randomUUID()] }])
+  await assert.rejects(store.saveDraftPlan(newBoardInput))
+  assert.equal(await readFile(stateFilePath, 'utf8'), original, 'A failed initial plan cannot leave an empty board behind')
+})
+
+test('draft saves cannot replace started features, existing tasks, or another board’s cards', async (t) => {
+  const { store } = await createFixture(t)
+  const started = draftFeature()
+  const withTasks = draftFeature()
+  const clean = draftFeature()
+  const input = draftPlan(await store.read(), [started, withTasks, clean])
+  await store.saveDraftPlan(input)
+  const { run } = await store.startRun(started.id, 'builtin-lead', 'plan')
+  await assert.rejects(store.saveDraftPlan({ ...input, expectedVersion: (await store.read()).version, features: [clean] }))
+  await store.failRun(run.id, 'Earlier planning attempt ended.', 'interrupted')
+  await store.updateCard(started.id, { status: 'backlog' })
+  await store.createCard({ boardId: input.boardId, parentCardId: withTasks.id, type: 'task', title: 'Existing implementation task' })
+  for (const feature of [started, withTasks]) {
+    const before = await store.read()
+    await assert.rejects(store.saveDraftPlan({ ...input, expectedVersion: before.version, features: [feature] }))
+    assert.deepEqual(await store.read(), before)
+  }
+  const before = await store.read()
+  await assert.rejects(store.saveDraftPlan({ ...input, boardId: randomUUID(), expectedVersion: before.version, features: [clean] }))
+  assert.deepEqual(await store.read(), before)
+})
 
 test('brief-first cards receive concise titles without replacing explicit titles or accepting empty content', async (t) => {
   const { store, reopen } = await createFixture(t)

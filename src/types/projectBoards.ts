@@ -221,6 +221,29 @@ export type ProjectBoardFeaturePlan = {
   }>
 }
 
+export type ProjectBoardDraftPlanInput = {
+  /** Generate once before saving and reuse on retry; a missing board is created atomically. */
+  boardId: string
+  projectPath: string
+  projectName?: string
+  name?: string
+  sourceThreadId: string
+  expectedVersion: number
+  summary: string
+  features: Array<{
+    /** Stable client-generated UUID, or the ID of an existing unstarted feature. */
+    id: string
+    title?: string
+    description: string
+    acceptanceCriteria: string
+    agentId?: string
+    verificationPolicy?: ProjectBoardVerificationPolicy
+    dependsOn: string[]
+    model?: string
+    reasoningEffort?: ReasoningEffort | ''
+  }>
+}
+
 export type ProjectBoardStartInput = {
   allowWorkspaceWrite?: boolean
   mode?: 'plan' | 'execute'

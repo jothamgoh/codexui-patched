@@ -265,7 +265,7 @@ function normalizeCard(value: unknown, agents: ProjectBoardAgent[]): ProjectBoar
     reasoningEffort: readString(record.reasoningEffort) ? normalizeReasoningEffort(record.reasoningEffort) : '',
     planSummary: readString(record.planSummary),
     planStatus: record.planStatus === 'ready' ? 'ready' : 'none',
-    toolSchemaVersion: record.toolSchemaVersion === 2 ? 2 : 1,
+    toolSchemaVersion: record.toolSchemaVersion === 3 ? 3 : record.toolSchemaVersion === 2 ? 2 : 1,
     threadId: readString(record.threadId, 200),
     sourceThreadId: type === 'feature' ? readString(record.sourceThreadId, 200) : '',
     lastRunId: readString(record.lastRunId, 200),
@@ -337,7 +337,7 @@ function normalizeRun(value: unknown): ProjectBoardRun | null {
   const boardId = readString(record?.boardId, 200)
   const cardId = readString(record?.cardId, 200)
   if (!record || !id || !boardId || (!cardId && record.kind !== 'board_plan')) return null
-  const kind: ProjectBoardRunKind = record.kind === 'board_plan' ? 'board_plan' : record.kind === 'plan' ? 'plan' : 'execute'
+  const kind: ProjectBoardRunKind = record.kind === 'follow_up' ? 'follow_up' : record.kind === 'board_plan' ? 'board_plan' : record.kind === 'plan' ? 'plan' : 'execute'
   const allowedStatuses = new Set(['queued', 'running', 'succeeded', 'failed', 'interrupted'])
   const rawStatus = readString(record.status)
   const requestedReasoningEffort = readString(record.requestedReasoningEffort) as ReasoningEffort
@@ -1179,7 +1179,8 @@ export class ProjectBoardStore {
       if (expectedFingerprint !== undefined && projectBoardFeatureFingerprint(card) !== expectedFingerprint) throw new Error('The feature changed while starting. Review its settings and start again.')
       if (card.type !== 'feature') throw new Error('Only features can start a Lead run; QA batches are not executable yet.')
       assertManualEdit(current, card)
-      if (card.status === 'done') {
+      if (kind === 'follow_up' && (card.status !== 'done' || !card.threadId)) throw new Error('Follow-up conversations require a completed feature chat.')
+      if (card.status === 'done' && kind !== 'follow_up') {
         if (!reopen) throw new Error('This feature is already done. Choose Reopen feature to send a follow-up.')
         const dependent = current.cards.find((entry) => entry.dependencyIds.includes(card.id) && ['working', 'done', 'review'].includes(entry.status))
         if (dependent) throw new Error(`Reopen dependent card "${dependent.title}" first.`)
@@ -1187,9 +1188,9 @@ export class ProjectBoardStore {
       if (kind === 'plan' && current.cards.some((entry) => entry.parentCardId === cardId && (entry.status === 'working' || entry.status === 'done'))) {
         throw new Error('This feature already has execution history. Continue its existing plan or reopen a task for repair.')
       }
-      const blocker = kind === 'plan' ? '' : dependencyBlocker(current, card)
+      const blocker = kind === 'plan' || kind === 'follow_up' ? '' : dependencyBlocker(current, card)
       if (blocker) throw new Error(blocker)
-      if (current.runs.some((run) => run.boardId === card.boardId && run.status === 'running')) {
+      if (kind !== 'follow_up' && current.runs.some((run) => run.boardId === card.boardId && run.kind !== 'follow_up' && run.status === 'running')) {
         throw new Error('Wait for this board’s active run to finish.')
       }
       const agent = current.agents.find((entry) => entry.id === agentId)
@@ -1214,7 +1215,7 @@ export class ProjectBoardStore {
       let next: ProjectBoardSnapshot = {
         ...current,
         runs: [createdRun, ...current.runs],
-        cards: current.cards.map((entry) => entry.id === cardId
+        cards: current.cards.map((entry) => entry.id === cardId && kind !== 'follow_up'
           ? cardWithStatus(entry, 'working', now, kind === 'plan' ? 'Lead is planning' : `${agent.name} is working`)
           : entry),
       }
@@ -1228,7 +1229,7 @@ export class ProjectBoardStore {
     return this.mutate((current) => {
       const board = current.boards.find((entry) => entry.id === boardId)
       if (!board || !board.agentIds.includes(agentId)) throw new Error('Choose a coordinator enabled on this board.')
-      if (current.runs.some((entry) => entry.boardId === boardId && entry.status === 'running')) throw new Error('Wait for this board’s active run to finish.')
+      if (current.runs.some((entry) => entry.boardId === boardId && entry.kind !== 'follow_up' && entry.status === 'running')) throw new Error('Wait for this board’s active run to finish.')
       if (!readString(plan)) throw new Error('A project plan is required.')
       const now = this.now().toISOString()
       run = {
@@ -1299,7 +1300,7 @@ export class ProjectBoardStore {
       if (!Array.isArray(input.features) || !input.features.length || input.features.length > 30) throw new Error('Provide between 1 and 30 feature cards.')
       const existingBoard = current.boards.find((board) => board.id === boardId)
       if (existingBoard && existingBoard.projectPath !== projectPath) throw new Error('The board belongs to a different project.')
-      if (current.runs.some((run) => run.boardId === boardId && (run.status === 'running' || run.status === 'queued'))) {
+      if (current.runs.some((run) => run.boardId === boardId && run.kind !== 'follow_up' && (run.status === 'running' || run.status === 'queued'))) {
         throw new Error('Wait for this board’s active run to stop before revising its plan.')
       }
       const now = this.now().toISOString()
@@ -1390,7 +1391,7 @@ export class ProjectBoardStore {
       return {
         ...current,
         runs: current.runs.map((entry) => entry.id === runId ? { ...entry, threadId } : entry),
-        cards: current.cards.map((card) => card.id === run.cardId ? { ...card, threadId, lastRunId: runId, toolSchemaVersion: toolSchemaVersion ?? card.toolSchemaVersion } : card),
+        cards: current.cards.map((card) => card.id === run.cardId && run.kind !== 'follow_up' ? { ...card, threadId, lastRunId: runId, toolSchemaVersion: toolSchemaVersion ?? card.toolSchemaVersion } : card),
         boards: current.boards.map((board) => board.id === run.boardId && run.kind === 'board_plan' ? { ...board, planningThreadId: threadId } : board),
       }
     })
@@ -1579,6 +1580,36 @@ export class ProjectBoardStore {
     })
   }
 
+  reopenFollowUp(runId: string, reasonValue: unknown, taskId = '', assertCanReopen: () => void = () => undefined): Promise<ProjectBoardSnapshot> {
+    return this.mutate((current) => {
+      const run = current.runs.find((entry) => entry.id === runId && entry.status === 'running')
+      const feature = current.cards.find((card) => card.id === run?.cardId && card.type === 'feature')
+      const reason = readString(reasonValue)
+      if (!run || run.kind !== 'follow_up' || !feature || feature.status !== 'done') throw new Error('This completed feature conversation is no longer available to reopen.')
+      if (!reason) throw new Error('A repair reason is required before reopening the feature.')
+      if (current.runs.some((entry) => entry.boardId === run.boardId && entry.id !== runId && entry.kind !== 'follow_up' && entry.status === 'running')) throw new Error('Another feature is running on this board. Continue the conversation and retry reopening when it finishes.')
+      const dependent = current.cards.find((card) => card.dependencyIds.includes(feature.id) && ['working', 'done', 'review'].includes(card.status))
+      if (dependent) throw new Error(`Reopen dependent card "${dependent.title}" first.`)
+      const repairCandidates = current.cards.filter((card) => card.parentCardId === feature.id
+        && !current.cards.some((dependent) => dependent.dependencyIds.includes(card.id) && ['working', 'done', 'review'].includes(dependent.status)))
+      const task = taskId ? current.cards.find((card) => card.id === taskId && card.parentCardId === feature.id)
+        : repairCandidates.find((card) => card.taskPurpose === 'verification') ?? repairCandidates.at(-1)
+      if (taskId && !task) throw new Error('Task does not belong to this feature.')
+      if (!task) throw new Error('Choose an affected task whose dependents can be reopened first.')
+      if (task?.status === 'working') throw new Error('Block the active task before reopening it.')
+      if (task && current.cards.some((card) => card.dependencyIds.includes(task.id) && ['working', 'done', 'review'].includes(card.status))) throw new Error('Reopen dependent verification tasks before reopening the completed work.')
+      assertCanReopen()
+      const now = this.now()
+      return {
+        ...current,
+        runs: current.runs.map((entry) => entry.id === runId ? { ...entry, kind: 'execute' as const } : entry),
+        cards: current.cards.map((card) => card.id === feature.id ? cardWithStatus({ ...card, lastRunId: runId }, 'working', now, `Reopened: ${reason}`)
+          : card.id === task?.id ? cardWithStatus(card, 'backlog', now, reason) : card),
+        comments: [{ id: randomUUID(), boardId: run.boardId, cardId: task?.id || feature.id, runId, author: 'Lead', text: `Reopened: ${reason}\nPrevious handoff: ${task?.summary || feature.summary || '(none)'}`, createdAtIso: now.toISOString() }, ...current.comments],
+      }
+    })
+  }
+
   completeRun(runId: string, summaryValue: unknown): Promise<ProjectBoardSnapshot> {
     return this.mutate((current) => {
       const run = current.runs.find((entry) => entry.id === runId)
@@ -1642,7 +1673,7 @@ export class ProjectBoardStore {
       const error = readString(errorValue) || 'Agent run failed.'
       let next: ProjectBoardSnapshot = {
         ...current,
-        cards: current.cards.map((entry) => run.cardId && (entry.id === run.cardId || (entry.parentCardId === run.cardId && entry.status === 'working'))
+        cards: current.cards.map((entry) => run.kind !== 'follow_up' && run.cardId && (entry.id === run.cardId || (entry.parentCardId === run.cardId && entry.status === 'working'))
           ? cardWithStatus({ ...entry, summary: entry.summary || error }, 'blocked', now, error)
           : entry),
         runs: current.runs.map((entry) => entry.id === runId ? {
@@ -1660,14 +1691,13 @@ export class ProjectBoardStore {
 
   recoverInterruptedRuns(): Promise<ProjectBoardSnapshot> {
     return this.mutate((current) => {
-      const interruptedCardIds = new Set(current.runs
-        .filter((run) => run.status === 'running' || run.status === 'queued')
-        .map((run) => run.cardId))
-      if (interruptedCardIds.size === 0) return current
+      const interruptedRuns = current.runs.filter((run) => run.status === 'running' || run.status === 'queued')
+      const interruptedCardIds = new Set(interruptedRuns.filter((run) => run.kind !== 'follow_up').map((run) => run.cardId))
+      if (interruptedRuns.length === 0) return current
       const now = this.now()
       let next: ProjectBoardSnapshot = {
         ...current,
-        runs: current.runs.map((run) => interruptedCardIds.has(run.cardId) && (run.status === 'running' || run.status === 'queued') ? {
+        runs: current.runs.map((run) => run.status === 'running' || run.status === 'queued' ? {
           ...run,
           status: 'interrupted',
           finishedAtIso: now.toISOString(),

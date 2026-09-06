@@ -15,7 +15,7 @@ export type ProjectBoardPriority = 'low' | 'normal' | 'high' | 'urgent'
 export type ProjectBoardAgentRole = 'lead' | 'product' | 'design' | 'engineering' | 'qa' | 'custom'
 export type ProjectBoardAgentSandbox = 'read-only' | 'workspace-write'
 export type ProjectBoardExecutionAccess = 'full-access' | 'project'
-export type ProjectBoardRunKind = 'plan' | 'execute' | 'board_plan'
+export type ProjectBoardRunKind = 'plan' | 'execute' | 'board_plan' | 'follow_up'
 export type ProjectBoardRunStatus = 'queued' | 'running' | 'succeeded' | 'failed' | 'interrupted'
 
 export type ProjectBoardAgent = {

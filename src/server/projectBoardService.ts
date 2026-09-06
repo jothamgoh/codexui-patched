@@ -45,6 +45,7 @@ type ActiveFeatureRun = {
   settings: { model: string; reasoningEffort: ReasoningEffort }
   sourceContext: string
   finishing: boolean
+  ownsBoardLock: boolean
   message?: ManagedBoardMessage
   stopping?: boolean
   turnReady?: Promise<void>
@@ -151,6 +152,7 @@ function featureContext(
       sourceThreadId: board.sourceThreadId,
     },
     feature,
+    runKind: run?.kind,
     executionSettings: run ? { model: run.requestedModel, reasoningEffort: run.requestedReasoningEffort } : undefined,
     tasks: tasks.map((task) => ({ ...task, description: task.description.slice(0, 1_000), acceptanceCriteria: task.acceptanceCriteria.slice(0, 1_000), summary: task.summary.slice(0, 2_000) })),
     relatedFeatures: snapshot.cards.filter((card) => card.boardId === board.id && card.type === 'feature' && card.id !== feature.id).slice(0, 40).map((card) => ({
@@ -194,7 +196,7 @@ function buildCoordinatorInstructions(agent: ProjectBoardAgent, currentTools = t
     currentTools ? 'Repair failed checks in dependency order: block_task on active verification, then reopen_task on dependent verification before reopening completed work. Give a repair reason each time. Start the reopened work, repair it, save its handoff, then start verification again and check the result. Preserve previous handoffs; do not replace completed history or retry the same rejected transition unchanged.' : 'If a completed task needs repair, ask the user to reopen the affected task on the board before continuing, or create a separate follow-up feature. Preserve previous handoffs.',
     'Use Codex native subagents when separate context or specialist work is useful. Include the selected profile instructions and complete task context when delegating because child agents begin with fresh context. Blank profile model or reasoningEffort means inherit that field from this coordinator’s current executionSettings. Only apply a nonblank profile override where native delegation supports it; otherwise preserve native inheritance. Do not claim unsupported settings were applied.',
     'Any delegated agent may coordinate further native subagents when the runtime permits it. Keep delegation within the runtime concurrency and depth limits. Only this coordinating thread updates the durable board; children return concrete handoffs to it.',
-    'The coordinator and native subagents share the thread sandbox. Agent role instructions are guidance, not separate filesystem permissions. Delegate read-only research in parallel when useful, and never run concurrent writers in this project.',
+    'The coordinator and native subagents share the thread sandbox. Agent role instructions are guidance, not separate filesystem permissions. Delegate independent bounded work in parallel when useful. Assign file and shared-state ownership explicitly; serialize overlapping edits and coordinate integration with other active work in this folder.',
     'For a blocking user decision, prefer native request_user_input when available so this Lead chat can show choices and pause for the answer. If unavailable, use project_board_update ask_user with concise context, alternatives and your recommendation, then end this turn. Avoid questions about routine reversible details or authorization already given. Delegated specialists relay decision requests to this coordinator so the user can answer in one Lead chat.',
     'Before starting a task, ensure its dependencies are done. Call start_task, delegate or perform the work, then call complete_task with a concrete summary and artifacts, or block_task with a precise reason.',
     'Keep the task graph and tests small. Validate at the larger feature boundary when implementation tasks are independent; do not add tests after every small task. Run earlier checks only when a dependent task needs that evidence.',
@@ -270,6 +272,7 @@ export const PROJECT_BOARD_DYNAMIC_TOOL_SPEC = {
           'read_card',
           'save_features',
           'reopen_task',
+          'reopen_feature',
           'replace_plan',
           'start_task',
           'complete_task',
@@ -297,6 +300,7 @@ export const PROJECT_BOARD_DYNAMIC_TOOL_SPEC = {
       },
       cardId: { type: 'string' },
       summary: { type: 'string' },
+      reason: { type: 'string' },
       blocker: { type: 'string' },
       question: { type: 'string' },
       comment: { type: 'string' },
@@ -386,7 +390,7 @@ export class ProjectBoardService {
   }
 
   isPlanningThread(threadId: string): boolean {
-    return [...this.activeRunsById.values()].some((run) => run.threadId === threadId && run.kind !== 'execute')
+    return [...this.activeRunsById.values()].some((run) => run.threadId === threadId && (run.kind === 'plan' || run.kind === 'board_plan'))
   }
 
   async isManagedThread(threadId: string): Promise<boolean> {
@@ -494,13 +498,15 @@ export class ProjectBoardService {
     const expectedRunId = readString(asRecord(input)?.expectedRunId)
     // A delayed Stop from an older chat must never interrupt its replacement.
     const context = [...this.activeRunsById.values()].find((run) => run.featureId === featureId)
-    if (expectedRunId && (feature.lastRunId !== expectedRunId || (context && context.runId !== expectedRunId)
+    if (expectedRunId && ((context?.runId ?? snapshot.runs.find((run) => run.cardId === featureId && run.status === 'running')?.id ?? feature.lastRunId) !== expectedRunId
       || (this.featureStartEpochs.get(featureId) ?? 0) !== observedStartEpoch)) return this.read()
     this.featureStopEpochs.set(featureId, this.featureStartEpochs.get(featureId) ?? 0)
     this.featureStartEpochs.set(featureId, (this.featureStartEpochs.get(featureId) ?? 0) + 1)
     this.executionConsentByFeatureId.delete(featureId)
     this.autoContinuationsByFeatureId.delete(featureId)
-    this.pauseQueue(feature.boardId, 'Feature stopped. Start the remaining work again when ready.')
+    const stoppingConversation = context?.kind === 'follow_up' || (!context && feature.status === 'done')
+      || snapshot.runs.some((run) => run.cardId === featureId && run.status === 'running' && run.kind === 'follow_up')
+    if (!stoppingConversation) this.pauseQueue(feature.boardId, 'Feature stopped. Start the remaining work again when ready.')
     if (context && !context.finishing) {
       if (!context.stopPromise) {
         context.stopping = true
@@ -641,7 +647,7 @@ export class ProjectBoardService {
     if (!feature) {
       return this.startBoardPlan(board.id, { plan: board.plan, coordinatorAgentId: board.coordinatorAgentId }, '', message)
     }
-    return this.startFeatureRun(feature.id, false, requestedExecutionConsent(record), record.mode === 'plan' ? 'plan' : 'execute', undefined, message)
+    return this.startFeatureRun(feature.id, false, requestedExecutionConsent(record), feature.status === 'done' && !message.reopenAndSend ? 'follow_up' : record.mode === 'plan' ? 'plan' : 'execute', undefined, message)
   }
 
   async startBoardPlan(boardId: string, input: unknown, sourceContext = '', message?: ManagedBoardMessage): Promise<ProjectBoardSnapshot> {
@@ -671,7 +677,7 @@ export class ProjectBoardService {
       }
       const context: ActiveFeatureRun = {
         runId: run.id, featureId: '', boardId, projectPath, threadId: '', turnId: '', responseText: '', error: '',
-        workspaceWrite: false, executionAccess: 'project', kind: 'board_plan', settings, sourceContext: sourceContext.slice(0, 20_000), finishing: false, message,
+        workspaceWrite: false, executionAccess: 'project', kind: 'board_plan', settings, sourceContext: sourceContext.slice(0, 20_000), finishing: false, ownsBoardLock: true, message,
       }
       this.activeRunsById.set(run.id, context)
       this.publish(started)
@@ -720,7 +726,7 @@ export class ProjectBoardService {
     if (!board || !featureIds.length) throw new Error('Select the feature cards to run.')
     const executionAccess = readProjectBoardExecutionAccess(record.executionAccess, board.executionAccess)
     if (this.queues.get(boardId)?.status === 'running') throw new Error('This queue is already running. Pause it before changing the selection.')
-    if (snapshot.runs.some((run) => run.boardId === boardId && run.status === 'running')) throw new Error('Wait for the active run before starting a queue.')
+    if (snapshot.runs.some((run) => run.boardId === boardId && run.kind !== 'follow_up' && run.status === 'running')) throw new Error('Wait for the active run before starting a queue.')
     const approved: Record<string, string> = {}
     for (const id of featureIds) {
       const feature = snapshot.cards.find((card) => card.id === id && card.boardId === boardId && card.type === 'feature')
@@ -758,7 +764,7 @@ export class ProjectBoardService {
       const snapshot = await this.store.read()
       if (queue.status !== 'running') return
       if (queue.currentFeatureId) {
-        if (this.activeFeatureIds.has(queue.currentFeatureId)) return
+        if (this.activeFeatureIds.has(queue.currentFeatureId) && !snapshot.runs.some((run) => run.cardId === queue.currentFeatureId && run.kind === 'follow_up' && run.status === 'running')) return
         const current = snapshot.cards.find((card) => card.id === queue.currentFeatureId)
         if (current?.status !== 'done') {
           this.pauseQueue(boardId, current?.progressNote || 'Review the current feature, then explicitly start the queue again.')
@@ -795,7 +801,7 @@ export class ProjectBoardService {
     } finally { this.queuePumping.delete(boardId) }
   }
 
-  private async startFeatureRun(featureId: string, continuation: boolean, requestedConsent: Partial<ExecutionConsent> & { allowWorkspaceWrite: boolean }, kind: 'plan' | 'execute' = 'execute', queue?: ActiveBoardQueue, message?: ManagedBoardMessage): Promise<ProjectBoardSnapshot> {
+  private async startFeatureRun(featureId: string, continuation: boolean, requestedConsent: Partial<ExecutionConsent> & { allowWorkspaceWrite: boolean }, kind: 'plan' | 'execute' | 'follow_up' = 'execute', queue?: ActiveBoardQueue, message?: ManagedBoardMessage): Promise<ProjectBoardSnapshot> {
     const generation = this.processGeneration
     if (this.activeFeatureIds.has(featureId)) throw new Error('This feature is already running.')
     const startEpoch = (this.featureStartEpochs.get(featureId) ?? 0) + 1
@@ -822,11 +828,11 @@ export class ProjectBoardService {
     if (generation !== this.processGeneration) throw new Error('Codex app-server exited. Select Start to retry this feature.')
     assertNotStopped()
     if (this.activeFeatureIds.has(featureId)) throw new Error('This feature is already running.')
-    if (this.activeBoardIds.has(board.id)) {
+    if (kind !== 'follow_up' && this.activeBoardIds.has(board.id)) {
       throw new Error('Another feature is running on this board. Let it finish before starting this one.')
     }
     const roster = snapshot.agents.filter((agent) => board.agentIds.includes(agent.id))
-    const workspaceWrite = kind === 'execute' && consent.executionAccess === 'project' && roster.some((agent) => agent.sandbox === 'workspace-write')
+    const workspaceWrite = kind !== 'plan' && (kind !== 'follow_up' || consent.allowWorkspaceWrite) && consent.executionAccess === 'project' && roster.some((agent) => agent.sandbox === 'workspace-write')
     if (workspaceWrite && !consent.allowWorkspaceWrite) {
       throw new Error('Confirm workspace-write access before starting. The Lead and all native subagents share permission to edit project files.')
     }
@@ -845,9 +851,9 @@ export class ProjectBoardService {
       throw new Error('The queue was paused or replaced before this feature started.')
     }
     if (generation !== this.processGeneration) throw new Error('Codex app-server exited. Select Start to retry.')
-    if (this.activeFeatureIds.has(featureId) || this.activeBoardIds.has(board.id)) throw new Error('Another feature is running on this board.')
+    if (this.activeFeatureIds.has(featureId) || (kind !== 'follow_up' && this.activeBoardIds.has(board.id))) throw new Error('Another feature is running on this board.')
     this.activeFeatureIds.add(feature.id)
-    this.activeBoardIds.add(board.id)
+    if (kind !== 'follow_up') this.activeBoardIds.add(board.id)
     try {
       const { snapshot: startedSnapshot, run } = await this.store.startRun(feature.id, lead.id, kind, projectBoardFeatureFingerprint(feature), settings, message?.reopenAndSend)
       if (generation !== this.processGeneration || (this.featureStartEpochs.get(featureId) ?? 0) !== startEpoch) {
@@ -868,7 +874,7 @@ export class ProjectBoardService {
         responseText: '',
         error: '',
         workspaceWrite, executionAccess: consent.executionAccess, kind, settings, sourceContext: '',
-        finishing: false, message,
+        finishing: false, ownsBoardLock: kind !== 'follow_up', message,
       }
       this.activeRunsById.set(run.id, context)
       this.publish(startedSnapshot)
@@ -876,7 +882,7 @@ export class ProjectBoardService {
       return startedSnapshot
     } catch (error) {
       this.activeFeatureIds.delete(feature.id)
-      this.activeBoardIds.delete(board.id)
+      if (kind !== 'follow_up') this.activeBoardIds.delete(board.id)
       throw error
     }
   }
@@ -917,6 +923,35 @@ export class ProjectBoardService {
       return dynamicToolText(JSON.stringify({ message: 'Feature cards saved. Stop and let the user review/start the queue.', features: next.cards.filter((card) => card.lastRunId === runId).map(({ id, title, dependencyIds }) => ({ id, title, dependencyIds })) }))
     }
     if (!feature) throw new Error('Feature not found.')
+    if (activeRun.kind === 'follow_up') {
+      if (action === 'reopen_feature' || action === 'reopen_task') {
+        if (action === 'reopen_task' && !readString(args.taskId)) throw new Error('taskId is required.')
+        if (activeRun.executionAccess === 'project' && !activeRun.workspaceWrite) throw new Error('This conversation has project read access. Allow workspace changes in reply settings and start another reply before reopening for implementation.')
+        if (this.activeBoardIds.has(board.id) || this.queuePumping.has(board.id) || this.queues.get(board.id)?.status === 'running') throw new Error('This board is executing other work. Continue discussing here; pause delivery or wait for it to finish before reopening this feature.')
+        this.activeBoardIds.add(board.id)
+        activeRun.ownsBoardLock = true
+        const assertCanReopen = () => {
+          if (this.activeRunsById.get(runId) !== activeRun || activeRun.stopping || activeRun.finishing || !activeRun.ownsBoardLock) throw new Error('The Lead stopped before the feature could reopen.')
+        }
+        try {
+          const next = await this.store.reopenFollowUp(runId, args.reason || args.summary || args.blocker, readString(args.taskId), assertCanReopen)
+          assertCanReopen()
+          activeRun.kind = 'execute'
+          this.executionConsentByFeatureId.set(feature.id, { executionAccess: activeRun.executionAccess, allowWorkspaceWrite: activeRun.workspaceWrite })
+          this.publish(next)
+          return dynamicToolText('Feature and its first repair or verification task reopened for the requested changes. Read context, preserve completed handoffs, reopen affected tasks in dependency order, implement, then verify and finish the feature.')
+        } catch (error) {
+          // Stop/finish owns a reserved lock until its persisted run is settled.
+          // A late tool result must not release a replacement run's reservation.
+          if (activeRun.ownsBoardLock && !activeRun.stopping && !activeRun.finishing) {
+            this.activeBoardIds.delete(board.id)
+            activeRun.ownsBoardLock = false
+          }
+          throw error
+        }
+      }
+      if (action !== 'comment') throw new Error('This is a conversation about completed work. Use native questions and comments without changing completion. Before implementation, reopen_feature with a repair reason, or reopen_task on the affected verification task using this chat’s existing tool schema.')
+    }
     if (activeRun.kind === 'plan' && !['replace_plan', 'ask_user', 'comment'].includes(action)) {
       throw new Error('This is a read-only planning run. Save the plan and stop; Start work authorizes implementation later.')
     }
@@ -1021,7 +1056,7 @@ export class ProjectBoardService {
       const plan = Array.isArray(params?.plan) ? params.plan : []
       const activeStep = plan.map(asRecord).find((entry) => entry?.status === 'inProgress')
       const step = readString(activeStep?.step)
-      if (step && context.featureId) this.publish(await this.store.updateFeatureRuntime(context.featureId, { progressNote: step }))
+      if (step && context.featureId && context.kind !== 'follow_up') this.publish(await this.store.updateFeatureRuntime(context.featureId, { progressNote: step }))
       return
     }
     if (notification.method !== 'turn/completed') return
@@ -1055,8 +1090,8 @@ export class ProjectBoardService {
       if (!run || (!feature && context.kind !== 'board_plan') || !board || !lead) throw new Error('Feature run context is incomplete.')
       assertActive()
 
-      const fullAccess = context.kind === 'execute' && context.executionAccess === 'full-access'
-      const approvalPolicy = context.kind === 'execute' && !fullAccess ? 'on-request' : 'never'
+      const fullAccess = (context.kind === 'execute' || context.kind === 'follow_up') && context.executionAccess === 'full-access'
+      const approvalPolicy = (context.kind === 'execute' || context.kind === 'follow_up') && !fullAccess ? 'on-request' : 'never'
       const threadParams = {
         cwd: context.projectPath,
         model: context.settings.model || null,
@@ -1071,7 +1106,7 @@ export class ProjectBoardService {
         buildCoordinatorInstructions(lead, currentTools),
       )
       assertActive()
-      if (context.kind !== 'execute') preparedThreadParams.dynamicTools = [PROJECT_BOARD_DYNAMIC_TOOL_SPEC]
+      if (context.kind === 'plan' || context.kind === 'board_plan') preparedThreadParams.dynamicTools = [PROJECT_BOARD_DYNAMIC_TOOL_SPEC]
       let threadId = feature?.threadId || (context.kind === 'board_plan' ? board.planningThreadId : '')
       if (threadId) {
         // Resume supports instruction overrides, but not a new dynamic tool list.
@@ -1092,7 +1127,7 @@ export class ProjectBoardService {
         threadId = readThreadId(started)
         if (!threadId) throw new Error('Codex did not create a Lead chat.')
       }
-      snapshot = this.publish(await this.store.setRunThread(run.id, threadId, currentTools ? 2 : 1))
+      snapshot = this.publish(await this.store.setRunThread(run.id, threadId, feature?.threadId ? feature.toolSchemaVersion : 3))
       assertActive()
       if (!feature?.threadId && !(context.kind === 'board_plan' && board.planningThreadId)) {
         await this.appServer.rpc('thread/name/set', { threadId, name: feature?.title || `${board.name} · Planning` }).catch(() => undefined)
@@ -1119,7 +1154,9 @@ export class ProjectBoardService {
           } : {}),
           codexui_project_board_coordinator: {
             kind: 'application',
-            value: context.kind === 'board_plan' ? `You coordinate project planning with profile ${lead.id}. This turn is planning only, read-only. Use save_features to propose top-level feature cards once, then stop. Never implement or start feature tasks. This overrides earlier execution instructions in this chat.` : context.kind === 'plan' ? `${buildCoordinatorInstructions(lead, currentTools)}\nPLANNING ONLY: inspect read-only, save tasks, then stop. Do not execute tasks or request elevated write permissions.` : buildCoordinatorInstructions(lead, currentTools),
+            value: context.kind === 'follow_up'
+              ? `This is a normal conversation about a completed feature, in its existing Lead chat. Keep Done, completed tasks, QA evidence, and the result intact when answering explanations, links, how-to questions, or running requested checks. Read project_board_update read_context as needed; use native questions for clarification. Reply naturally and end the turn when answered. Do not call finish_feature again or automatically continue the old implementation. If the user requests actual changes, or asks you to fix a problem discovered during checks, first ${feature!.toolSchemaVersion >= 3 ? 'call reopen_feature with reason' : feature!.toolSchemaVersion >= 2 ? 'call reopen_task with taskId and summary explaining the repair; reopen dependent verification before the work it checks. This also reopens the feature atomically' : 'explain that this legacy chat cannot reopen tasks through its tool; use the existing feature reopen action'}. Only after that transition succeeds may you edit the implementation or change workflow state. Permission to access files does not replace this workflow transition. Preserve handoffs and verify repaired behavior before finishing again. Other feature work can continue during this conversation; if reopening is blocked by active work or completed dependents, explain the dependency and continue answering without changing files.`
+              : context.kind === 'board_plan' ? `You coordinate project planning with profile ${lead.id}. This turn is planning only, read-only. Use save_features to propose top-level feature cards once, then stop. Never implement or start feature tasks. This overrides earlier execution instructions in this chat.` : context.kind === 'plan' ? `${buildCoordinatorInstructions(lead, currentTools)}\nPLANNING ONLY: inspect read-only, save tasks, then stop. Do not execute tasks or request elevated write permissions.` : buildCoordinatorInstructions(lead, currentTools),
           },
         },
         cwd: context.projectPath,
@@ -1153,7 +1190,7 @@ export class ProjectBoardService {
       // start response. It must verify the turn before releasing board locks.
       if (context.stopping) return
       context.finishing = true
-      this.pauseQueue(context.boardId, 'A run failed. Review the feature chat, then start the queue again.')
+      if (context.kind !== 'follow_up') this.pauseQueue(context.boardId, 'A run failed. Review the feature chat, then start the queue again.')
       try {
         this.publish(await this.store.failRun(context.runId, error instanceof Error ? error.message : 'Feature run failed.'))
       } finally {
@@ -1167,6 +1204,17 @@ export class ProjectBoardService {
     context.finishing = true
     let continueFeature = false
     try {
+      if (context.kind === 'follow_up' && context.ownsBoardLock) {
+        // Promotion may have committed while Stop or turn completion arrived.
+        // Serialize this read after it and finish the durable kind, not a stale context.
+        const snapshot = await this.store.read()
+        context.kind = snapshot.runs.find((run) => run.id === context.runId)?.kind ?? context.kind
+      }
+      if (context.kind === 'follow_up') {
+        this.publish(turnStatus === 'completed' ? await this.store.completeRun(context.runId, context.responseText)
+          : await this.store.failRun(context.runId, context.error || `Codex turn ended with status ${turnStatus}.`, turnStatus === 'interrupted' ? 'interrupted' : 'failed', context.stopping === true))
+        return
+      }
       if (turnStatus !== 'completed') {
         this.pauseQueue(context.boardId, 'A run failed or was interrupted. Review the feature, then start the queue again.')
         this.executionConsentByFeatureId.delete(context.featureId)
@@ -1207,7 +1255,7 @@ export class ProjectBoardService {
       continueFeature = true
     } finally {
       this.releaseContext(context)
-      if (!continueFeature) void this.advanceBoardQueue(context.boardId).catch(() => undefined)
+      if (!continueFeature && context.kind !== 'follow_up') void this.advanceBoardQueue(context.boardId).catch(() => undefined)
     }
     if (continueFeature) this.queueContinuation(context.featureId)
   }
@@ -1217,7 +1265,8 @@ export class ProjectBoardService {
     context.resolveTurnReady?.()
     this.activeRunsById.delete(context.runId)
     this.activeFeatureIds.delete(context.featureId)
-    this.activeBoardIds.delete(context.boardId)
+    if (context.ownsBoardLock) this.activeBoardIds.delete(context.boardId)
+    context.ownsBoardLock = false
   }
 
   private queueContinuation(featureId: string): void {

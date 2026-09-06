@@ -455,7 +455,7 @@ test('managed replies steer the exact Lead turn and preserve native input withou
   assert.equal((await store.read()).runs.length, 1)
 })
 
-test('idle managed replies preserve the plan and require fresh write consent and explicit atomic reopening', async (t) => {
+test('idle replies preserve completed work and reopen atomically only when the Lead begins a requested repair', async (t) => {
   const { appServer, feature, service, store } = await createHarness(t)
   await service.updateCard(feature.id, { verificationPolicy: 'none', model: 'feature-model', reasoningEffort: 'low' })
   await service.startFeature(feature.id, { mode: 'plan' })
@@ -486,16 +486,169 @@ test('idle managed replies preserve the plan and require fresh write consent and
   ]) await service.handleDynamicToolCall({ ...toolCall('lead-thread', action, fields), turnId: 'lead-turn-2' })
   await service.handleNotification({ method: 'turn/completed', params: { threadId: 'lead-thread', turn: { id: 'lead-turn-2', status: 'completed' } } })
   assert.equal((await store.read()).cards.find((card) => card.id === feature.id).status, 'done')
+  const finished = (await store.read()).cards.find((card) => card.id === feature.id)
+  await service.sendChatMessage('lead-thread', { input: [{ type: 'text', text: 'Where can I open the result?' }], allowWorkspaceWrite: true })
+  await waitFor(() => appServer.calls.filter((call) => call.method === 'turn/start')[2], 'No conversation follow-up')
+  assert.equal((await store.read()).runs[0].kind, 'follow_up')
+  assert.deepEqual((await store.read()).cards.find((card) => card.id === feature.id), finished)
+  await assert.rejects(service.handleDynamicToolCall({ ...toolCall('lead-thread', 'finish_feature', { summary: 'A link is not a new completion.' }), turnId: 'lead-turn-3' }), /conversation about completed work/u)
+  await service.handleNotification({ method: 'turn/completed', params: { threadId: 'lead-thread', turn: { id: 'lead-turn-3', status: 'completed' } } })
+  assert.deepEqual((await store.read()).cards.find((card) => card.id === feature.id), finished)
   const followup = { input: [{ type: 'text', text: 'Fix the remaining edge case.' }], allowWorkspaceWrite: true }
-  await assert.rejects(service.sendChatMessage('lead-thread', followup), /Reopen feature/u)
-  assert.equal((await store.read()).cards.find((card) => card.id === feature.id).status, 'done')
-  await service.sendChatMessage('lead-thread', { ...followup, reopenAndSend: true })
-  await waitFor(() => appServer.calls.filter((call) => call.method === 'turn/start')[2], 'No reopened follow-up')
+  await service.sendChatMessage('lead-thread', followup)
+  await waitFor(() => appServer.calls.filter((call) => call.method === 'turn/start')[3], 'No repair conversation')
+  await assert.rejects(service.handleDynamicToolCall({ ...toolCall('lead-thread', 'reopen_task', { taskId: 'missing', summary: 'Repair the edge case.' }), turnId: 'lead-turn-4' }), /Task does not belong/u)
+  assert.deepEqual((await store.read()).cards.find((card) => card.id === feature.id), finished, 'Invalid repair actions cannot partially reopen Done')
+  await service.handleDynamicToolCall({ ...toolCall('lead-thread', 'reopen_task', { taskId: task.id, summary: 'Repair the edge case requested by the user.' }), turnId: 'lead-turn-4' })
   const snapshot = await store.read()
   assert.equal(snapshot.cards.find((card) => card.id === feature.id).status, 'working')
+  assert.equal(snapshot.cards.find((card) => card.id === task.id).status, 'backlog')
   assert.equal(snapshot.cards.find((card) => card.id === task.id).summary, 'Original passing handoff.')
   assert.equal(snapshot.runs[0].threadId, 'lead-thread')
-  assert.equal(snapshot.runs.length, 3)
+  assert.equal(snapshot.runs[0].kind, 'execute')
+  assert.equal(snapshot.runs.length, 4)
+})
+
+async function completedFeatureHarness(t, executionAccess = 'full-access') {
+  const fixture = await createHarness(t, executionAccess)
+  const { store, feature } = fixture
+  await store.updateCard(feature.id, { verificationPolicy: 'independent', model: 'gpt-6-astra', reasoningEffort: 'xhigh' })
+  const { run } = await store.startRun(feature.id, 'builtin-lead', 'execute')
+  await store.setRunThread(run.id, 'finished-lead', 2)
+  const planned = await store.replacePlan(feature.id, { summary: 'Completed scope.', tasks: [
+    { key: 'work', title: 'Implement', description: 'Build.', acceptanceCriteria: 'Works.', agentId: 'builtin-engineer', taskPurpose: 'work', dependsOn: [] },
+    { key: 'qa', title: 'Review', description: 'Verify.', acceptanceCriteria: 'Checks pass.', agentId: 'builtin-qa', taskPurpose: 'verification', dependsOn: ['work'] },
+  ] }, run.id)
+  const work = planned.cards.find((card) => card.parentCardId === feature.id && card.taskPurpose === 'work')
+  const qa = planned.cards.find((card) => card.parentCardId === feature.id && card.taskPurpose === 'verification')
+  for (const task of [work, qa]) {
+    await store.updateTaskFromAgent(feature.id, task.id, 'start', {}, run.id)
+    await store.updateTaskFromAgent(feature.id, task.id, 'complete', { summary: `${task.title} passed.` }, run.id)
+  }
+  await store.finishFeature(feature.id, 'Verified original result.', run.id)
+  await store.completeRun(run.id, 'Complete.')
+  return { ...fixture, work, qa, completed: await store.read() }
+}
+
+test('completed conversations keep their model and result while another feature queue runs; Stop and failure stay isolated', async (t) => {
+  const { appServer, board, feature, service, store, completed } = await completedFeatureHarness(t)
+  const withOther = await service.createCard({ boardId: board.id, title: 'The next feature', verificationPolicy: 'self' })
+  const other = withOther.cards.find((card) => card.title === 'The next feature')
+  await service.startBoardQueue(board.id, { featureIds: [other.id], executionAccess: 'full-access' })
+  await waitFor(() => appServer.calls.find((call) => call.method === 'turn/start'), 'No queued feature')
+  const executing = (await store.read()).runs.find((run) => run.cardId === other.id)
+  const input = [{ type: 'text', text: 'Explain the finished feature and run its existing checks.' }]
+  await service.sendChatMessage('finished-lead', { input })
+  const conversation = await waitFor(() => appServer.calls.find((call) => call.method === 'turn/start' && call.params.threadId === 'finished-lead'), 'No concurrent conversation')
+  assert.equal(conversation.params.model, 'gpt-6-astra')
+  assert.equal(conversation.params.effort, 'xhigh')
+  assert.equal(conversation.params.sandboxPolicy.type, 'dangerFullAccess')
+  assert.equal(conversation.params.approvalPolicy, 'never')
+  assert.deepEqual(conversation.params.input, input)
+  assert.match(conversation.params.additionalContext.codexui_project_board_coordinator.value, /reopen_task.*atomically/u)
+  const followup = (await store.read()).runs.find((run) => run.kind === 'follow_up')
+  await service.handleNotification({ method: 'turn/plan/updated', params: { threadId: 'finished-lead', turnId: 'lead-turn-2', plan: [{ step: 'Explain the links', status: 'inProgress' }] } })
+  await assert.rejects(service.handleDynamicToolCall({ threadId: 'finished-lead', turnId: 'lead-turn-2', arguments: { action: 'reopen_feature', reason: 'Change requested.' } }), /executing other work/u)
+  assert.deepEqual((await store.read()).cards.filter((card) => card.id === feature.id || card.parentCardId === feature.id), completed.cards)
+  await service.stopFeature(feature.id, { expectedRunId: followup.id })
+  let snapshot = await service.read()
+  assert.equal(snapshot.runs.find((run) => run.id === followup.id).status, 'interrupted')
+  assert.equal(snapshot.runs.find((run) => run.id === executing.id).status, 'running')
+  assert.equal(snapshot.queues.find((queue) => queue.boardId === board.id).status, 'running')
+  assert.deepEqual(appServer.calls.filter((call) => call.method === 'turn/interrupt').map((call) => call.params.threadId), ['finished-lead'])
+  await service.sendChatMessage('finished-lead', { input })
+  await waitFor(() => appServer.calls.filter((call) => call.method === 'turn/start').length === 3, 'No second conversation')
+  await service.handleNotification({ method: 'turn/completed', params: { threadId: 'finished-lead', turn: { id: 'lead-turn-3', status: 'failed' } } })
+  snapshot = await service.read()
+  assert.equal(snapshot.queues.find((queue) => queue.boardId === board.id).status, 'running')
+  assert.equal(snapshot.runs.find((run) => run.id === executing.id).status, 'running')
+  assert.deepEqual(snapshot.cards.filter((card) => card.id === feature.id || card.parentCardId === feature.id), completed.cards)
+  assert.equal(appServer.notifications.filter((event) => event.method === 'codexui/projectBoards/batchCompleted').length, 0)
+  const read = store.read.bind(store)
+  let reads = 0
+  let releasePendingRead
+  store.read = async () => {
+    const snapshot = await read()
+    if (++reads === 2) await new Promise((resolve) => { releasePendingRead = resolve })
+    return snapshot
+  }
+  const pendingReply = service.sendChatMessage('finished-lead', { input })
+  await waitFor(() => releasePendingRead, 'Reply did not reach its pre-run snapshot')
+  await service.stopFeature(feature.id)
+  releasePendingRead()
+  await assert.rejects(pendingReply, /stopped before/u)
+  store.read = read
+  assert.equal((await service.read()).queues.find((queue) => queue.boardId === board.id).status, 'running', 'Cancelling a conversation before its run exists must not pause unrelated delivery')
+  await service.handleNotification({ method: 'codexui/appServer/exited', params: {} })
+  assert.equal((await store.read()).cards.find((card) => card.id === feature.id).status, 'done')
+})
+
+test('repair transitions retain QA dependency guards, and restricted discussion or restart never reopens Done', async (t) => {
+  const { appServer, feature, service, store, qa, work, completed } = await completedFeatureHarness(t, 'project')
+  const message = { input: [{ type: 'text', text: 'Tell me how to test this.' }] }
+  await service.sendChatMessage('finished-lead', message)
+  const first = await waitFor(() => appServer.calls.find((call) => call.method === 'turn/start'), 'No restricted conversation')
+  assert.equal(first.params.sandboxPolicy.type, 'readOnly')
+  const call = (action, fields = {}, turnId = 'lead-turn-1') => service.handleDynamicToolCall({ threadId: 'finished-lead', turnId, arguments: { action, ...fields } })
+  await assert.rejects(call('reopen_feature', { reason: 'Fix requested.' }), /Allow workspace changes/u)
+  assert.deepEqual((await store.read()).cards, completed.cards)
+  await service.handleNotification({ method: 'turn/completed', params: { threadId: 'finished-lead', turn: { id: 'lead-turn-1', status: 'completed' } } })
+  await service.sendChatMessage('finished-lead', { ...message, allowWorkspaceWrite: true })
+  await waitFor(() => appServer.calls.filter((entry) => entry.method === 'turn/start').length === 2, 'No repair conversation')
+  await assert.rejects(call('reopen_task', { taskId: work.id, summary: 'Repair the implementation.' }, 'lead-turn-2'), /dependent verification/u)
+  assert.deepEqual((await store.read()).cards, completed.cards, 'Failed promotion preserves the completed feature and QA')
+  await call('reopen_task', { taskId: qa.id, summary: 'Recheck the requested repair.' }, 'lead-turn-2')
+  let snapshot = await store.read()
+  assert.equal(snapshot.runs[0].kind, 'execute')
+  assert.equal(snapshot.cards.find((card) => card.id === qa.id).status, 'backlog')
+  assert.equal(snapshot.cards.find((card) => card.id === feature.id).status, 'working')
+  await call('reopen_task', { taskId: work.id, summary: 'Repair the implementation.' }, 'lead-turn-2')
+  assert.equal((await store.read()).cards.find((card) => card.id === work.id).summary, 'Implement passed.')
+  await service.handleNotification({ method: 'codexui/appServer/exited', params: {} })
+  assert.equal((await store.read()).cards.find((card) => card.id === feature.id).status, 'blocked', 'Promoted implementation follows normal interruption recovery')
+
+  const recovery = await completedFeatureHarness(t)
+  await recovery.store.startRun(recovery.feature.id, 'builtin-lead', 'follow_up')
+  const recovered = await recovery.store.recoverInterruptedRuns()
+  assert.equal(recovered.runs[0].kind, 'follow_up')
+  assert.equal(recovered.runs[0].status, 'interrupted')
+  assert.deepEqual(recovered.cards, recovery.completed.cards, 'An interrupted conversation preserves saved Done and its original result')
+})
+
+test('Stop and app-server exit cancel pending repair promotions without retaining or releasing another run’s board lock', async (t) => {
+  for (const boundary of ['before', 'after']) for (const cancellation of ['stop', 'exit']) {
+    const { appServer, board, feature, service, store, completed } = await completedFeatureHarness(t)
+    const created = await service.createCard({ boardId: board.id, title: 'Next independent feature' })
+    const other = created.cards.find((card) => card.title === 'Next independent feature')
+    await service.sendChatMessage('finished-lead', { input: [{ type: 'text', text: 'Fix the reported issue.' }] })
+    await waitFor(() => appServer.calls.find((call) => call.method === 'turn/start'), 'No repair conversation')
+    const reopen = store.reopenFollowUp.bind(store)
+    let release
+    const pause = () => new Promise((resolve) => { release = resolve })
+    store.reopenFollowUp = async (...args) => {
+      if (boundary === 'before') await pause()
+      const snapshot = await reopen(...args)
+      if (boundary === 'after') await pause()
+      return snapshot
+    }
+    const promotion = service.handleDynamicToolCall(toolCall('finished-lead', 'reopen_feature', { reason: 'Repair requested.' }))
+    const rejected = assert.rejects(promotion, /no longer available|stopped before/u)
+    await waitFor(() => release, `No ${boundary}-commit promotion pause`)
+    if (cancellation === 'stop') await service.stopFeature(feature.id)
+    else await service.handleNotification({ method: 'codexui/appServer/exited', params: {} })
+    const cancelled = await store.read()
+    if (boundary === 'before') assert.deepEqual(cancelled.cards.filter((card) => card.id === feature.id || card.parentCardId === feature.id), completed.cards)
+    else assert.equal(cancelled.cards.find((card) => card.id === feature.id).status, 'blocked', 'A committed repair follows normal interruption recovery')
+    await service.startFeature(other.id)
+    await waitFor(() => appServer.calls.filter((call) => call.method === 'turn/start').length === 2, 'A cancelled promotion stranded the board lock')
+    release()
+    await rejected
+    await assert.rejects(service.startBoardPlan(board.id, { plan: 'Must wait for the replacement execution.' }), /Another feature is running on this board/u)
+    await service.stopFeature(other.id)
+    await service.startFeature(other.id)
+    await waitFor(() => appServer.calls.filter((call) => call.method === 'turn/start').length === 3, 'A late promotion retained its board lock')
+    await service.stopFeature(other.id)
+  }
 })
 
 test('replies in a planning chat remain read-only and retain the original linked plan', async (t) => {

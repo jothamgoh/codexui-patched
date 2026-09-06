@@ -25,6 +25,7 @@ export function collectProjectBoardNotifications(
 
   const previousRuns = new Map(previous.runs.map((run) => [run.id, run]))
   for (const run of next.runs) {
+    if (run.kind === 'follow_up') continue
     if (previousRuns.get(run.id)?.status === run.status) continue
     const failed = run.status === 'failed' || run.status === 'interrupted'
     const planReady = run.kind === 'board_plan' && run.status === 'succeeded'

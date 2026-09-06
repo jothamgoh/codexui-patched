@@ -73,11 +73,21 @@ continuations, including a start waiting on model metadata. A running turn may
 finish. Pausing or replacing a queue also prevents its old pending starts or
 failures from affecting replacement work.
 
-Features optionally override their Lead's model and reasoning effort. Defaults
-inherit the selected profile; available choices come from advertised runtime
-capabilities and unsupported explicit settings fail visibly. Each run retains
+Features optionally override model and reasoning independently. Each omitted
+field uses the selected profile's explicit setting, then the source chat's
+current setting, then the app default when no source is linked. Maintained
+starter profiles leave both fields blank; blank specialists inherit the Lead.
+Available choices come from advertised runtime capabilities and unsupported
+settings fail visibly. Each run retains
 its resolved requested settings after profile edits. These are launch requests,
 not independently observed specialist telemetry.
+
+Board Leads and planners enable native clarification questions when the runtime
+advertises the capability and no managed policy fixes its value. Specialists
+relay blocking decisions to their Lead. Unsupported runtimes keep the existing
+durable board question fallback. Thread configuration applies at native session
+load; a loaded older chat can require a service restart before the native tool
+becomes available. Product questions are separate from permission approvals.
 
 Shared groundwork belongs in one prerequisite feature, or one larger feature
 when edits are tightly coupled. The coordinator sees compact sibling scope and

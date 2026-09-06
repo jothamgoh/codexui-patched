@@ -10,6 +10,7 @@ Scope revised: 2026-09-06. PROGRESS.md owns release status and actual evidence.
 | server/projectBoardStore.ts | Serialized validation, transitions, persistence, handoffs. |
 | server/projectBoardService.ts | Native Lead/planner runs, bounded tools, dependency queue, lifecycle. |
 | server/projectBoardModels.ts | Advertised model capabilities and execution validation. |
+| server/projectBoardQuestions.ts | Capability/policy-gated native clarification configuration for Board chats. |
 | server/projectBoardPlanning.ts | Optional ordinary-turn skill pointer and compact project-scoped planning reads. |
 | server/codexAppServerBridge.ts | HTTP, bounded source-chat context, app-server events. |
 | server/turnNotificationRouter.ts | Board outcomes through existing durable notification sinks. |
@@ -41,6 +42,13 @@ started work/active queues, and publish existing snapshot events. sourceThreadId
 is a link, not managed execution ownership. Context pages 30 feature summaries;
 full cards and long project plans are fetched explicitly. Planning does not
 alter an ordinary chat's sandbox or authorize implementation.
+
+Source model inheritance reads thread metadata with includeTurns:false, not a
+transcript or resume. Resolve each field as card, explicit profile, source, app
+default and retain the resolved launch settings on the run. Native planner saves
+and the ordinary-chat helper both accept optional model/reasoning overrides.
+Board thread preparation asynchronously adds supported question configuration
+to start/resume; recheck cancellation afterward before starting native work.
 
 ## Implemented delivery groups
 

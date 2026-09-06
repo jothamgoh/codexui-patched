@@ -86,8 +86,9 @@ async function createHarness(t, executionAccess = 'project') {
   const service = new ProjectBoardService({
     store,
     appServer,
-    prepareThreadStartParams: (params) => ({
+    prepareThreadStartParams: async (params) => ({
       ...params,
+      config: { features: { default_mode_request_user_input: true } },
       dynamicTools: [{ name: 'automation_update' }],
       developerInstructions: 'Keep the existing scheduled-task tool available.',
     }),
@@ -128,6 +129,7 @@ test('full-access board execution starts and replies without approval while expl
   const started = await service.startFeature(feature.id)
   const first = await waitFor(() => appServer.calls.find((call) => call.method === 'turn/start'), 'No full-access turn')
   assert.equal(appServer.calls.find((call) => call.method === 'thread/start').params.sandbox, 'danger-full-access')
+  assert.deepEqual(appServer.calls.find((call) => call.method === 'thread/start').params.config, { features: { default_mode_request_user_input: true } })
   assert.equal(first.params.approvalPolicy, 'never')
   assert.deepEqual(first.params.sandboxPolicy, { type: 'dangerFullAccess' })
   await service.stopFeature(feature.id, { expectedRunId: started.runs[0].id })
@@ -136,6 +138,7 @@ test('full-access board execution starts and replies without approval while expl
   await service.sendChatMessage('lead-thread', { input, executionAccess: 'full-access' })
   const reply = await waitFor(() => appServer.calls.filter((call) => call.method === 'turn/start')[1], 'No same-chat reply')
   assert.equal(appServer.calls.find((call) => call.method === 'thread/resume').params.sandbox, 'danger-full-access')
+  assert.deepEqual(appServer.calls.find((call) => call.method === 'thread/resume').params.config, { features: { default_mode_request_user_input: true } })
   assert.equal(reply.params.approvalPolicy, 'never')
   assert.deepEqual(reply.params.sandboxPolicy, { type: 'dangerFullAccess' })
   assert.deepEqual(reply.params.input, input)
@@ -173,6 +176,52 @@ test('a selected batch and its automatic follow-ups retain the accepted access w
   }
 })
 
+test('feature and planner runs inherit source settings while card and custom-profile overrides apply independently', async (t) => {
+  const { appServer, board, feature, store } = await createHarness(t, 'full-access')
+  const requested = []
+  const service = new ProjectBoardService({ store, appServer, resolveExecutionSettings: async (settings, sourceThreadId) => {
+    requested.push({ ...settings, sourceThreadId })
+    return { model: settings.model || (sourceThreadId === 'card-source' ? 'card-source-model' : 'source-model'), reasoningEffort: settings.reasoningEffort || 'xhigh' }
+  } })
+  await service.startBoardPlan(board.id, { plan: 'Use the agreed source plan.', sourceThreadId: 'board-source' })
+  const planning = await waitFor(() => appServer.calls.find((call) => call.method === 'turn/start'), 'No inherited planner')
+  assert.deepEqual(requested[0], { model: '', reasoningEffort: '', sourceThreadId: 'board-source' })
+  assert.deepEqual([planning.params.model, planning.params.effort, planning.params.sandboxPolicy.type], ['source-model', 'xhigh', 'readOnly'])
+  await service.handleNotification({ method: 'turn/completed', params: { threadId: 'lead-thread', turn: { id: 'lead-turn-1', status: 'failed' } } })
+  for (const [overrides, expected] of [
+    [{ model: '', reasoningEffort: '' }, ['source-model', 'xhigh']],
+    [{ model: 'chosen-model', reasoningEffort: '' }, ['chosen-model', 'xhigh']],
+    [{ model: '', reasoningEffort: 'low' }, ['source-model', 'low']],
+  ]) {
+    await service.updateCard(feature.id, overrides)
+    const count = appServer.calls.filter((call) => call.method === 'turn/start').length
+    const started = await service.startFeature(feature.id)
+    const turn = await waitFor(() => appServer.calls.filter((call) => call.method === 'turn/start')[count], 'No inherited feature turn')
+    assert.deepEqual(requested.at(-1), { ...overrides, sourceThreadId: 'board-source' })
+    assert.deepEqual([turn.params.model, turn.params.effort], expected)
+    assert.deepEqual([started.runs[0].requestedModel, started.runs[0].requestedReasoningEffort], expected)
+    const context = JSON.parse((await service.handleDynamicToolCall(toolCall(turn.params.threadId, 'read_context'))).contentItems[0].text)
+    assert.deepEqual(context.executionSettings, { model: expected[0], reasoningEffort: expected[1] })
+    assert.deepEqual(context.agents.filter((agent) => ['builtin-engineer', 'builtin-qa'].includes(agent.id)).map((agent) => [agent.model, agent.reasoningEffort]), [['', ''], ['', '']])
+    await service.stopFeature(feature.id, { expectedRunId: started.runs[0].id })
+  }
+  const withProfile = await service.createAgent({ boardId: board.id, name: 'Explicit custom Lead', instructions: 'Coordinate the task.', model: 'profile-model', reasoningEffort: 'medium' })
+  const profile = withProfile.agents.find((agent) => agent.name === 'Explicit custom Lead')
+  const created = await service.createCard({ boardId: board.id, title: 'Own source', sourceThreadId: 'card-source', assignedAgentId: profile.id, reasoningEffort: 'low' })
+  const linked = created.cards.find((card) => card.title === 'Own source')
+  let started = await service.startFeature(linked.id)
+  await waitFor(() => appServer.calls.filter((call) => call.method === 'turn/start')[4], 'No custom-profile run')
+  assert.deepEqual(requested.at(-1), { model: 'profile-model', reasoningEffort: 'low', sourceThreadId: 'card-source' })
+  assert.deepEqual([started.runs[0].requestedModel, started.runs[0].requestedReasoningEffort], ['profile-model', 'low'])
+  await service.stopFeature(linked.id, { expectedRunId: started.runs[0].id })
+  await service.updateCard(linked.id, { assignedAgentId: 'builtin-lead', reasoningEffort: '' })
+  started = await service.startFeature(linked.id)
+  await waitFor(() => appServer.calls.filter((call) => call.method === 'turn/start')[5], 'No card-source run')
+  assert.deepEqual(requested.at(-1), { model: '', reasoningEffort: '', sourceThreadId: 'card-source' })
+  assert.deepEqual([started.runs[0].requestedModel, started.runs[0].requestedReasoningEffort], ['card-source-model', 'xhigh'])
+  await service.stopFeature(linked.id, { expectedRunId: started.runs[0].id })
+})
+
 test('Stop interrupts only the current run, preserves handoffs, and permits deleting its unanswered questions', async (t) => {
   const { appServer, feature, service, store } = await createHarness(t)
   const clearedRequests = []
@@ -207,7 +256,7 @@ test('Stop interrupts only the current run, preserves handoffs, and permits dele
 })
 
 test('Stop cancels pending metadata and thread creation, and waits for a pending native turn identity', async (t) => {
-  for (const stage of ['model', 'thread/start', 'turn/start']) {
+  for (const stage of ['model', 'prepare', 'thread/start', 'turn/start']) {
     const { appServer, feature, store } = await createHarness(t)
     let release
     let waiting = false
@@ -220,7 +269,11 @@ test('Stop cancels pending metadata and thread creation, and waits for a pending
       }
       return result
     }
-    const service = new ProjectBoardService({ store, appServer, resolveExecutionSettings: async (settings) => {
+    const service = new ProjectBoardService({ store, appServer, prepareThreadStartParams: async (params) => {
+      if (stage !== 'prepare') return params
+      waiting = true
+      return new Promise((resolve) => { release = () => resolve(params) })
+    }, resolveExecutionSettings: async (settings) => {
       if (stage !== 'model') return settings
       waiting = true
       return new Promise((resolve) => { release = () => resolve(settings) })
@@ -838,7 +891,7 @@ test('plans read-only, preserves the reviewed task graph, and applies feature se
   const { appServer, feature, store } = await createHarness(t, 'full-access')
   const service = new ProjectBoardService({ store, appServer, resolveExecutionSettings: async (settings) => {
     if (settings.model === 'unavailable') throw new Error('Selected model is unavailable.')
-    return { model: settings.model || 'default-model', reasoningEffort: settings.reasoningEffort }
+    return { model: settings.model || 'default-model', reasoningEffort: settings.reasoningEffort || 'medium' }
   } })
   await service.updateCard(feature.id, { model: 'feature-model', reasoningEffort: 'low', verificationPolicy: 'self' })
   await service.startFeature(feature.id, { mode: 'plan' })
@@ -871,7 +924,7 @@ test('plans read-only, preserves the reviewed task graph, and applies feature se
   await service.startFeature(feature.id, { allowWorkspaceWrite: true })
   const execution = await waitFor(() => appServer.calls.filter((call) => call.method === 'turn/start')[1], 'No execution turn')
   assert.equal(execution.params.model, 'default-model')
-  assert.equal(execution.params.effort, 'high')
+  assert.equal(execution.params.effort, 'medium')
   assert.equal(execution.params.sandboxPolicy.type, 'dangerFullAccess')
   assert.equal(execution.params.approvalPolicy, 'never')
   assert.equal(service.isPlanningThread('lead-thread'), false)
@@ -879,7 +932,7 @@ test('plans read-only, preserves the reviewed task graph, and applies feature se
   snapshot = await store.read()
   assert.equal(snapshot.cards.find((card) => card.parentCardId === feature.id).id, task.id)
   assert.equal(snapshot.runs[0].requestedModel, 'default-model')
-  assert.equal(snapshot.runs[0].requestedReasoningEffort, 'high')
+  assert.equal(snapshot.runs[0].requestedReasoningEffort, 'medium')
   assert.equal(snapshot.runs[1].requestedModel, 'feature-model')
   assert.equal(snapshot.runs[1].requestedReasoningEffort, 'low')
   await service.handleNotification({ method: 'turn/completed', params: { threadId: 'lead-thread', turn: { id: 'lead-turn-2', status: 'interrupted' } } })

@@ -12,6 +12,16 @@ user’s request; its saved rendering work has now been reviewed in the follow-u
 
 ## Current follow-up
 
+- Model and question follow-up implemented, awaiting the combined UI build and
+  release: omitted model/reasoning fields independently inherit source-chat
+  metadata, explicit card/profile settings survive, and blank specialists inherit
+  their Lead. Both planning paths accept explicit overrides. Native questions
+  are enabled for supported, configurable board sessions with the existing
+  durable fallback retained. All 250 unit tests pass. The current requested Lead
+  was explicitly stopped through the board lifecycle; resume that same feature
+  after deployment with Full access and its source chat's Astra/xhigh settings.
+  Do not create replacement cards or start unrelated boards.
+
 - Full access is now the saved board execution default for new and existing
   boards without an explicit setting. Board options can retain Project access;
   starts, selected batches, and idle Lead replies carry the displayed choice.
@@ -166,7 +176,8 @@ Multi-account/provider execution remains separate future work.
   and dependencies. Retry preserves the draft and reuses the newly created board.
 - Feature Plan first saves tasks without implementation. Start work resumes the
   same Lead chat; Plan & start remains available for a clear brief.
-- Optional per-feature model/reasoning overrides inherit Lead settings. Agent
+- Optional per-feature model/reasoning overrides inherit source-chat settings
+  after any explicit Lead profile setting. Agent
   profiles expose their own settings; supported choices come from the runtime.
 - A selected, sequential delivery queue starts dependency-ready features and
   pauses for questions, failure, review, or changed approved scope. Shared
@@ -274,7 +285,8 @@ is Lead-driven: the server checks recorded ordering/completion, not independent
 proof that a reviewer chat ran. Active chats retain fetched raw history, and the
 bridge still reads the full native transcript before browser paging.
 
-Project-planning clarification stops with an explanation and retry; durable
+Native clarification pauses the Lead/planner for an answer when supported;
+older project-planning sessions fall back to an explanation and retry. Durable
 feature questions use Needs You. Closed-browser delivery requires configured
 Web Push/Telegram and a running server. No database, second runtime, generic
 workflow engine, LLM polling, automatic batch QA, or provider rotation was added.

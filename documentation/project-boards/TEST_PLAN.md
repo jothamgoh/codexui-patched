@@ -46,6 +46,16 @@ notification storage too. Retain explicit defense in every bridge fixture:
 
 ## Meaningful scenarios
 
+- Omitted model/reasoning fields independently inherit source-chat metadata;
+  explicit card/profile choices survive. Metadata reads exclude turns, wrong
+  source IDs fail, and unsupported reasoning stays visible. Starter profiles
+  inherit, customized profiles retain their settings. Native planner saves and
+  ordinary-chat draft saves preserve optional overrides.
+- Board question configuration respects advertised capability and managed policy;
+  unsupported runtimes retain the durable fallback. Stop during asynchronous
+  preparation must prevent a late native start. Native permission overrides still
+  apply on every turn even when a loaded thread ignores resume configuration.
+
 - Board work defaults to Full access; explicit Project access preserves consent.
   Single starts, queues, idle replies and automatic continuations retain the
   accepted choice across board-setting changes. Plan turns stay read-only after

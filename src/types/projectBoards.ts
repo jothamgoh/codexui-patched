@@ -25,7 +25,7 @@ export type ProjectBoardAgent = {
   description: string
   instructions: string
   model: string
-  reasoningEffort: ReasoningEffort
+  reasoningEffort: ReasoningEffort | ''
   sandbox: ProjectBoardAgentSandbox
   builtIn: boolean
   createdAtIso: string
@@ -181,7 +181,7 @@ export type ProjectBoardAgentCreateInput = {
   description?: string
   instructions: string
   model?: string
-  reasoningEffort?: ReasoningEffort
+  reasoningEffort?: ReasoningEffort | ''
   sandbox?: ProjectBoardAgentSandbox
 }
 
@@ -219,6 +219,8 @@ export type ProjectBoardFeaturePlan = {
     acceptanceCriteria: string
     agentId: string
     verificationPolicy: ProjectBoardVerificationPolicy
+    model?: string
+    reasoningEffort?: ReasoningEffort | ''
     /** Other proposed feature keys or existing feature IDs on this board. */
     dependsOn: string[]
   }>

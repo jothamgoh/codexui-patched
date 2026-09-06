@@ -7,6 +7,12 @@ const record = (value: unknown): Record<string, unknown> => value !== null && ty
 const text = (value: unknown): string => typeof value === 'string' ? value : ''
 const effort = (value: unknown): ReasoningEffort | '' => typeof value === 'string' && efforts.has(value) ? value as ReasoningEffort : ''
 
+export async function readProjectBoardThreadSettings(rpc: (method: string, params: unknown) => Promise<unknown>, threadId: string): Promise<{ model: string; reasoningEffort: ReasoningEffort | '' }> {
+  const thread = record(record(await rpc('thread/read', { threadId, includeTurns: false })).thread)
+  if (!threadId || text(thread.id) !== threadId) throw new Error('Could not read the source chat model settings. Choose explicit feature settings or try again.')
+  return { model: text(thread.model), reasoningEffort: effort(thread.reasoningEffort) }
+}
+
 export async function readProjectBoardModels(rpc: (method: string, params: unknown) => Promise<unknown>): Promise<ProjectBoardModelCatalog> {
   const [listed, configured] = await Promise.all([
     rpc('model/list', { includeHidden: true }),
@@ -30,11 +36,11 @@ export async function readProjectBoardModels(rpc: (method: string, params: unkno
   return { models, defaultModel, defaultReasoningEffort }
 }
 
-export function resolveProjectBoardExecutionSettings(catalog: ProjectBoardModelCatalog, requested: { model: string; reasoningEffort: ReasoningEffort }): { model: string; reasoningEffort: ReasoningEffort } {
-  const modelId = requested.model || catalog.defaultModel
+export function resolveProjectBoardExecutionSettings(catalog: ProjectBoardModelCatalog, requested: { model: string; reasoningEffort: ReasoningEffort | '' }, inherited?: { model: string; reasoningEffort: ReasoningEffort | '' }): { model: string; reasoningEffort: ReasoningEffort } {
+  const modelId = requested.model || inherited?.model || catalog.defaultModel
   const model = catalog.models.find((entry) => entry.id === modelId)
   if (!model) throw new Error(`Model “${modelId || 'default'}” is unavailable. Choose an available model in the feature settings.`)
-  const reasoningEffort = requested.reasoningEffort || catalog.defaultReasoningEffort
+  const reasoningEffort = requested.reasoningEffort || inherited?.reasoningEffort || catalog.defaultReasoningEffort
   if (model.reasoningEfforts.length > 0 && !model.reasoningEfforts.includes(reasoningEffort)) {
     throw new Error(`“${model.label}” does not support ${reasoningEffort} reasoning. Choose a supported reasoning level.`)
   }

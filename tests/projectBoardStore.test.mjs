@@ -237,17 +237,20 @@ test('brief-first cards receive concise titles without replacing explicit titles
   assert.equal(snapshot.cards[0].description.length, 20_000)
 })
 
-test('agent feature plans apply the same optional-title rule atomically', async (t) => {
+test('agent feature plans preserve optional titles, model overrides, and source links atomically', async (t) => {
   const { store } = await createFixture(t)
   const { board } = await createBoardAndFeature(store)
-  const { run } = await store.startBoardPlan(board.id, 'builtin-lead', 'Make two related features.', '')
-  const proposed = { key: 'first', description: '> Fix **mobile scrolling**', acceptanceCriteria: 'The final reply remains visible.', agentId: 'builtin-lead', verificationPolicy: 'self', dependsOn: [] }
+  const { run } = await store.startBoardPlan(board.id, 'builtin-lead', 'Make two related features.', 'source-chat')
+  const proposed = { key: 'first', description: '> Fix **mobile scrolling**', acceptanceCriteria: 'The final reply remains visible.', agentId: 'builtin-lead', verificationPolicy: 'self', model: 'chosen-model', dependsOn: [] }
   await assert.rejects(store.saveBoardFeatures(board.id, { summary: 'Invalid plan.', features: [proposed, { ...proposed, key: 'empty', description: '' }] }, run.id), /brief or a title/u)
   assert.equal((await store.read()).runs.find((entry) => entry.id === run.id).createdCardIds.length, 0)
-  const snapshot = await store.saveBoardFeatures(board.id, { summary: 'Ready to review.', features: [proposed, { ...proposed, key: 'second', title: 'My follow-up', description: '', dependsOn: ['first'] }] }, run.id)
+  await assert.rejects(store.saveBoardFeatures(board.id, { summary: 'Invalid reasoning.', features: [{ ...proposed, reasoningEffort: 'invented' }] }, run.id), /Unknown reasoning effort/u)
+  const snapshot = await store.saveBoardFeatures(board.id, { summary: 'Ready to review.', features: [proposed, { ...proposed, key: 'second', title: 'My follow-up', description: '', model: '', reasoningEffort: 'low', dependsOn: ['first'] }] }, run.id)
   const first = snapshot.cards.find((card) => card.title === 'Fix mobile scrolling')
   const second = snapshot.cards.find((card) => card.title === 'My follow-up')
   assert.deepEqual(second.dependencyIds, [first.id])
+  assert.deepEqual([first.model, first.reasoningEffort, first.sourceThreadId], ['chosen-model', '', 'source-chat'])
+  assert.deepEqual([second.model, second.reasoningEffort, second.sourceThreadId], ['', 'low', 'source-chat'])
   assert.equal(snapshot.runs.find((entry) => entry.id === run.id).createdCardIds.length, 2)
 })
 
@@ -271,7 +274,7 @@ test('chat-created features preserve a source reference without borrowing its Le
   await assert.rejects(store.createCard({ boardId: board.id, parentCardId: feature.id, type: 'task', title: 'Invalid task source', sourceThreadId: 'original-chat' }), /Only a feature/u)
 })
 
-test('refreshes maintained starter prompts on reload without replacing custom instructions', async (t) => {
+test('maintained starters migrate to inherited reasoning while custom instructions and explicit settings survive reload', async (t) => {
   const fixture = await createFixture(t)
   const { board } = await createBoardAndFeature(fixture.store)
   const snapshot = await fixture.store.createAgent({
@@ -279,17 +282,24 @@ test('refreshes maintained starter prompts on reload without replacing custom in
     name: 'My product lead',
     instructions: 'Keep my saved product decisions and personal workflow.',
     model: 'my-model',
-    reasoningEffort: 'low',
+    reasoningEffort: 'high',
   })
   const custom = snapshot.agents.find((agent) => agent.name === 'My product lead')
   const currentLead = snapshot.agents.find((agent) => agent.id === 'builtin-lead')
   const saved = JSON.parse(await readFile(fixture.stateFilePath, 'utf8'))
   saved.agents.find((agent) => agent.id === 'builtin-lead').instructions = 'Outdated starter instructions.'
+  saved.agents.find((agent) => agent.id === 'builtin-lead').reasoningEffort = 'high'
   await writeFile(fixture.stateFilePath, JSON.stringify(saved))
   const reloaded = await fixture.reopen().read()
   assert.equal(reloaded.agents.find((agent) => agent.id === 'builtin-lead').instructions, currentLead.instructions)
+  assert.equal(reloaded.agents.find((agent) => agent.id === 'builtin-lead').reasoningEffort, '')
   assert.deepEqual(reloaded.agents.find((agent) => agent.id === custom.id), custom)
   assert.equal(reloaded.cards.length, snapshot.cards.length)
+  const inherited = await fixture.store.createAgent({ name: 'Inherit the Lead', instructions: 'Perform the delegated task.' })
+  const profile = inherited.agents.find((agent) => agent.name === 'Inherit the Lead')
+  assert.deepEqual([profile.model, profile.reasoningEffort], ['', ''])
+  const cleared = await fixture.store.updateAgent(custom.id, { reasoningEffort: '' })
+  assert.equal(cleared.agents.find((agent) => agent.id === custom.id).reasoningEffort, '')
 })
 
 test('persists one default and optional additional boards with custom agent rosters', async (t) => {

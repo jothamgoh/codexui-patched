@@ -20,7 +20,8 @@ import { ProjectBoardStore } from './projectBoardStore'
 import { ProjectBoardService } from './projectBoardService'
 import { boardPlanningContext, withBoardPlanningContext } from './projectBoardPlanning'
 import { projectBoardThreadIds } from './projectBoardNotificationEvents'
-import { readProjectBoardModels, resolveProjectBoardExecutionSettings } from './projectBoardModels'
+import { readProjectBoardModels, readProjectBoardThreadSettings, resolveProjectBoardExecutionSettings } from './projectBoardModels'
+import { readProjectBoardQuestionConfig } from './projectBoardQuestions'
 import type { ProjectBoardSnapshot } from '../types/projectBoards'
 import { buildThreadReferenceSection, type ThreadReferenceMessage } from '../utils/threadReferences'
 import { getCodexUiChildEnv } from './envFile'
@@ -1636,10 +1637,19 @@ function getSharedBridgeState(): SharedBridgeState {
   const projectBoardService = new ProjectBoardService({
     store: projectBoardStore,
     appServer,
-    prepareThreadStartParams: (params) => automationService.augmentThreadStartParams(params),
-    resolveExecutionSettings: async (settings) => resolveProjectBoardExecutionSettings(
-      await readProjectBoardModels((method, params) => appServer.rpc(method, params)), settings,
-    ),
+    prepareThreadStartParams: async (params) => {
+      const prepared = automationService.augmentThreadStartParams(params)
+      const questions = await readProjectBoardQuestionConfig((method, input) => appServer.rpc(method, input))
+      return questions ? { ...prepared, config: { ...asRecord(prepared.config), ...questions } } : prepared
+    },
+    resolveExecutionSettings: async (settings, sourceThreadId) => {
+      const [catalog, inherited] = await Promise.all([
+        readProjectBoardModels((method, params) => appServer.rpc(method, params)),
+        sourceThreadId && (!settings.model || !settings.reasoningEffort)
+          ? readProjectBoardThreadSettings((method, params) => appServer.rpc(method, params), sourceThreadId) : undefined,
+      ])
+      return resolveProjectBoardExecutionSettings(catalog, settings, inherited)
+    },
   })
   appServer.registerDynamicToolHandler(
     'automation_update',
@@ -1946,7 +1956,13 @@ export function createCodexBridgeMiddleware(): CodexBridgeMiddleware {
       }
 
       if (req.method === 'GET' && url.pathname === '/codex-api/project-board-models') {
-        setJson(res, 200, { data: await readProjectBoardModels((method, params) => appServer.rpc(method, params)) })
+        const sourceThreadId = url.searchParams.get('sourceThreadId')?.trim()
+        const [catalog, inherited] = await Promise.all([
+          readProjectBoardModels((method, params) => appServer.rpc(method, params)),
+          sourceThreadId ? readProjectBoardThreadSettings((method, params) => appServer.rpc(method, params), sourceThreadId) : undefined,
+        ])
+        setJson(res, 200, { data: { ...catalog, defaultModel: inherited?.model || catalog.defaultModel,
+          defaultReasoningEffort: inherited?.reasoningEffort || catalog.defaultReasoningEffort } })
         return
       }
 

@@ -6,7 +6,7 @@ import ts from 'typescript'
 const compile = (source) => `data:text/javascript;base64,${Buffer.from(ts.transpileModule(source, { compilerOptions: { module: ts.ModuleKind.ES2022, target: ts.ScriptTarget.ES2022 } }).outputText).toString('base64')}`
 const runtime = compile(await readFile(new URL('../src/server/runtimeConfig.ts', import.meta.url), 'utf8'))
 const moduleSource = (await readFile(new URL('../src/server/projectBoardModels.ts', import.meta.url), 'utf8')).replace("from './runtimeConfig'", `from '${runtime}'`)
-const { readProjectBoardModels, resolveProjectBoardExecutionSettings } = await import(compile(moduleSource))
+const { readProjectBoardModels, readProjectBoardThreadSettings, resolveProjectBoardExecutionSettings } = await import(compile(moduleSource))
 
 test('feature model selection uses advertised capabilities and configured defaults', async () => {
   const catalog = await readProjectBoardModels(async (method) => method === 'config/read'
@@ -25,4 +25,26 @@ test('feature model selection uses advertised capabilities and configured defaul
 test('missing model metadata fails explicitly instead of claiming a setting was applied', async () => {
   await assert.rejects(readProjectBoardModels(async () => ({})), /Could not load/)
   assert.throws(() => resolveProjectBoardExecutionSettings({ models: [], defaultModel: '', defaultReasoningEffort: 'medium' }, { model: '', reasoningEffort: 'medium' }), /unavailable/)
+})
+
+test('source chat settings inherit independently and require only matching native metadata', async () => {
+  const calls = []
+  const source = await readProjectBoardThreadSettings(async (method, params) => {
+    calls.push({ method, params })
+    return { thread: { id: 'source-chat', model: 'source-model', reasoningEffort: 'xhigh' } }
+  }, 'source-chat')
+  assert.deepEqual(calls, [{ method: 'thread/read', params: { threadId: 'source-chat', includeTurns: false } }])
+  const catalog = {
+    models: ['source-model', 'chosen-model'].map((id) => ({ id, label: id, reasoningEfforts: ['low', 'high', 'xhigh'], defaultReasoningEffort: 'high' })),
+    defaultModel: 'chosen-model', defaultReasoningEffort: 'high',
+  }
+  for (const [requested, expected] of [
+    [{ model: '', reasoningEffort: '' }, { model: 'source-model', reasoningEffort: 'xhigh' }],
+    [{ model: 'chosen-model', reasoningEffort: '' }, { model: 'chosen-model', reasoningEffort: 'xhigh' }],
+    [{ model: '', reasoningEffort: 'low' }, { model: 'source-model', reasoningEffort: 'low' }],
+    [{ model: 'chosen-model', reasoningEffort: 'high' }, { model: 'chosen-model', reasoningEffort: 'high' }],
+  ]) assert.deepEqual(resolveProjectBoardExecutionSettings(catalog, requested, source), expected)
+  assert.deepEqual(resolveProjectBoardExecutionSettings(catalog, { model: '', reasoningEffort: '' }), { model: 'chosen-model', reasoningEffort: 'high' })
+  await assert.rejects(readProjectBoardThreadSettings(async () => ({ thread: { id: 'different-chat', model: 'wrong-model' } }), 'source-chat'), /Could not read the source chat/u)
+  await assert.rejects(readProjectBoardThreadSettings(async () => { throw new Error('Source unavailable') }, 'source-chat'), /Source unavailable/u)
 })

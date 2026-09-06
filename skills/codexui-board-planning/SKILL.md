@@ -25,8 +25,11 @@ context is unavailable, keep the plan in chat and explain the missing connection
    states observable done conditions and proportionate checks. Link a longer
    PRD only when useful; do not create a document for every small card.
 4. Choose an enabled `agentId` as Lead, normally `builtin-lead`; any enabled agent
-   can lead. Leave model/reasoning unset to inherit defaults unless the user has
-   chosen otherwise. Use a separate reviewer when the risk warrants it; do not
+   can lead. Omit `model` and `reasoningEffort` to inherit this conversation's
+   settings unless the selected profile has an explicit override. If the user
+   specifies either field, set that optional card parameter; the other field
+   still inherits. Blank specialist settings inherit the executing Lead.
+   Use a separate reviewer when the risk warrants it; do not
    add agents or tests mechanically. Delegated Product/research agents can return
    briefs to this chat; one coordinator saves the batch.
 5. Generate board/card UUIDs once before saving (Node `crypto.randomUUID()`).

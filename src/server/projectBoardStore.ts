@@ -180,7 +180,7 @@ function builtInAgents(now: Date): ProjectBoardAgent[] {
   return BUILT_IN_AGENT_INPUTS.map((agent) => ({
     ...agent,
     model: '',
-    reasoningEffort: 'high',
+    reasoningEffort: '',
     builtIn: true,
     createdAtIso: timestamp,
     updatedAtIso: timestamp,
@@ -199,7 +199,7 @@ function normalizeAgent(value: unknown): ProjectBoardAgent | null {
     description: readString(record.description, 500),
     instructions: readString(record.instructions),
     model: readString(record.model, 200),
-    reasoningEffort: normalizeReasoningEffort(record.reasoningEffort),
+    reasoningEffort: readString(record.reasoningEffort) ? normalizeReasoningEffort(record.reasoningEffort) : '',
     sandbox: record.sandbox === 'workspace-write' ? 'workspace-write' : 'read-only',
     builtIn: record.builtIn === true,
     createdAtIso: readString(record.createdAtIso, 100) || new Date(0).toISOString(),
@@ -423,7 +423,12 @@ function normalizeSnapshot(value: unknown, now: Date): ProjectBoardSnapshot {
       const saved = savedById.get(agent.id)
       // Starter text is maintained by the app. User-customized copies have
       // their own IDs and retain their saved instructions below.
-      return saved ? { ...saved, instructions: agent.instructions, description: agent.description } : agent
+      return saved ? {
+        ...saved, instructions: agent.instructions, description: agent.description,
+        // The old maintained starters forced high reasoning. Blank now inherits
+        // the source chat; custom profiles below retain their explicit settings.
+        reasoningEffort: saved.reasoningEffort === 'high' ? '' : saved.reasoningEffort,
+      } : agent
     }),
     ...savedAgents.filter((agent) => !BUILT_IN_AGENT_INPUTS.some((builtIn) => builtIn.id === agent.id)),
   ]
@@ -824,7 +829,7 @@ export class ProjectBoardStore {
         description: readString(record.description, 500),
         instructions: readString(record.instructions),
         model: readString(record.model, 200),
-        reasoningEffort: normalizeReasoningEffort(record.reasoningEffort),
+        reasoningEffort: readOptionalEffort(record.reasoningEffort),
         sandbox: record.sandbox === 'workspace-write' ? 'workspace-write' : 'read-only',
       }
       if (!input.name || !input.instructions) throw new Error('Agent name and instructions are required.')
@@ -839,7 +844,7 @@ export class ProjectBoardStore {
         description: input.description ?? '',
         instructions: input.instructions,
         model: input.model ?? '',
-        reasoningEffort: input.reasoningEffort ?? 'high',
+        reasoningEffort: input.reasoningEffort ?? '',
         sandbox: input.sandbox ?? 'read-only',
         builtIn: false,
         createdAtIso: now.toISOString(),
@@ -876,7 +881,7 @@ export class ProjectBoardStore {
           instructions: 'instructions' in changes ? readString(changes.instructions) || agent.instructions : agent.instructions,
           model: 'model' in changes ? readString(changes.model, 200) : agent.model,
           reasoningEffort: 'reasoningEffort' in changes
-            ? normalizeReasoningEffort(changes.reasoningEffort)
+            ? readOptionalEffort(changes.reasoningEffort)
             : agent.reasoningEffort,
           sandbox: 'sandbox' in changes
             ? changes.sandbox === 'workspace-write' ? 'workspace-write' : 'read-only'
@@ -1263,7 +1268,7 @@ export class ProjectBoardStore {
           description, acceptanceCriteria: readString(feature.acceptanceCriteria), status: 'backlog', priority: 'normal',
           verificationPolicy: normalizeVerificationPolicy(feature.verificationPolicy), assignedAgentId: feature.agentId,
           dependencyIds: readStringArray(feature.dependsOn).map((key) => ids.get(key) ?? key),
-          autoRun: false, model: '', reasoningEffort: '', planSummary: '', planStatus: 'none', toolSchemaVersion: 1, threadId: '', lastRunId: runId,
+          autoRun: false, model: readString(feature.model, 200), reasoningEffort: readOptionalEffort(feature.reasoningEffort), planSummary: '', planStatus: 'none', toolSchemaVersion: 1, threadId: '', sourceThreadId: board.sourceThreadId, lastRunId: runId,
           summary: '', progressNote: 'Review the proposed feature before starting', createdAtIso: now, updatedAtIso: now, completedAtIso: '',
         }
       })

@@ -253,8 +253,9 @@ export function stopProjectBoardQueue(boardId: string): Promise<ProjectBoardSnap
   return requestProjectBoardSnapshot(projectBoardPath(`project-boards/${encodeURIComponent(boardId)}/queue`), { method: 'DELETE' })
 }
 
-export async function getProjectBoardModels(): Promise<ProjectBoardModelCatalog> {
-  const response = await fetch(projectBoardPath('project-board-models'))
+export async function getProjectBoardModels(sourceThreadId = ''): Promise<ProjectBoardModelCatalog> {
+  const query = sourceThreadId ? `?${new URLSearchParams({ sourceThreadId })}` : ''
+  const response = await fetch(projectBoardPath(`project-board-models${query}`))
   const payload = asRecord(await response.json().catch(() => null))
   const data = asRecord(payload?.data)
   if (!response.ok || !Array.isArray(data?.models)) throw new Error(typeof payload?.error === 'string' ? payload.error : 'Could not load model settings.')

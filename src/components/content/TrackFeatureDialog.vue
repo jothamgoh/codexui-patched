@@ -10,10 +10,10 @@
           <label><span>Board</span><select v-model="draft.boardId" aria-label="Track destination board" :disabled="Boolean(createdFeatureId)"><option v-for="board in boards" :key="board.id" :value="board.id">{{ board.name }}</option><option v-if="!boards.length" value="">Create a project board</option></select></label>
           <details><summary>Lead and model settings</summary>
             <label><span>Lead</span><select v-model="draft.assignedAgentId" aria-label="Feature Lead"><option v-for="agent in eligibleAgents" :key="agent.id" :value="agent.id">{{ agent.name }}</option></select></label>
-            <BoardExecutionSettings v-model:model="draft.model" v-model:reasoning-effort="draft.reasoningEffort" :inherited-model="lead?.model" :inherited-effort="lead?.reasoningEffort" />
+            <BoardExecutionSettings v-model:model="draft.model" v-model:reasoning-effort="draft.reasoningEffort" :source-thread-id="sourceThreadId" :inherited-model="lead?.model" :inherited-effort="lead?.reasoningEffort" />
           </details>
           <p class="track-help">Starts with a read-only plan. Review it in the Lead chat, then choose Continue work when ready.</p>
-          <button v-if="!createdFeatureId" class="track-plan-link" type="button" :disabled="busy || isDictating" @click="$emit('plan-project', draft.description)">Have a larger plan? Create several feature cards</button>
+          <button v-if="!createdFeatureId" class="track-plan-link" type="button" :disabled="busy || isDictating" @click="$emit('plan-project', draft.description, draft.boardId)">Have a larger plan? Create several feature cards</button>
           <footer><Button type="button" variant="ghost" :disabled="busy || isDictating" @click="$emit('update:open', false)">Cancel</Button><Button type="submit" :disabled="busy || isDictating || !validTitle || !draft.assignedAgentId"><LoaderCircle v-if="busy" class="animate-spin" />{{ busy ? 'Opening Lead chat…' : createdFeatureId ? 'Retry opening chat' : 'Create feature & plan' }}</Button></footer>
         </fieldset></form>
       </DialogContent>
@@ -33,7 +33,7 @@ import type { ProjectBoard, ProjectBoardAgent, ProjectBoardCardCreateInput } fro
 import type { ReasoningEffort } from '../../types/codex'
 
 const props = defineProps<{ open: boolean; sourceThreadId: string; initialBrief: string; boards: ProjectBoard[]; agents: ProjectBoardAgent[]; createdFeatureId: string; onTrack: (draft: ProjectBoardCardCreateInput) => Promise<void> }>()
-const emit = defineEmits<{ 'update:open': [value: boolean]; 'plan-project': [brief: string] }>()
+const emit = defineEmits<{ 'update:open': [value: boolean]; 'plan-project': [brief: string, boardId: string] }>()
 const busy = ref(false)
 const error = ref('')
 const busyVoiceFields = reactive(new Set<string>())

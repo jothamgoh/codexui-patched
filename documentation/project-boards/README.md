@@ -16,6 +16,11 @@ exhaustive test checklist. Future ideas are options, not release requirements.
 
 Use chat for the conversation and the board for the project overview.
 
+- **Work overview** collects current Leads, things needing you, recent results,
+  and progress across boards. Open a named board for its feature cards or open
+  a Lead for the conversation. Activity separates **Board work** from **Chats
+  running**, with questions and approvals first.
+
 - Boards are optional. Say **“Make a plan in the board”** in your existing chat
   to have it save a project brief and feature cards for review. Ordinary tasks
   and ordinary planning stay in chat. No extra coordinator chat is needed.
@@ -33,7 +38,13 @@ Use chat for the conversation and the board for the project overview.
   leave the title blank to generate it locally. The feature starts with a
   read-only plan in its own Lead chat, linked to the original conversation.
 - For a larger plan, choose **Create several feature cards** in that dialog,
-  then review the proposed cards and dependencies before starting work.
+  then review the proposed cards and dependencies before starting work. It keeps
+  the selected destination board. On a populated board, **Add from a plan** adds
+  draft cards there; it is not unfinished setup or a new board. Existing cards
+  stay. Feature titles and new-plan board names can be left blank.
+- **Board options** keeps permissions, continuation, and agent management out of
+  the main card area on desktop and phones. **Coordinator settings** similarly
+  keeps planning defaults out of the way until an override is needed.
 - Individual starts open the Lead chat. Use its feature link or **View board**
   to return. A selected batch stays on the overview.
 - Board work defaults to **Full access**: the Lead and its subagents can use files,
@@ -41,12 +52,25 @@ Use chat for the conversation and the board for the project overview.
   Work permissions** can switch a board to **Project access**. Planning stays
   read-only. The choice applies to new starts; running work and approved batches
   retain the access they started with.
+- Leads inherit model and reasoning from the source chat unless a card or
+  customized profile explicitly chooses otherwise. The planning chat can set
+  either optional parameter when asked; omitted fields still inherit. Starter
+  specialists inherit the Lead. Native clarification questions are enabled when
+  supported and configurable, with the existing board-question fallback.
+  The Lead chat and feature details show **This run** (or **Last run**) settings.
+  **Confirmed by Codex** means the native runtime reported them after launch;
+  **Requested** is shown when that read-back is unavailable.
 - Reply in the Lead chat to steer active work. When idle, choose **Continue work**
   using the board's work permissions; completed features require explicit reopening. Lead
   settings remain editable on the card. Failed sends retain the draft.
 - **Stop run** ends the active attempt; completed code stays on disk. Stop before
   deleting a feature. Deletion removes its board records, keeping the code and
   Lead chat. Native approval requests are visible instead of looking like work.
+- To switch model or reasoning, stop the feature, open **Feature settings &
+  actions → Edit**, save the new settings, then continue. This starts a new turn
+  in the same Lead chat with its saved tasks. Stopping also halts its active
+  descendants. New specialists inherit the changed defaults unless a profile
+  overrides them; existing child chats are not automatically reconfigured.
 - The sidebar labels tracked chats. Activity shows working Leads, exact approvals
   and questions, results, and stops. Completed features open their Lead results;
   a completed selected batch produces one summary alert. The board stays open

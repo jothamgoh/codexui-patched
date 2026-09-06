@@ -223,8 +223,8 @@ try {
   assert.equal((await fetch(`${origin}/codex-api/project-boards/${boardId}`, { method: 'DELETE' })).status, 200)
   browser = await chromium.launch({ headless: true })
   page = await browser.newPage({ viewport: { width: 1600, height: 1000 }, deviceScaleFactor: 1 })
-  await page.route('**/codex-api/project-board-models', (route) => route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ data: { defaultModel: 'build-model', defaultReasoningEffort: 'high', models: [
-    { id: 'build-model', label: 'Build model', reasoningEfforts: ['medium', 'high'], defaultReasoningEffort: 'high' },
+  await page.route('**/codex-api/project-board-models*', (route) => route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ data: { defaultModel: 'build-model', defaultReasoningEffort: new URL(route.request().url()).searchParams.get('sourceThreadId') === 'planning-source-chat' ? 'xhigh' : 'high', models: [
+    { id: 'build-model', label: 'Build model', reasoningEfforts: ['medium', 'high', 'xhigh'], defaultReasoningEffort: 'high' },
     { id: 'review-model', label: 'Review model', reasoningEfforts: ['low', 'medium'], defaultReasoningEffort: 'medium' },
   ] } }) }))
   page.on('framenavigated', (frame) => { if (frame === page.mainFrame()) navigations.push(frame.url()) })
@@ -252,7 +252,9 @@ try {
   }, emptyProject)
   const visitBoard = async (query = '') => {
     await page.goto(`${origin}/#/board/board-1${query}`, { waitUntil: 'domcontentloaded' })
-    await page.getByTestId('board-select').waitFor({ state: 'attached' })
+    await page.getByRole('tab', { name: 'Board', exact: true }).waitFor({ state: 'attached' })
+    const options = page.getByRole('button', { name: 'Board options', exact: true })
+    if (await options.getAttribute('aria-expanded') === 'true') await options.click()
   }
   const rejectOnce = (path, message) => page.route(`**/codex-api/${path}`, (route) => route.fulfill({ status: 409, contentType: 'application/json', body: JSON.stringify({ error: message }) }), { times: 1 })
   const detail = page.getByTestId('feature-detail')
@@ -332,6 +334,7 @@ try {
   await page.getByRole('tab', { name: 'Board', exact: true }).click()
   await page.screenshot({ path: join(outputDirectory, 'project-board-desktop.png'), fullPage: true })
 
+  await page.getByRole('button', { name: 'Board options', exact: true }).click()
   // Route changes cannot retain detail from a different board, project, or missing query.
   await page.getByTestId('board-project-select').selectOption(secondProject)
   await page.locator('[data-feature-id="feature-other"]').waitFor()
@@ -360,8 +363,11 @@ try {
   await page.screenshot({ path: join(outputDirectory, 'project-board-overview.png'), fullPage: true })
 
   // A custom prompt can be saved, edited, and selected to coordinate a feature.
+  assert.equal(await page.getByLabel('Board work permissions', { exact: true }).count(), 0, 'Rare settings are collapsed on desktop too')
+  await page.getByRole('button', { name: 'Board options', exact: true }).click()
   await page.getByRole('button', { name: 'Agents', exact: true }).click()
   const library = page.getByRole('dialog', { name: 'Agent library' })
+  assert.equal(await library.getByLabel('Agent reasoning', { exact: true }).inputValue(), '', 'Custom agents inherit unless reasoning is explicitly chosen')
   await library.getByLabel('Name', { exact: true }).fill('Release coordinator')
   await library.getByLabel('Specialty', { exact: true }).selectOption('engineering')
   await library.getByLabel('Instructions', { exact: true }).fill('Coordinate releases and check the final feature.')
@@ -395,23 +401,23 @@ try {
   const newFeatureButton = page.getByRole('button', { name: 'New feature', exact: true }).first()
   await newFeatureButton.click()
   const form = page.getByTestId('new-feature-form')
-  await form.getByPlaceholder('Add project progress board').fill('Dogfood the board')
+  await form.getByLabel('Title', { exact: true }).fill('Dogfood the board')
   await form.getByPlaceholder('What should be built, and why?').fill('Use the dashboard to track its own improvements.')
   await page.evaluate(async () => {
     const response = await fetch('/codex-api/project-board-cards/feature-review', { method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ title: 'Mobile snapshot refreshed' }) })
     if (!response.ok) throw new Error(`Fixture update failed: ${await response.text()}`)
   })
   await page.locator('[data-feature-id="feature-review"]').getByText('Mobile snapshot refreshed', { exact: true }).waitFor()
-  assert.equal(await form.getByPlaceholder('Add project progress board').inputValue(), 'Dogfood the board', 'Live snapshots must preserve the current form')
+  assert.equal(await form.getByLabel('Title', { exact: true }).inputValue(), 'Dogfood the board', 'Live snapshots must preserve the current form')
   await rejectOnce('project-board-cards', 'Feature could not be saved.')
   await form.getByRole('button', { name: 'Create feature' }).click()
   await form.getByRole('alert').getByText('Feature could not be saved.').waitFor()
-  assert.equal(await form.getByPlaceholder('Add project progress board').inputValue(), 'Dogfood the board')
+  assert.equal(await form.getByLabel('Title', { exact: true }).inputValue(), 'Dogfood the board')
   await page.keyboard.press('Escape')
   await form.waitFor({ state: 'detached' })
   assert.equal(await newFeatureButton.evaluate((element) => element === document.activeElement), true, 'Closing a modal restores focus')
   await newFeatureButton.click()
-  await form.getByPlaceholder('Add project progress board').fill('Dogfood the board')
+  await form.getByLabel('Title', { exact: true }).fill('Dogfood the board')
   await form.getByLabel('Lead for this feature', { exact: true }).selectOption(customAgent.id)
   await form.getByLabel('Lead model', { exact: true }).selectOption('review-model')
   await form.getByLabel('Lead reasoning', { exact: true }).selectOption('medium')
@@ -473,10 +479,34 @@ try {
       }))
     }, { ...next, version: ++queueVersion })
   }
+  // Short desktop windows retain a real, wheel-scrollable card viewport even
+  // when one lane has many features. All extra cards remain synthetic.
+  const optionsToggle = page.getByRole('button', { name: 'Board options', exact: true })
+  if (await optionsToggle.getAttribute('aria-expanded') === 'true') await optionsToggle.click()
+  const scrollCards = Array.from({ length: 12 }, (_, index) => card({ id: `scroll-card-${index}`, title: `Scroll fixture ${index}`, description: 'Enough detail to exercise the actual card height and wheel scrolling.' }))
+  await publishQueueSnapshot({ ...queueBaseline, cards: [...queueBaseline.cards, ...scrollCards] })
+  await page.getByRole('button', { name: 'New feature', exact: true }).click()
+  await page.getByTestId('new-feature-form').getByRole('button', { name: 'Cancel', exact: true }).click()
+  await page.setViewportSize({ width: 1280, height: 600 })
+  await page.getByTestId('project-board').evaluate((element) => { element.scrollTop = 0 })
+  const backlogList = page.locator('[data-board-status="backlog"] .board-lane-list')
+  await page.waitForFunction(() => document.querySelector('.desktop-layout').getBoundingClientRect().height <= innerHeight + 1)
+  const laneBounds = await backlogList.boundingBox()
+  assert.ok(laneBounds.height >= 250 && laneBounds.y < 300, `Cards have a usable viewport below the compact desktop header: ${JSON.stringify(laneBounds)}`)
+  assert.equal(await backlogList.evaluate((element) => element.scrollHeight > element.clientHeight), true)
+  await page.screenshot({ path: join(outputDirectory, 'project-board-short-desktop.png'), fullPage: true })
+  await page.mouse.move(laneBounds.x + 30, laneBounds.y + laneBounds.height / 2)
+  await page.mouse.wheel(0, 10000)
+  await page.waitForFunction(() => document.querySelector('[data-board-status="backlog"] .board-lane-list').scrollTop > 0)
+  const lastCardBounds = await page.locator('[data-feature-id="scroll-card-11"]').boundingBox()
+  assert.ok(lastCardBounds.y >= laneBounds.y && lastCardBounds.y < 600, 'The last card is reachable with normal wheel scrolling')
+  await page.screenshot({ path: join(outputDirectory, 'project-board-scroll-desktop.png'), fullPage: true })
+  await page.setViewportSize({ width: 1600, height: 1000 })
+  await publishQueueSnapshot(queueBaseline)
   await publishQueueSnapshot({ ...queueBaseline, runs: queueBaseline.runs.map((run) => run.id === queueRun.id ? queueRun : run) })
   const delivery = page.getByRole('region', { name: 'Project delivery' })
   await delivery.getByText(/Project board orchestration.*already running/).waitFor()
-  assert.equal(await delivery.getByRole('button', { name: 'Run selected features', exact: true }).isDisabled(), true)
+  assert.equal(await page.getByRole('button', { name: 'Run selected features', exact: true }).isDisabled(), true)
   await delivery.getByRole('button', { name: 'Open active Lead chat', exact: true }).click()
   await page.waitForURL('**#/thread/daily-run-thread')
   await page.getByText('The saved storage run is ready to inspect.', { exact: true }).waitFor()
@@ -562,9 +592,13 @@ try {
     planRequest = route.request().postDataJSON()
     return route.fulfill({ status: 409, contentType: 'application/json', body: JSON.stringify({ error: 'Planning request kept for review.' }) })
   })
-  await page.getByRole('button', { name: 'Plan features', exact: true }).click()
-  const planning = page.getByRole('dialog', { name: 'Plan project features', exact: true })
+  if (await page.getByRole('button', { name: 'Board options', exact: true }).getAttribute('aria-expanded') !== 'true') await page.getByRole('button', { name: 'Board options', exact: true }).click()
+  await page.getByRole('button', { name: 'Add from a plan', exact: true }).click()
+  const planning = page.getByRole('dialog', { name: 'Add features to Product build', exact: true })
+  await planning.getByText(/adds draft cards and dependencies here; existing work stays/).waitFor()
+  assert.equal(await planning.getByLabel('Board name', { exact: true }).count(), 0, 'Adding a plan targets this board instead of creating another')
   await planning.getByLabel('Goal or plan', { exact: true }).fill('Build shared groundwork once, then two related features. Keep completed work.')
+  await planning.locator('summary').filter({ hasText: 'Coordinator settings' }).click()
   await planning.getByLabel('Coordinator model', { exact: true }).selectOption('build-model')
   await planning.getByLabel('Coordinator reasoning', { exact: true }).selectOption('high')
   let finishPlanTranscript
@@ -614,15 +648,15 @@ try {
   await page.getByText("Let's build", { exact: true }).waitFor()
   await page.locator('button[aria-label^="Notifications:"]').waitFor()
   await page.getByRole('button', { name: 'Project boards', exact: true }).click()
-  await page.getByTestId('project-board').waitFor()
+  await page.getByTestId('board-work-overview').waitFor()
 
   // Dark surfaces use the same theme token for cards, detail, forms, and selects.
   await visitBoard('?feature=feature-working')
   await detail.getByText('Requested: build-model · high reasoning', { exact: true }).waitFor()
   await page.evaluate(() => { document.documentElement.dataset.theme = 'dark'; document.documentElement.style.colorScheme = 'dark' })
-  await page.waitForFunction(() => [...document.querySelectorAll('.board-card, .board-detail-panel, .detail-status-select select')].every((element) => getComputedStyle(element).backgroundColor === 'rgb(37, 38, 51)'))
-  const darkSurfaces = await page.locator('.board-card, .board-detail-panel, .detail-status-select select').evaluateAll((elements) => elements.map((element) => getComputedStyle(element).backgroundColor))
-  assert.ok(darkSurfaces.length > 2 && darkSurfaces.every((color) => color !== 'rgb(255, 255, 255)'), 'Dark mode surfaces must not stay white')
+  await page.waitForFunction(() => [...document.querySelectorAll('.board-card, .board-detail-panel')].filter((element) => element.getClientRects().length).every((element) => getComputedStyle(element).backgroundColor !== 'rgb(255, 255, 255)'))
+  const darkSurfaces = await page.locator('.board-card, .board-detail-panel').evaluateAll((elements) => elements.filter((element) => element.getClientRects().length).map((element) => getComputedStyle(element).backgroundColor))
+  assert.ok(darkSurfaces.length > 2 && darkSurfaces.every((color) => color !== 'rgb(255, 255, 255)'), `Dark mode surfaces must not stay white: ${JSON.stringify(darkSurfaces)}`)
   await page.screenshot({ path: join(outputDirectory, 'project-board-dark.png'), fullPage: true })
   await newFeatureButton.click()
   assert.notEqual(await form.evaluate((element) => getComputedStyle(element.parentElement).backgroundColor), 'rgb(255, 255, 255)')
@@ -682,13 +716,13 @@ try {
     const { method, params } = route.request().postDataJSON()
     let result
     if (method === 'thread/list') result = { data: [sourceThread], nextCursor: null }
-    else if ((method === 'thread/read' || method === 'thread/resume') && params.threadId === sourceThread.id) result = { thread: sourceThread, model: 'build-model', reasoningEffort: 'high', cwd: emptyProject }
+    else if ((method === 'thread/read' || method === 'thread/resume') && params.threadId === sourceThread.id) result = { thread: sourceThread, model: 'build-model', reasoningEffort: 'xhigh', cwd: emptyProject }
     else if (method === 'thread/read' && params.threadId === childThread.id) result = { thread: childThread }
     else if (method === 'thread/goal/get') result = { goal: null }
     else return route.fallback()
     return route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ result }) })
   })
-  await page.route('**/codex-api/thread-resume-lite', (route) => route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ result: { thread: sourceThread, model: 'build-model', reasoningEffort: 'high' } }) }))
+  await page.route('**/codex-api/thread-resume-lite', (route) => route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ result: { thread: sourceThread, model: 'build-model', reasoningEffort: 'xhigh' } }) }))
   await page.route('**/codex-api/thread-page', (route) => {
     const threadId = route.request().postDataJSON().threadId
     if (threadId !== sourceThread.id && threadId !== childThread.id) return route.fallback()
@@ -706,22 +740,31 @@ try {
   const trackDialog = page.getByRole('dialog', { name: 'Track on board', exact: true })
   await trackDialog.getByLabel('Feature brief', { exact: true }).fill(sourcePlan)
   await trackDialog.getByRole('button', { name: 'Have a larger plan? Create several feature cards', exact: true }).click()
-  const chatPlan = page.getByRole('dialog', { name: 'Turn this chat into a board', exact: true })
+  const chatPlan = page.locator('.plan-dialog')
   assert.equal(await chatPlan.getByLabel('Goal or plan', { exact: true }).inputValue(), sourcePlan)
-  await chatPlan.getByLabel('Board name', { exact: true }).fill('Plan from chat')
+  await chatPlan.locator('summary').filter({ hasText: 'Coordinator settings' }).click()
+  await chatPlan.getByText('Using build-model · Extra high reasoning.', { exact: true }).waitFor()
+  assert.equal(await chatPlan.getByLabel('Coordinator model', { exact: true }).inputValue(), '')
+  assert.equal(await chatPlan.getByLabel('Coordinator reasoning', { exact: true }).inputValue(), '')
+  assert.equal(await chatPlan.getByLabel('Coordinator reasoning', { exact: true }).locator('option:checked').textContent(), 'Use source chat settings')
+  assert.equal(await chatPlan.getByLabel('Board name', { exact: true }).inputValue(), '')
+  const generatedBoardName = await chatPlan.getByLabel('Board name', { exact: true }).getAttribute('placeholder')
+  assert.ok(generatedBoardName && generatedBoardName !== 'From your goal or plan')
   assert.ok(await chatPlan.evaluate((element) => element.scrollWidth <= element.clientWidth), 'Chat planning must fit mobile width')
   await page.screenshot({ path: join(outputDirectory, 'project-board-chat-plan-mobile.png'), fullPage: true })
   await chatPlan.getByRole('button', { name: 'Create feature plan' }).click()
   await chatPlan.getByRole('alert').getByText('Planning request kept for review.').waitFor()
   assert.equal(planRequest.sourceThreadId, sourceThread.id)
   assert.equal(planRequest.plan, sourcePlan)
+  assert.equal(planRequest.model, '')
+  assert.equal(planRequest.reasoningEffort, '')
   const afterFirstPlan = (await (await fetch(`${origin}/codex-api/project-boards`)).json()).data
-  const importedBoard = afterFirstPlan.boards.find((board) => board.name === 'Plan from chat')
+  const importedBoard = afterFirstPlan.boards.find((board) => board.name === generatedBoardName)
   assert.ok(importedBoard)
   await chatPlan.getByRole('button', { name: 'Create feature plan' }).click()
   await chatPlan.getByRole('alert').getByText('Planning request kept for review.').waitFor()
   const afterRetry = (await (await fetch(`${origin}/codex-api/project-boards`)).json()).data
-  assert.equal(afterRetry.boards.filter((board) => board.name === 'Plan from chat').length, 1, 'Retry must reuse the created board')
+  assert.equal(afterRetry.boards.filter((board) => board.name === generatedBoardName).length, 1, 'Retry must reuse the created board')
   await page.keyboard.press('Escape')
 
   // Activity opens a completed feature's Lead result, including older history
@@ -755,7 +798,7 @@ try {
       stop() { this.state = 'inactive'; setTimeout(() => { this.ondataavailable?.({ data: new Blob(['audio'], { type: 'audio/webm' }) }); this.onstop?.() }, 0) }
     }
   })
-  await mobilePage.route('**/codex-api/project-board-models', (route) => route.fulfill({ json: { data: { defaultModel: 'build-model', defaultReasoningEffort: 'high', models: [{ id: 'build-model', label: 'Build model', reasoningEfforts: ['high'], defaultReasoningEffort: 'high' }] } } }))
+  await mobilePage.route('**/codex-api/project-board-models*', (route) => route.fulfill({ json: { data: { defaultModel: 'build-model', defaultReasoningEffort: 'high', models: [{ id: 'build-model', label: 'Build model', reasoningEfforts: ['high'], defaultReasoningEffort: 'high' }] } } }))
   await mobilePage.route('**/codex-api/transcribe', (route) => route.fulfill({ json: { text: 'A feature created by voice on mobile.' } }))
   await mobilePage.goto(`${origin}/#/board/board-1`, { waitUntil: 'domcontentloaded' })
   await mobilePage.getByTestId('project-board').waitFor()
@@ -798,9 +841,9 @@ try {
   await mobilePage.getByTestId('feature-detail').waitFor()
   assert.equal(await mobilePage.getByTestId('feature-detail').getAttribute('aria-modal'), 'true')
   await mobilePage.getByRole('button', { name: 'Close feature', exact: true }).tap()
-  await mobilePage.getByRole('button', { name: 'Board options', exact: true }).tap()
-  await mobilePage.getByRole('button', { name: 'Plan features', exact: true }).tap()
-  const touchPlan = mobilePage.getByRole('dialog', { name: 'Plan project features', exact: true })
+  if (await mobilePage.getByRole('button', { name: 'Board options', exact: true }).getAttribute('aria-expanded') !== 'true') await mobilePage.getByRole('button', { name: 'Board options', exact: true }).tap()
+  await mobilePage.getByRole('button', { name: 'Add from a plan', exact: true }).tap()
+  const touchPlan = mobilePage.getByRole('dialog', { name: 'Add features to Product build', exact: true })
   await touchPlan.getByLabel('Goal or plan', { exact: true }).fill('Build one small feature, then a dependent improvement.')
   await touchPlan.getByRole('button', { name: 'Create feature plan', exact: true }).scrollIntoViewIfNeeded()
   await mobilePage.screenshot({ path: join(outputDirectory, `project-board-${mobileEngineName}-touch-plan.png`), fullPage: true })

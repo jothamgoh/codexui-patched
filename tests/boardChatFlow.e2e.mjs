@@ -116,11 +116,12 @@ try {
         if (path === `/codex-api/project-board-cards/${featureId}/start`) {
           mutations.push({ kind: 'start', input })
           if (failFirstStart) { failFirstStart = false; return json({ error: 'The feature was saved, but its Lead could not start. Retry safely.' }, 503) }
-          const started = await store.startRun(featureId, 'builtin-lead', input.mode)
+          const started = await store.startRun(featureId, 'builtin-lead', input.mode, undefined, { model: 'gpt-6-astra', reasoningEffort: 'xhigh' })
           runId = started.run.id
           const startedThreadId = mutations.filter((item) => item.kind === 'create').length === 1 ? leadId : `second-lead-${label}`
           if (!threads.has(startedThreadId)) threads.set(startedThreadId, thread(startedThreadId, 'Second feature Lead', 'I am planning the second feature.', true))
           snapshot = await store.setRunThread(runId, startedThreadId, 2)
+          snapshot = await store.confirmRunSettings(runId, startedThreadId, { model: 'gpt-6-astra', reasoningEffort: 'xhigh' })
           return json({ data: snapshot })
         }
         if (path === `/codex-api/project-board-cards/${featureId}` && request.method() === 'PATCH') {
@@ -152,7 +153,13 @@ try {
           return json({ data: await store.read() })
         }
         if (path === '/codex-api/transcribe') return json({ text: brief })
-        if (path === '/codex-api/project-board-models') return json({ data: { defaultModel: 'build-model', defaultReasoningEffort: 'high', models: [{ id: 'build-model', label: 'Build model', reasoningEfforts: ['medium', 'high'], defaultReasoningEffort: 'high' }] } })
+        if (path === '/codex-api/project-board-models') {
+          const fromSource = new URL(request.url()).searchParams.get('sourceThreadId') === sourceId
+          return json({ data: { defaultModel: fromSource ? 'build-model' : 'default-model', defaultReasoningEffort: fromSource ? 'xhigh' : 'high', models: [
+            { id: 'default-model', label: 'App default model', reasoningEfforts: ['medium', 'high'], defaultReasoningEffort: 'high' },
+            { id: 'build-model', label: 'Build model', reasoningEfforts: ['medium', 'high', 'xhigh'], defaultReasoningEffort: 'high' },
+          ] } })
+        }
         if (path === '/codex-api/server-requests') return json({ requests: pending })
         if (path === '/codex-api/server-requests/respond') { const resolved = pending.find((item) => item.id === input.id); pending = pending.filter((item) => item.id !== input.id); if (resolved) await resolveNativeRequest(resolved, 'manual'); return json({ ok: true }) }
         if (path === '/codex-api/push/history') return json({ data: { items: history, unreadCount: history.filter((item) => !item.readAt).length, dismissals: [] } })
@@ -165,14 +172,14 @@ try {
         if (path === '/codex-api/thread-read-state') return json({ data: { readAtByThreadId: {}, unreadThreadIds: [], version: 1 } })
         if (path === '/codex-api/automations') return json({ data: { tasks: [], runs: [], proposals: [], version: 1 } })
         if (path === '/codex-api/thread-page') historyReads.push(input)
-        if (path === '/codex-api/thread-resume-lite' || path === '/codex-api/thread-page') return json({ result: { thread: threads.get(input.threadId) || sourceThread, model: 'build-model', reasoningEffort: 'high', page: { startTurnIndex: 0, endTurnIndex: 1, totalTurns: 1, hasEarlier: false } } })
+        if (path === '/codex-api/thread-resume-lite' || path === '/codex-api/thread-page') return json({ result: { thread: threads.get(input.threadId) || sourceThread, model: 'build-model', reasoningEffort: input.threadId === sourceId ? 'xhigh' : 'high', page: { startTurnIndex: 0, endTurnIndex: 1, totalTurns: 1, hasEarlier: false } } })
         if (path === '/codex-api/rpc') {
           const { method, params = {} } = input
           if (holdStartup && ['thread/list', 'model/list', 'account/rateLimits/read'].includes(method)) await startupReady
           if (method === 'thread/list') return json({ result: { data: [...otherThreads, sourceThread, ...(listedLead ? [leadThread] : [])], nextCursor: null } })
-          if (method === 'thread/read' || method === 'thread/resume') return json({ result: { thread: threads.get(params.threadId) || sourceThread, model: 'build-model', reasoningEffort: 'high', cwd: project } })
-          if (method === 'model/list') return json({ result: { data: [{ id: 'build-model', model: 'build-model', isDefault: true, supportedReasoningEfforts: [{ reasoningEffort: 'high', description: 'High' }] }] } })
-          if (method === 'config/read') return json({ result: { config: { model: 'build-model', model_reasoning_effort: 'high' } } })
+          if (method === 'thread/read' || method === 'thread/resume') return json({ result: { thread: threads.get(params.threadId) || sourceThread, model: 'build-model', reasoningEffort: params.threadId === sourceId ? 'xhigh' : 'high', cwd: project } })
+          if (method === 'model/list') return json({ result: { data: [{ id: 'default-model', model: 'default-model', isDefault: true, supportedReasoningEfforts: [{ reasoningEffort: 'high', description: 'High' }] }, { id: 'build-model', model: 'build-model', isDefault: false, supportedReasoningEfforts: [{ reasoningEffort: 'high', description: 'High' }, { reasoningEffort: 'xhigh', description: 'Extra high' }] }] } })
+          if (method === 'config/read') return json({ result: { config: { model: 'default-model', model_reasoning_effort: 'high' } } })
           if (method === 'thread/goal/get') return json({ result: { goal: null } })
           if (method === 'thread/name/set') { threads.get(params.threadId).name = params.name; return json({ result: {} }) }
           if (method === 'turn/start' || method === 'thread/start') throw new Error(`Unexpected untracked ${method}`)
@@ -205,7 +212,12 @@ try {
       assert.equal(await dialog.getByLabel('Feature brief', { exact: true }).inputValue(), '', 'A casual last reply is not a feature brief')
       assert.equal(await dialog.getByRole('button', { name: 'Create feature & plan', exact: true }).isDisabled(), true)
       await page.screenshot({ path: join(output, `empty-track-feature-${label}.png`), fullPage: true })
-      await dialog.getByRole('button', { name: 'Cancel', exact: true }).click()
+      await dialog.getByRole('button', { name: 'Have a larger plan? Create several feature cards', exact: true }).click()
+      const existingPlan = page.getByRole('dialog', { name: 'Add features to Product fixes', exact: true })
+      await existingPlan.waitFor()
+      assert.equal(await existingPlan.getByLabel('Goal or plan', { exact: true }).inputValue(), '', 'An empty deliberate brief stays empty instead of copying the last reply')
+      assert.equal(await existingPlan.getByLabel('Board name', { exact: true }).count(), 0, 'Track preserves its selected board when expanding into a plan')
+      await existingPlan.getByRole('button', { name: 'Close planning', exact: true }).click()
       await page.evaluate(async (id) => {
         const { useComposerDraftStore } = await import('/src/stores/composerDrafts.ts')
         const draft = useComposerDraftStore().draftFor(id)
@@ -226,6 +238,11 @@ try {
       assert.equal(await dialog.getByLabel('Feature brief', { exact: true }).inputValue(), brief)
       assert.equal(await dialog.getByLabel('Feature title', { exact: true }).inputValue(), '')
       assert.equal(mutations.length, 0, 'Stopping dictation must not create or send work')
+      await dialog.locator('summary').filter({ hasText: 'Lead and model settings' }).click()
+      await dialog.getByText('Using build-model · Extra high reasoning.', { exact: true }).waitFor()
+      assert.equal(await dialog.getByLabel('Lead model', { exact: true }).inputValue(), '')
+      assert.equal(await dialog.getByLabel('Lead reasoning', { exact: true }).inputValue(), '')
+      assert.equal(await dialog.getByLabel('Lead reasoning', { exact: true }).locator('option:checked').textContent(), 'Use source chat settings')
       assert.equal(await dialog.evaluate((element) => element.scrollWidth <= element.clientWidth), true)
       await page.screenshot({ path: join(output, `track-feature-${label}.png`), fullPage: true })
       await dialog.getByRole('button', { name: 'Create feature & plan', exact: true }).click()
@@ -245,18 +262,52 @@ try {
       const feature = snapshot.cards.find((item) => item.id === featureId)
       assert.ok(feature.title && feature.title !== 'Untitled', 'Brief-only input creates a usable title')
       assert.equal(feature.sourceThreadId, sourceId)
+      assert.equal(feature.model, '', 'Inherited model stays unset on the saved card')
+      assert.equal(feature.reasoningEffort, '', 'Inherited source effort stays unset on the saved card')
       assert.equal(mutations[1].input.mode, 'plan')
       assert.equal(mutations[1].input.allowWorkspaceWrite, false)
+      await tracked.getByTestId('board-run-settings').getByText(/gpt-6-astra/).waitFor()
+      assert.match(await tracked.getByTestId('board-run-settings').textContent(), /This run:.*gpt-6-astra.*Extra high.*Confirmed by Codex/s)
+      const settingBounds = await tracked.getByTestId('board-run-settings').boundingBox()
+      assert.ok(settingBounds.x >= 0 && settingBounds.x + settingBounds.width <= page.viewportSize().width, 'Confirmed run settings fit the chat width')
       await page.screenshot({ path: join(output, `active-chat-${label}.png`), fullPage: true })
       await openOriginal()
       await page.waitForURL(`**/#/thread/${sourceId}`)
+      const ordinaryRunning = otherThreads[0]
+      ordinaryRunning.status = { type: 'active' }
+      ordinaryRunning.turns[0].status = 'inProgress'
+      await notify('thread/started', { thread: ordinaryRunning })
       await page.locator('button[aria-label^="Notifications:"]').click()
       const activity = page.locator('.notification-popover')
-      const running = activity.locator('.notification-section').filter({ has: page.getByText('Running', { exact: true }) })
-      await running.getByRole('button').filter({ hasText: feature.title }).waitFor()
-      assert.equal(await running.getByRole('button').filter({ hasText: feature.title }).count(), 1)
+      const boardWork = activity.getByRole('region', { name: 'Board work', exact: true })
+      const ordinaryWork = activity.getByRole('region', { name: 'Chats running', exact: true })
+      const openBoardLead = boardWork.getByRole('button', { name: `Open Lead chat for ${feature.title}`, exact: true })
+      await openBoardLead.waitFor()
+      await ordinaryWork.getByText(ordinaryRunning.name, { exact: true }).waitFor()
+      assert.equal(await openBoardLead.count(), 1, 'Unlisted board Leads have one dedicated current-work entry')
+      assert.equal(await ordinaryWork.getByText(feature.title, { exact: true }).count(), 0)
+      listedLead = true
+      await notify('thread/started', { thread: leadThread })
+      assert.equal(await openBoardLead.count(), 1, 'Listing the native Lead must not duplicate its board row')
+      assert.equal(await ordinaryWork.getByText(leadThread.name, { exact: true }).count(), 0)
+      const boardButton = boardWork.getByRole('button', { name: `View board for ${feature.title}`, exact: true })
+      const boardButtonBounds = await boardButton.boundingBox()
+      assert.ok(boardButtonBounds.width >= 44 && boardButtonBounds.height >= 44, 'Board navigation remains touch-sized')
       await page.screenshot({ path: join(output, `board-running-${label}.png`), fullPage: true })
-      await running.getByRole('button').filter({ hasText: feature.title }).click()
+      // A finished turn with unfinished work remains discoverable as paused.
+      const pausedView = await readSnapshot()
+      pausedView.runs.find((run) => run.id === runId).status = 'succeeded'
+      await notify('codexui/projectBoards/updated', pausedView)
+      await boardWork.getByText('Paused', { exact: true }).waitFor()
+      await page.screenshot({ path: join(output, `board-paused-${label}.png`), fullPage: true })
+      await publish()
+      await boardWork.getByText('Working', { exact: true }).waitFor()
+      await boardButton.click()
+      await page.waitForURL(`**/#/board/${board.id}?feature=${featureId}`)
+      await page.goBack()
+      await page.waitForURL(`**/#/thread/${sourceId}`)
+      await page.locator('button[aria-label^="Notifications:"]').click()
+      await openBoardLead.click()
       await page.waitForURL(`**/#/thread/${leadId}`)
       await openOriginal()
       pending = [{ id: 811, method: 'item/commandExecution/requestApproval', params: { threadId: leadId, turnId: `${leadId}-turn`, itemId: 'approval', command: 'npm test', cwd: project, reason: 'Run the combined checks.' } }]
@@ -265,8 +316,13 @@ try {
       await page.locator('button[aria-label^="Notifications:"]').click()
       await activity.getByText('Approval needed', { exact: true }).waitFor()
       assert.equal(await activity.getByText('Approval needed', { exact: true }).count(), 1, 'Durable native alert and live request share one Activity row')
-      assert.equal(await activity.getByText('Running', { exact: true }).count(), 0, 'Waiting Lead must not also appear as working')
+      assert.equal(await boardWork.count(), 0, 'Waiting Lead appears only in Needs you, not duplicated as working')
+      assert.equal(await ordinaryWork.getByText(ordinaryRunning.name, { exact: true }).count(), 1, 'Ordinary chat work stays separate while the board waits')
+      assert.equal(await activity.locator('.notification-board-label').filter({ hasText: board.name }).count(), 1)
       await page.screenshot({ path: join(output, `board-approval-${label}.png`), fullPage: true })
+      ordinaryRunning.status = { type: 'idle' }
+      ordinaryRunning.turns[0].status = 'completed'
+      await notify('thread/status/changed', { threadId: ordinaryRunning.id, status: { type: 'idle' } })
       await activity.getByRole('button').filter({ hasText: 'Approval needed' }).click()
       await page.waitForURL(`**/#/thread/${leadId}`)
       await tracked.getByText('Approval needed', { exact: true }).waitFor()
@@ -456,12 +512,30 @@ try {
       await linked.getByText('0/0 done · Plan, results, and checks', { exact: true }).waitFor()
       await linked.getByRole('button', { name: 'Review board', exact: true }).click()
       await page.waitForURL(`**/#/board/${nextBoard.id}`)
-      if (mobile) await page.getByRole('button', { name: 'Board options', exact: true }).click()
-      await page.getByRole('button', { name: 'Planning chat', exact: true }).click()
+      await page.getByRole('button', { name: 'Board options', exact: true }).click()
+      await page.getByRole('button', { name: 'Original chat', exact: true }).click()
       await page.waitForURL(`**/#/thread/${sourceId}`)
       await page.getByRole('button', { name: 'Project board actions', exact: true }).click()
       await page.getByRole('button', { name: 'Review Next release', exact: true }).waitFor()
       await page.getByRole('button', { name: 'Review Product fixes', exact: true }).click()
+      await page.waitForURL(`**/#/board/${board.id}`)
+      await page.getByRole('button', { name: 'Board options', exact: true }).click()
+      await page.getByRole('button', { name: 'Add from a plan', exact: true }).click()
+      await existingPlan.waitFor()
+      assert.equal(await existingPlan.getByLabel('Goal or plan', { exact: true }).inputValue(), '', 'Adding work to a populated board starts a fresh brief')
+      await existingPlan.getByRole('button', { name: 'Close planning', exact: true }).click()
+      await page.getByRole('button', { name: 'All work', exact: true }).click()
+      const overview = page.getByTestId('board-work-overview')
+      await overview.waitFor()
+      const recentResults = overview.getByRole('region', { name: 'Recent results', exact: true })
+      await recentResults.getByText(finalText, { exact: true }).waitFor()
+      assert.equal(await overview.evaluate((element) => element.scrollWidth <= element.clientWidth), true)
+      await page.screenshot({ path: join(output, `work-overview-${label}.png`), fullPage: true })
+      await recentResults.getByRole('button', { name: 'Review result', exact: true }).click()
+      await page.waitForURL(`**/#/thread/${leadId}`)
+      await page.goBack()
+      await overview.waitFor()
+      await overview.getByRole('region', { name: 'Your boards', exact: true }).locator('article').filter({ has: page.getByRole('heading', { name: 'Product fixes', exact: true }) }).getByRole('button', { name: 'Open board', exact: true }).click()
       await page.waitForURL(`**/#/board/${board.id}`)
       await page.locator(`[data-feature-id="${feature.id}"] .board-card-main`).click()
       const result = detail.getByRole('region', { name: 'Feature result', exact: true })

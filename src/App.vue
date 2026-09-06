@@ -211,7 +211,15 @@
 
         <section class="content-body">
           <template v-if="isBoardsRoute">
+            <BoardWorkOverview
+              v-if="isBoardOverview"
+              :snapshot="projectBoardSnapshot" :activity="boardActivity" :pending-requests="pendingServerRequests"
+              :projects="projectBoardProjectOptions" :is-loading="isLoadingProjectBoards" :error="projectBoardError"
+              @select-board="openProjectBoard" @select-feature="setProjectBoardFeature" @select-thread="onSelectThread"
+              @select-project="openProjectBoardProject" @plan-project="openBoardPlanner('')"
+            />
             <ProjectBoardsHub
+              v-else
               :snapshot="projectBoardSnapshot"
               :pending-requests="pendingServerRequests"
               :is-loading="isLoadingProjectBoards"
@@ -236,6 +244,7 @@
                 clearError: clearProjectBoardError,
               }"
               @plan-board="openBoardPlanner"
+              @show-overview="openBoardsHub"
               @select-thread="onSelectThread"
             />
           </template>
@@ -301,6 +310,7 @@
                   <span class="board-chat-status">{{ selectedChatStatus }}</span>
                   <button type="button" @click="openProjectBoard(selectedChatBoard.id)">View board</button>
                 </div>
+                <BoardRunSettings :run="selectedChatRun" />
                 <p v-if="projectBoardError" role="alert">{{ projectBoardError }} <button type="button" @click="clearProjectBoardError">Dismiss</button></p>
                 <p v-if="selectedChatQuestion"><button type="button" @click="openProjectBoardQuestion({ boardId: selectedChatBoard.id, featureId: selectedChatFeature!.id, questionId: selectedChatQuestion.id })">Answer needed: {{ selectedChatQuestion.prompt }}</button></p>
                 <p v-else-if="selectedChatNativeQuestion">The Lead is waiting for your decision below.</p>
@@ -395,6 +405,7 @@
   <BoardPlanDialog
     v-model:open="boardPlanDialogOpen"
     :board-id="boardPlanTargetId" :source-thread-id="boardPlanSourceThreadId"
+    :board-name="boardPlanTarget?.name" :inherited-source-thread-id="boardPlanTarget?.sourceThreadId"
     :initial-plan="boardPlanInitialText" :initial-project-path="boardPlanProjectPath"
     :initial-coordinator-id="boardPlanTarget?.coordinatorAgentId"
     :projects="projectBoardProjectOptions" :agents="boardPlanAgents"
@@ -420,6 +431,7 @@ import { collectProjectBoardActivity } from './utils/projectBoardActivity'
 import QueuedMessages from './components/content/QueuedMessages.vue'
 import NewThreadFolderPicker from './components/content/NewThreadFolderPicker.vue'
 import BoardPlanDialog, { type BoardPlanDraft } from './components/content/BoardPlanDialog.vue'
+import BoardRunSettings from './components/content/BoardRunSettings.vue'
 import Button from './components/ui/button/Button.vue'
 import { Popover, PopoverContent, PopoverTrigger } from './components/ui/popover'
 import ChatSearchDialog from './components/content/ChatSearchDialog.vue'
@@ -461,6 +473,7 @@ const McpHub = defineAsyncComponent(() => import('./components/content/McpHub.vu
 const PluginsHub = defineAsyncComponent(() => import('./components/content/PluginsHub.vue'))
 const ScheduledTasksHub = defineAsyncComponent(() => import('./components/content/ScheduledTasksHub.vue'))
 const ProjectBoardsHub = defineAsyncComponent(() => import('./components/content/ProjectBoardsHub.vue'))
+const BoardWorkOverview = defineAsyncComponent(() => import('./components/content/BoardWorkOverview.vue'))
 
 const SIDEBAR_COLLAPSED_STORAGE_KEY = 'codex-web-local.sidebar-collapsed.v1'
 const SIDEBAR_TOOLS_OPEN_STORAGE_KEY = 'codex-web-local.sidebar-tools-open.v1'
@@ -802,6 +815,7 @@ const shortcutThreadIds = computed(() => {
 const isHomeRoute = computed(() => route.name === 'home')
 const isScheduledRoute = computed(() => route.name === 'scheduled')
 const isBoardsRoute = computed(() => route.name === 'boards' || route.name === 'board')
+const isBoardOverview = computed(() => route.name === 'boards' && !routeBoardProjectPath.value)
 const isSkillsRoute = computed(() => route.name === 'skills')
 const isMcpRoute = computed(() => route.name === 'mcps')
 const isPluginsRoute = computed(() => route.name === 'plugins')
@@ -829,7 +843,7 @@ const contentProjectPath = computed(() => activeProjectBoard.value?.projectPath 
 const themeToggleLabel = computed(() => (isDarkTheme.value ? 'Switch to light mode' : 'Switch to dark mode'))
 const contentTitle = computed(() => {
   if (isScheduledRoute.value) return 'Scheduled tasks'
-  if (isBoardsRoute.value) return activeProjectBoard.value?.name ?? 'Project boards'
+  if (isBoardsRoute.value) return isBoardOverview.value ? 'Work overview' : activeProjectBoard.value?.name ?? 'Project boards'
   if (isSkillsRoute.value) return 'Skills'
   if (isMcpRoute.value) return 'MCPs'
   if (isPluginsRoute.value) return 'Plugins'
@@ -1028,10 +1042,7 @@ function openScheduledHub(): void {
 }
 
 function openBoardsHub(): void {
-  const currentProjectPath = selectedThread.value?.cwd?.trim() || newThreadCwd.value.trim()
-  const projectBoards = projectBoardSnapshot.value.boards.filter((board) => board.projectPath === currentProjectPath)
-  const board = projectBoards.find((entry) => entry.isDefault) ?? projectBoards[0]
-  void router.push(board ? { name: 'board', params: { boardId: board.id } } : { name: 'boards' })
+  void router.push({ name: 'boards' })
   if (isMobile.value) setSidebarCollapsed(true)
 }
 
@@ -1141,10 +1152,14 @@ function openChatProjectBoard(): void {
   else openProjectBoardProject(selectedThread.value?.cwd || newThreadCwd.value)
 }
 
-function openTrackProjectPlan(brief: string): void {
+function openTrackProjectPlan(brief: string, boardId = ''): void {
   trackFeatureOpen.value = false
-  openChatBoardPlan()
-  if (brief.trim() && (brief !== trackInitialBrief.value || composerDraftStore.draftFor(trackSourceThreadId.value).text.trim())) boardPlanInitialText.value = brief
+  if (boardId) {
+    openBoardPlanner(boardId)
+  } else openChatBoardPlan()
+  boardPlanSourceThreadId.value = trackSourceThreadId.value
+  if (!boardId) boardPlanProjectPath.value = trackProjectPath.value
+  boardPlanInitialText.value = brief.trim()
 }
 
 async function onTrackFeature(draft: ProjectBoardCardCreateInput): Promise<void> {
@@ -1174,7 +1189,7 @@ function openChatBoardPlan(): void {
   boardPlanTargetId.value = ''
   boardPlanSourceThreadId.value = selectedThreadId.value
   boardPlanProjectPath.value = selectedThread.value?.cwd || newThreadCwd.value
-  boardPlanInitialText.value = [...messages.value].reverse().find((message) => message.role === 'assistant' && message.text.trim() && !message.commandExecution && !message.toolCall)?.text.slice(0, 12000) || ''
+  boardPlanInitialText.value = ''
   boardPlanDialogOpen.value = true
 }
 
@@ -1184,7 +1199,7 @@ function openBoardPlanner(boardId: string): void {
   boardPlanTargetId.value = boardId
   boardPlanSourceThreadId.value = board?.sourceThreadId || ''
   boardPlanProjectPath.value = board?.projectPath || ''
-  boardPlanInitialText.value = board?.plan || ''
+  boardPlanInitialText.value = projectBoardSnapshot.value.cards.some((card) => card.boardId === boardId && card.type === 'feature') ? '' : board?.plan || ''
   boardPlanDialogOpen.value = true
 }
 
@@ -2029,6 +2044,7 @@ async function submitFirstMessageForNewThread(
 .board-chat-status { color: var(--text-tertiary); }
 .board-chat-context p[role="alert"] { white-space: normal; overflow-wrap: anywhere; }
 .board-chat-context p { margin: 5px 0 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.board-chat-context p.run-settings { white-space: normal; overflow: visible; }
 .board-chat-reply-controls { margin-top: 6px; }
 .board-chat-options summary { cursor: pointer; padding: 5px 0; }
 .board-chat-reply-controls label { display: flex; align-items: center; gap: 6px; }

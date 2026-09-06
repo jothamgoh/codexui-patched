@@ -2,25 +2,20 @@
   <div class="boards-hub" :class="{ 'board-options-open': boardOptionsOpen }" data-testid="project-board">
     <header class="boards-header">
       <div class="boards-heading-copy">
-        <h2>Project board</h2>
-        <p>Review the plan, follow progress, and inspect each feature’s results and checks.</p>
+        <Button type="button" variant="ghost" size="sm" @click="$emit('show-overview')"><ArrowLeft aria-hidden="true" /> All work</Button>
       </div>
       <div class="boards-header-actions">
-        <Button v-if="activeBoard" type="button" variant="outline" class="board-management-action" :disabled="boardPlanningActive || isMutating" @click="$emit('plan-board', activeBoard.id)"><Sparkles aria-hidden="true" /> Plan features</Button>
-        <Button type="button" variant="outline" class="board-management-action" @click="agentDialogOpen = true">
-          <Users aria-hidden="true" /> Agents
-        </Button>
-        <Button type="button" variant="outline" class="board-management-action" :disabled="!selectedProjectPath" @click="openBoardEditor">
-          <Plus aria-hidden="true" /> New board
-        </Button>
         <Button type="button" :disabled="!activeBoard" @click="openFeatureEditor()">
           <Plus aria-hidden="true" /> New feature
         </Button>
-        <Button type="button" variant="outline" class="board-mobile-options" :aria-expanded="boardOptionsOpen" @click="boardOptionsOpen = !boardOptionsOpen">Board options <ChevronDown aria-hidden="true" /></Button>
+        <Button v-if="activeQueue?.status === 'running'" type="button" variant="outline" :disabled="isDictating || isMutating" @click="pauseQueue">Pause delivery</Button>
+        <Button v-else-if="activeBoard" type="button" variant="outline" :disabled="queueCandidates.length === 0 || Boolean(activeProjectRun) || boardPlanningActive || isMutating" @click="openQueue">{{ activeQueue ? 'Resume selected features' : 'Run selected features' }}</Button>
+        <Button type="button" variant="outline" class="board-options-toggle" :aria-expanded="boardOptionsOpen" aria-controls="board-options" @click="boardOptionsOpen = !boardOptionsOpen">Board options <ChevronDown aria-hidden="true" /></Button>
       </div>
     </header>
 
-    <div class="boards-toolbar">
+    <div v-if="boardOptionsOpen" id="board-options" class="board-options-panel">
+      <div class="boards-toolbar">
       <label>
         <span>Project</span>
         <select v-model="selectedProjectPath" data-testid="board-project-select">
@@ -37,6 +32,8 @@
           </option>
         </select>
       </label>
+    </div>
+
       <label v-if="activeBoard" class="board-access-setting"><span>Work permissions</span><select :value="boardExecutionAccess" aria-label="Board work permissions" :disabled="isDictating || isMutating" @change="changeExecutionAccess"><option value="full-access">Full access (default)</option><option value="project">Project access</option></select><small>{{ boardExecutionAccess === 'full-access' ? 'Files, commands and network access without approval prompts.' : 'Project edits only; wider access can ask for approval.' }} Applies to new starts; planning stays read-only.</small></label>
       <label v-if="activeBoard" class="boards-auto-toggle">
         <input
@@ -49,19 +46,22 @@
         Continue within features
         <small>{{ boardAgents.length }} agents</small>
       </label>
+      <div class="boards-header-actions">
+        <Button v-if="activeBoard" type="button" variant="outline" :disabled="boardPlanningActive || isMutating" @click="$emit('plan-board', activeBoard.id)"><Sparkles aria-hidden="true" />{{ featureCards.length ? 'Add from a plan' : 'Plan features' }}</Button>
+        <Button type="button" variant="outline" @click="agentDialogOpen = true"><Users aria-hidden="true" /> Agents</Button>
+        <Button type="button" variant="outline" :disabled="!selectedProjectPath" @click="openBoardEditor"><Plus aria-hidden="true" /> New board</Button>
+        <Button v-if="activeBoard?.sourceThreadId" type="button" variant="ghost" @click="$emit('select-thread', activeBoard.sourceThreadId)">Original chat</Button>
+        <Button v-if="activeBoard?.planningThreadId" type="button" variant="ghost" @click="$emit('select-thread', activeBoard.planningThreadId)">Planning chat</Button>
+      </div>
     </div>
 
-    <section v-if="activeBoard" class="board-workflow" aria-label="Project delivery">
+    <section v-if="activeBoard" class="board-workflow" :class="{ 'is-idle': !activeProjectRun && !boardPlanningActive && !activeQueue && !boardComplete && !['failed', 'interrupted'].includes(latestBoardPlanRun?.status || '') }" aria-label="Project delivery">
       <div class="workflow-state">
         <strong>{{ activeProjectRequest ? 'Waiting for you' : boardPlanningActive ? 'Planning your features…' : activeQueue?.status === 'running' ? 'Delivery is running' : activeProjectRun ? 'Project work is running' : activeQueue?.status === 'paused' ? 'Delivery paused' : boardComplete ? 'All features complete' : 'Ready when you are' }}</strong>
         <p :class="{ 'workflow-help': !activeProjectRun && !activeQueue?.reason && !boardPlanningActive }">{{ activeProjectRun && activeQueue?.status !== 'running' ? queueBusyMessage : activeQueue?.reason || (boardPlanningActive ? 'Your coordinator is reading the plan and preparing cards. No implementation yet.' : boardComplete ? 'Open a finished card to review the result, checks, and Lead chat.' : 'Review and edit the feature cards, then run the ones you approve. Open finished cards to inspect the results.') }}</p>
       </div>
       <div class="boards-header-actions">
-        <Button v-if="activeBoard.sourceThreadId" type="button" size="sm" variant="ghost" class="board-management-action" @click="$emit('select-thread', activeBoard.sourceThreadId)">Planning chat</Button>
-        <Button v-if="activeBoard.planningThreadId" type="button" size="sm" variant="ghost" class="board-management-action" @click="$emit('select-thread', activeBoard.planningThreadId)">Coordinator chat</Button>
-        <Button v-if="activeProjectThreadId && (activeQueue?.status !== 'running' || activeProjectRequest)" type="button" size="sm" variant="outline" @click="$emit('select-thread', activeProjectThreadId)">{{ activeProjectRequest ? 'Open request in Lead chat' : 'Open active Lead chat' }}</Button>
-        <Button v-if="activeQueue?.status === 'running'" type="button" size="sm" variant="outline" :disabled="isDictating || isMutating" @click="pauseQueue">Pause delivery</Button>
-        <Button v-else type="button" size="sm" :disabled="queueCandidates.length === 0 || Boolean(activeProjectRun) || boardPlanningActive || isMutating" @click="openQueue">{{ activeQueue ? 'Resume selected features' : 'Run selected features' }}</Button>
+        <Button v-if="activeProjectThreadId && (activeQueue?.status !== 'running' || activeProjectRequest)" type="button" size="sm" variant="outline" @click="$emit('select-thread', activeProjectThreadId)">{{ activeProjectRun?.kind === 'board_plan' ? 'Open planning chat' : activeProjectRequest ? 'Open request in Lead chat' : 'Open active Lead chat' }}</Button>
       </div>
       <details v-if="activeBoard.plan" class="board-plan-summary"><summary>Project plan</summary><p>{{ activeBoard.plan }}</p></details>
       <p v-if="latestBoardPlanRun?.status === 'failed' || latestBoardPlanRun?.status === 'interrupted'" class="boards-alert" role="alert">{{ latestBoardPlanRun.error || 'Planning stopped. Open the coordinator chat or plan again.' }}</p>
@@ -189,6 +189,7 @@
           </header>
 
           <div class="board-detail-body">
+            <BoardRunSettings :run="selectedRuns[0]" />
             <p v-if="error" class="boards-alert" role="alert">{{ error }}</p>
             <div v-if="canStartSelectedCard || selectedRunIsActive || (!selectedHasResult && selectedCard.threadId)" class="board-detail-actions">
               <Button
@@ -295,7 +296,7 @@
             <details class="feature-options">
               <summary>Feature settings & actions</summary>
               <p class="detail-muted">Next start: {{ boardExecutionAccess === 'full-access' ? 'Full access · no approval prompts' : 'Project access' }}. Change this in Board options.</p>
-              <p class="detail-muted">Lead settings: {{ selectedCard.model || agentFor(selectedCard.assignedAgentId)?.model || 'App default model' }} · {{ selectedCard.reasoningEffort || agentFor(selectedCard.assignedAgentId)?.reasoningEffort || 'Default' }} reasoning.</p>
+              <p class="detail-muted">Lead settings: {{ selectedCard.model || agentFor(selectedCard.assignedAgentId)?.model || (selectedCard.sourceThreadId || activeBoard?.sourceThreadId ? 'Source chat model' : 'App default model') }} · {{ selectedCard.reasoningEffort || agentFor(selectedCard.assignedAgentId)?.reasoningEffort || (selectedCard.sourceThreadId || activeBoard?.sourceThreadId ? 'Source chat' : 'Default') }} reasoning.</p>
               <div class="board-detail-actions">
                 <Button type="button" variant="outline" :disabled="selectedRunIsActive" @click="openEditSelectedCard"><Pencil aria-hidden="true" /> Edit</Button>
                 <Button v-if="selectedCard.sourceThreadId" type="button" variant="ghost" @click="$emit('select-thread', selectedCard.sourceThreadId)">Original chat</Button>
@@ -322,7 +323,7 @@
           <form class="board-form" data-testid="new-feature-form" @submit.prevent="createFeature">
             <p v-if="error" class="boards-alert" role="alert">{{ error }}</p>
             <label><span>Brief</span><DictationField v-model="featureDraft.description" label="Brief" v-bind="voiceField('feature-brief')" multiline rows="4" maxlength="20000" placeholder="What should be built, and why?" /></label>
-            <label><span>{{ editingCardId ? 'Title' : 'Title (optional)' }}</span><DictationField v-model="featureDraft.title" label="Title" v-bind="voiceField('feature-title')" :required="!!editingCardId" maxlength="240" placeholder="Add project progress board" /></label>
+            <label><span>{{ editingCardId ? 'Title' : 'Title (optional)' }}</span><DictationField v-model="featureDraft.title" label="Title" v-bind="voiceField('feature-title')" :required="!!editingCardId" maxlength="240" :placeholder="suggestedFeatureTitle || 'From your brief'" /></label>
             <p v-if="!editingCardId && !featureDraft.title.trim()" class="detail-muted break-words" data-testid="feature-title-preview">{{ suggestedFeatureTitle ? `Title from your brief: ${suggestedFeatureTitle}` : 'Leave the title blank to use a short title from your brief.' }}</p>
             <label><span>Done when</span><DictationField v-model="featureDraft.acceptanceCriteria" label="Done when" v-bind="voiceField('feature-acceptance')" multiline rows="3" placeholder="The result you expect" /></label>
             <div class="board-form-grid">
@@ -330,7 +331,7 @@
               <label><span>Verification</span><select v-model="featureDraft.verificationPolicy"><option value="none">None</option><option value="self">Self-check</option><option value="independent">Independent verification</option><option value="batch">Review later</option></select></label>
               <label><span>Lead for this feature</span><select v-model="featureDraft.assignedAgentId" aria-label="Lead for this feature"><option v-if="draftLeadUnavailable" :value="featureDraft.assignedAgentId" disabled>{{ agentFor(featureDraft.assignedAgentId)?.name ?? 'Assigned agent' }} · not on this board</option><option v-for="agent in boardAgents" :key="agent.id" :value="agent.id">{{ agent.name }}</option></select></label>
             </div>
-            <BoardExecutionSettings v-model:model="featureDraft.model" v-model:reasoning-effort="featureDraft.reasoningEffort" :inherited-model="agentFor(featureDraft.assignedAgentId)?.model" :inherited-effort="agentFor(featureDraft.assignedAgentId)?.reasoningEffort" />
+            <BoardExecutionSettings v-model:model="featureDraft.model" v-model:reasoning-effort="featureDraft.reasoningEffort" :source-thread-id="snapshot.cards.find(card => card.id === editingCardId)?.sourceThreadId || activeBoard?.sourceThreadId" :inherited-model="agentFor(featureDraft.assignedAgentId)?.model" :inherited-effort="agentFor(featureDraft.assignedAgentId)?.reasoningEffort" />
             <fieldset v-if="dependencyCandidates.length" class="dependency-picker"><legend>Depends on</legend><p class="detail-muted">Shared groundwork belongs in one feature. Select anything this feature needs first.</p><label v-for="feature in dependencyCandidates" :key="feature.id" class="checkbox-row"><input v-model="featureDraft.dependencyIds" type="checkbox" :value="feature.id" /><span>{{ feature.title }} · {{ statusLabel(feature.status) }}</span></label></fieldset>
             <p v-if="draftLeadUnavailable" class="boards-alert">Choose another Lead or enable the assigned agent in the Agent library.</p>
             <p class="verification-help">{{ verificationHelp[featureDraft.verificationPolicy] }}</p>
@@ -382,7 +383,8 @@
               <div class="board-form-grid"><label><span>Specialty</span><select v-model="agentDraft.role" aria-label="Specialty"><option value="custom">Custom</option><option value="product">Product</option><option value="design">Design</option><option value="engineering">Engineering</option><option value="qa">QA</option><option value="lead">Coordination</option></select></label><label><span>Access</span><select v-model="agentDraft.sandbox" aria-label="Access" :disabled="editingAgentAccessLocked"><option value="read-only">Read only</option><option value="workspace-write">Can edit project</option></select></label></div>
               <p v-if="editingAgentAccessLocked" class="agent-help">This agent has assigned work. Make a copy to change its access.</p>
               <label><span>Description</span><DictationField v-model="agentDraft.description" label="Description" v-bind="voiceField('agent-description')" maxlength="500" placeholder="What this specialist is for" /></label>
-              <BoardExecutionSettings :model="agentDraft.model" :reasoning-effort="agentDraft.reasoningEffort" inherit-label="Use app default" label="Agent" :show-specialist-note="false" :allow-inherited-effort="false" @update:model="agentDraft.model = $event" @update:reasoning-effort="agentDraft.reasoningEffort = $event || agentDraft.reasoningEffort" />
+              <BoardExecutionSettings v-model:model="agentDraft.model" v-model:reasoning-effort="agentDraft.reasoningEffort" inherit-label="Inherit from chat / Lead" label="Agent" :show-specialist-note="false" :show-effective-settings="false" />
+              <p class="agent-help">Blank settings use the source chat when this agent leads, or the Lead’s settings when it works as a specialist.</p>
               <label><span>Instructions</span><DictationField v-model="agentDraft.instructions" label="Instructions" v-bind="voiceField('agent-instructions')" multiline class="agent-instructions" maxlength="20000" required rows="9" placeholder="Describe the agent’s expertise, how it should work, and when it should ask for help." /></label>
               <p class="agent-help">This is the agent’s prompt. Saved changes apply when a feature starts or continues. New agents are added to this board.</p>
               <p v-if="agentDraftIsDirty" class="agent-draft-note">Unsaved changes. Save or cancel before choosing another agent.</p>
@@ -430,6 +432,7 @@ import { useMediaQuery } from '@vueuse/core'
 import { projectBoardTitleFromBrief } from '../../lib/projectBoardTitle'
 import { DialogRoot, DialogPortal, DialogOverlay, DialogContent, DialogTitle } from 'reka-ui'
 import {
+  ArrowLeft,
   Check,
   ChevronDown,
   CircleHelp,
@@ -451,6 +454,7 @@ import type { ProjectBoardUpdateInput, ProjectBoardCardUpdateInput, ProjectBoard
 import Button from '../ui/button/Button.vue'
 import DictationField from './DictationField.vue'
 import BoardExecutionSettings from './BoardExecutionSettings.vue'
+import BoardRunSettings from './BoardRunSettings.vue'
 import BoardDailyViews from './BoardDailyViews.vue'
 import type { ReasoningEffort, UiServerRequest } from '../../types/codex'
 import type {
@@ -506,6 +510,7 @@ const emit = defineEmits<{
   'select-feature': [featureId: string, boardId: string, questionId?: string]
   'select-thread': [threadId: string]
   'plan-board': [boardId: string]
+  'show-overview': []
 }>()
 
 const columns: Array<{ key: string; label: string; hint: string; statuses: ProjectBoardStatus[]; moveStatus: ProjectBoardStatus; tone: string }> = [
@@ -581,7 +586,7 @@ const agentDraft = reactive({
   instructions: '',
   sandbox: 'read-only',
   model: '',
-  reasoningEffort: 'high' as ProjectBoardAgent['reasoningEffort'],
+  reasoningEffort: '' as ProjectBoardAgent['reasoningEffort'],
 })
 const initialAgentDraft = ref(JSON.stringify(agentDraft))
 const agentDraftIsDirty = computed(() => JSON.stringify(agentDraft) !== initialAgentDraft.value)
@@ -775,7 +780,7 @@ function resetAgentEditor(): void {
   editingAgentId.value = ''
   copyingAgentName.value = ''
   agentFeedback.value = ''
-  Object.assign(agentDraft, { name: '', description: '', instructions: '', role: 'custom', sandbox: 'read-only', model: '', reasoningEffort: 'high' })
+  Object.assign(agentDraft, { name: '', description: '', instructions: '', role: 'custom', sandbox: 'read-only', model: '', reasoningEffort: '' })
   initialAgentDraft.value = JSON.stringify(agentDraft)
 }
 
@@ -973,25 +978,28 @@ function formatTime(value: string): string { const date = new Date(value); retur
 <style scoped>
 @reference "tailwindcss";
 
-.boards-hub { @apply flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden px-3 sm:px-5; color: var(--text-primary); }
-.boards-header { @apply flex flex-wrap items-start justify-between gap-4 border-b py-4; border-color: var(--border-soft); }
-.boards-heading-copy { @apply max-w-2xl; }
-.boards-heading-copy h2 { @apply m-0 text-xl font-semibold tracking-tight; }
-.boards-heading-copy p { @apply mt-1.5 mb-0 text-sm leading-5; color: var(--text-secondary); }
+.boards-hub { @apply flex min-h-0 min-w-0 flex-1 flex-col overflow-x-hidden overflow-y-auto px-3 sm:px-5; color: var(--text-primary); }
+.boards-hub > :not(.board-view-panel) { flex-shrink: 0; }
+.boards-header { @apply flex flex-wrap items-center justify-between gap-2 border-b py-2; border-color: var(--border-soft); }
+.boards-heading-copy { @apply flex max-w-2xl items-center gap-2; }
+.boards-heading-copy svg { @apply h-4 w-4; }
 .boards-header-actions { @apply flex flex-wrap items-center gap-2; }
 .boards-header-actions svg, .board-detail-actions svg, .lane-add svg, .new-agent-form button svg { @apply h-4 w-4; }
-.boards-toolbar { @apply flex min-h-14 flex-wrap items-end gap-3 py-2.5; }
-.boards-toolbar label { @apply flex min-w-0 flex-col gap-1; }
-.boards-toolbar label > span, .board-form label > span, .detail-status-select > span, .new-agent-form label > span { @apply text-[11px] font-medium; color: var(--text-muted); }
-.boards-toolbar select, .board-form select, .detail-status-select select, .board-card-move select, .new-agent-form select, .question-picker select { @apply h-9 rounded-md border px-2 text-sm outline-none; background: var(--surface-elevated); border-color: var(--border-strong); color: var(--text-primary); }
+.boards-toolbar { @apply flex w-full items-end gap-3 py-2; }
+.boards-toolbar label { @apply flex min-w-0 max-w-sm flex-1 flex-col gap-1; }
+.boards-toolbar label > span, .board-options-panel label > span, .board-form label > span, .detail-status-select > span, .new-agent-form label > span { @apply text-[11px] font-medium; color: var(--text-muted); }
+.boards-toolbar select, .board-options-panel select, .board-form select, .detail-status-select select, .board-card-move select, .new-agent-form select, .question-picker select { @apply h-9 rounded-md border px-2 text-sm outline-none; background: var(--surface-elevated); border-color: var(--border-strong); color: var(--text-primary); }
 .boards-toolbar select:focus, .board-form select:focus { @apply ring-2 ring-blue-500/25; border-color: var(--accent-blue); }
-.boards-toolbar .boards-auto-toggle { @apply ml-auto flex cursor-pointer flex-row items-center gap-2 pb-2 text-xs; color: var(--text-tertiary); }
-.boards-toolbar .board-access-setting { max-width: 22rem; }
+.board-options-panel { @apply mb-2 flex flex-wrap items-center gap-3 rounded-lg border p-3; border-color: var(--border-soft); }
+.board-options-panel .boards-auto-toggle { @apply flex cursor-pointer flex-row items-center gap-2 text-xs; color: var(--text-tertiary); }
+.board-access-setting { @apply flex min-w-0 flex-col gap-1; max-width: 22rem; }
 .board-access-setting small { font-size: 11px; line-height: 1.4; color: var(--text-secondary); }
 .boards-auto-toggle input { @apply h-4 w-4 accent-blue-600; }
 .boards-auto-toggle small { background: var(--surface-muted); @apply rounded-full px-2 py-0.5 text-[10px]; }
 .boards-live-dot { @apply h-2 w-2 rounded-full bg-emerald-500; }
-.board-workflow { @apply mb-3 flex flex-wrap items-center justify-between gap-3 rounded-xl border px-4 py-3; background: var(--surface-muted); border-color: var(--border-soft); }
+.board-workflow { @apply mb-2 flex flex-wrap items-center justify-between gap-2 rounded-lg border px-3 py-2; background: var(--surface-muted); border-color: var(--border-soft); }
+.boards-hub:not(.board-options-open) .board-workflow.is-idle { display: none; }
+.boards-hub:not(.board-options-open) .workflow-help { display: none; }
 .workflow-state { @apply min-w-0 flex-1; }
 .workflow-state strong { @apply text-sm font-medium; }
 .workflow-state p { @apply mt-1 mb-0 text-xs leading-5; color: var(--text-secondary); }
@@ -1009,12 +1017,12 @@ function formatTime(value: string): string { const date = new Date(value); retur
 .queue-feature strong { @apply text-sm font-medium; color: var(--text-primary); }
 .queue-feature small { @apply text-xs font-normal; color: var(--text-tertiary); }
 .boards-alert { @apply m-0 rounded-lg border px-3 py-2 text-sm; color: var(--text-primary); background: color-mix(in srgb, var(--surface-elevated) 90%, #e11d48); border-color: color-mix(in srgb, var(--border-strong) 60%, #e11d48); }
-.board-overview { @apply mb-3 flex flex-wrap items-center justify-between gap-3; }
-.board-view-tabs { @apply mb-4 flex shrink-0 gap-1 border-b; border-color: var(--border-soft); }
+.board-overview { @apply mb-2 flex flex-wrap items-center justify-between gap-2; }
+.board-view-tabs { @apply mb-2 flex shrink-0 gap-1 border-b; border-color: var(--border-soft); }
 .board-view-tabs button { @apply flex min-h-10 items-center gap-2 border-b-2 border-transparent px-3 text-sm font-medium; color: var(--text-secondary); }
 .board-view-tabs button[aria-selected='true'] { color: var(--text-primary); border-color: var(--text-primary); }
 .board-view-tabs button span { @apply rounded-full px-1.5 py-0.5 text-[10px]; background: var(--surface-muted); }
-.board-view-panel { @apply flex min-h-0 min-w-0 flex-1 flex-col; }
+.board-view-panel { @apply flex min-w-0 flex-col; flex: 1 0 15rem; min-height: 15rem; }
 .board-score { @apply flex flex-wrap items-center gap-x-4 gap-y-2 text-xs; color: var(--text-secondary); }
 .board-score > span, .board-score > button { @apply inline-flex items-center gap-1.5; }
 .board-score > button { @apply rounded-md px-1 py-2 hover:underline disabled:cursor-default disabled:no-underline; }
@@ -1098,7 +1106,7 @@ function formatTime(value: string): string { const date = new Date(value); retur
 .feature-options { border-top: 1px solid var(--border-soft); padding-top: .5rem; }
 .feature-options summary { cursor: pointer; padding: .75rem 0; font-size: .875rem; color: var(--text-secondary); }
 .feature-options .board-detail-actions { margin-block: 1rem; }
-.board-mobile-options, .mobile-feature-filter { display: none; }
+.mobile-feature-filter { display: none; }
 .danger-button { @apply text-rose-600 hover:bg-rose-50 hover:text-rose-700; }
 .board-dialog { @apply fixed top-1/2 left-1/2 z-[70] max-h-[92dvh] w-[calc(100%_-_2rem)] max-w-2xl -translate-x-1/2 -translate-y-1/2 overflow-y-auto overscroll-contain rounded-xl border shadow-2xl outline-none; background: var(--surface-elevated); color: var(--text-primary); border-color: var(--border-soft); }
 .board-dialog-small { @apply max-w-md; }
@@ -1147,28 +1155,24 @@ select:disabled { cursor: not-allowed; opacity: 0.65; }
   .boards-hub { @apply overflow-y-auto px-2; }
   .boards-hub > * { flex-shrink: 0; }
   .boards-header { @apply py-2; }
-  .boards-heading-copy p { @apply hidden; }
   .boards-header-actions { @apply w-full; }
   .boards-header-actions button { @apply flex-1; }
-  .boards-header > .boards-header-actions { @apply grid grid-cols-2; }
-  .board-mobile-options { display: inline-flex; }
-  .boards-hub:not(.board-options-open) .board-management-action,
-  .boards-hub:not(.board-options-open) .boards-toolbar,
-  .boards-hub:not(.board-options-open) .workflow-help { display: none; }
-  .board-management-action { order: 1; }
+  .boards-header > .boards-header-actions { @apply grid grid-cols-3; }
+  .boards-header > .boards-header-actions button { padding-inline: .5rem; font-size: .75rem; }
+  .boards-header > .boards-header-actions svg { display: none; }
   .boards-header-actions button { white-space: normal; }
   .board-workflow { padding: .75rem; gap: .5rem; }
   .board-workflow .boards-header-actions { gap: .5rem; }
   .boards-toolbar { @apply items-stretch; }
   .boards-toolbar label { @apply min-w-0 flex-1; }
-  .boards-toolbar .board-access-setting { width: 100%; max-width: none; flex: none; }
+  .board-options-panel .board-access-setting { width: 100%; max-width: none; flex: none; }
   .boards-toolbar select { @apply w-full; }
   .boards-hub select, .board-detail-panel select, .board-dialog select { font-size: 16px; }
   .boards-hub :deep(button), .boards-hub select, .board-detail-panel :deep(button), .board-detail-panel select, .board-dialog :deep(button), .board-dialog select { min-height: 44px; }
   .boards-hub :deep(button), .board-detail-panel :deep(button), .board-dialog :deep(button) { min-width: 44px; }
   .board-card-main { @apply pb-3; }
   .board-card-move, .lane-add { display: none; }
-  .boards-toolbar .boards-auto-toggle { @apply ml-0 min-h-11 w-full flex-none pb-0; }
+  .board-options-panel .boards-auto-toggle { @apply min-h-11 w-full flex-none; }
   .mobile-feature-filter { display: flex; align-items: center; justify-content: space-between; gap: .5rem; margin-bottom: .5rem; font-size: .75rem; color: var(--text-secondary); }
   .mobile-feature-filter select { border: 1px solid var(--border-strong); border-radius: .375rem; background: var(--surface-elevated); color: var(--text-primary); padding: .5rem; min-width: 0; }
   .board-lane { width: 100%; flex: none; }
@@ -1176,7 +1180,7 @@ select:disabled { cursor: not-allowed; opacity: 0.65; }
   .board-lane-list { overflow: visible; }
   .board-view-tabs { @apply mb-3; }
   .board-view-tabs button { @apply flex-1 justify-center; }
-  .board-view-panel { flex: none; }
+  .board-view-panel { flex: none; min-height: 0; }
   .board-detail-panel { @apply max-w-none; }
   .board-detail-header { padding: .75rem 1rem; }
   .board-detail-header :deep(h2) { font-size: 1.125rem; }

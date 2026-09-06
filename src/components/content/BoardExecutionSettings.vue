@@ -4,14 +4,14 @@
     <div class="execution-fields">
       <label><span>{{ label }} model</span>
         <select :value="model" :aria-label="`${label} model`" @change="$emit('update:model', ($event.target as HTMLSelectElement).value)">
-          <option value="">{{ inheritLabel }}</option>
+          <option value="">{{ modelDefaultLabel }}</option>
           <option v-if="model && !catalog?.models.some(entry => entry.id === model)" :value="model" disabled>{{ model }} · unavailable</option>
           <option v-for="entry in catalog?.models ?? []" :key="entry.id" :value="entry.id">{{ entry.label }}</option>
         </select>
       </label>
       <label><span>{{ label }} reasoning</span>
         <select :value="reasoningEffort" :aria-label="`${label} reasoning`" @change="$emit('update:reasoningEffort', ($event.target as HTMLSelectElement).value as ReasoningEffort | '')">
-          <option v-if="allowInheritedEffort" value="">{{ inheritLabel }}</option>
+          <option v-if="allowInheritedEffort" value="">{{ effortDefaultLabel }}</option>
           <option v-if="reasoningEffort && !availableEfforts.includes(reasoningEffort)" :value="reasoningEffort" disabled>{{ reasoningEffort }} · unsupported</option>
           <option v-for="effort in availableEfforts" :key="effort" :value="effort">{{ effortLabel(effort) }}</option>
         </select>
@@ -19,14 +19,14 @@
     </div>
     <p v-if="error" class="execution-error" role="alert">{{ error }} <button type="button" @click="load">Retry</button></p>
     <p v-else-if="!catalog" role="status">Loading available models…</p>
-    <p v-else>Using {{ effectiveModel || 'the app default' }} · {{ effortLabel(effectiveEffort) }} reasoning.</p>
-    <p v-if="unsupported" class="execution-error">This model does not support {{ effectiveEffort }} reasoning. Choose another level.</p>
-    <p v-if="showSpecialistNote">These settings apply to the Lead. Specialists use their own agent settings.</p>
+    <p v-else-if="showEffectiveSettings">Using {{ effectiveModel || 'the app default' }} · {{ effortLabel(effectiveEffort) }} reasoning.</p>
+    <p v-if="unsupported && (showEffectiveSettings || reasoningEffort)" class="execution-error">This model does not support {{ effectiveEffort }} reasoning. Choose another level.</p>
+    <p v-if="showSpecialistNote">These settings apply to the Lead. Specialists inherit them unless their agent profile overrides them.</p>
   </fieldset>
 </template>
 
 <script setup lang="ts">
-import { computed, onMounted, ref } from 'vue'
+import { computed, onBeforeUnmount, ref, watch } from 'vue'
 import { getProjectBoardModels } from '../../api/projectBoards'
 import type { ProjectBoardModelCatalog } from '../../types/projectBoardModels'
 import type { ReasoningEffort } from '../../types/codex'
@@ -36,14 +36,18 @@ const props = withDefaults(defineProps<{
   reasoningEffort: ReasoningEffort | ''
   inheritedModel?: string
   inheritedEffort?: ReasoningEffort | ''
+  sourceThreadId?: string
   inheritLabel?: string
   label?: string
   showSpecialistNote?: boolean
+  showEffectiveSettings?: boolean
   allowInheritedEffort?: boolean
-}>(), { inheritedModel: '', inheritedEffort: '', inheritLabel: 'Use Lead settings', label: 'Lead', showSpecialistNote: true, allowInheritedEffort: true })
+}>(), { inheritedModel: '', inheritedEffort: '', inheritLabel: 'Use Lead settings', label: 'Lead', showSpecialistNote: true, showEffectiveSettings: true, allowInheritedEffort: true })
 defineEmits<{ 'update:model': [value: string]; 'update:reasoningEffort': [value: ReasoningEffort | ''] }>()
 const catalog = ref<ProjectBoardModelCatalog | null>(null)
 const error = ref('')
+const modelDefaultLabel = computed(() => props.sourceThreadId && !props.inheritedModel ? 'Use source chat settings' : props.inheritLabel)
+const effortDefaultLabel = computed(() => props.sourceThreadId && !props.inheritedEffort ? 'Use source chat settings' : props.inheritLabel)
 const effectiveModel = computed(() => props.model || props.inheritedModel || catalog.value?.defaultModel || '')
 const selectedModel = computed(() => catalog.value?.models.find((entry) => entry.id === effectiveModel.value))
 const effectiveEffort = computed(() => props.reasoningEffort || props.inheritedEffort || catalog.value?.defaultReasoningEffort || 'medium')
@@ -51,12 +55,19 @@ const availableEfforts = computed(() => selectedModel.value?.reasoningEfforts ??
 const unsupported = computed(() => availableEfforts.value.length > 0 && !availableEfforts.value.includes(effectiveEffort.value))
 const effortLabels: Record<string, string> = { xhigh: 'Extra high', low: 'Light' }
 const effortLabel = (value: string) => effortLabels[value] || (value[0]?.toUpperCase() ?? '') + value.slice(1)
+let loadVersion = 0
 async function load(): Promise<void> {
-  error.value = ''
-  try { catalog.value = await getProjectBoardModels() }
-  catch (caught) { error.value = caught instanceof Error ? caught.message : 'Could not load models.' }
+  const version = ++loadVersion
+  error.value = ''; catalog.value = null
+  try {
+    const loaded = await getProjectBoardModels(props.sourceThreadId)
+    if (version === loadVersion) catalog.value = loaded
+  } catch (caught) {
+    if (version === loadVersion) error.value = caught instanceof Error ? caught.message : 'Could not load models.'
+  }
 }
-onMounted(() => { void load() })
+watch(() => props.sourceThreadId, () => { void load() }, { immediate: true })
+onBeforeUnmount(() => { loadVersion++ })
 </script>
 
 <style scoped>

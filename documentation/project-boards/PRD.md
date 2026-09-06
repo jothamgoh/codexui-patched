@@ -79,8 +79,10 @@ current setting, then the app default when no source is linked. Maintained
 starter profiles leave both fields blank; blank specialists inherit the Lead.
 Available choices come from advertised runtime capabilities and unsupported
 settings fail visibly. Each run retains
-its resolved requested settings after profile edits. These are launch requests,
-not independently observed specialist telemetry.
+its resolved requested settings after profile edits. A metadata-only read after
+turn start separately records the native Lead's observed model/reasoning when
+available. The chat and feature show requested versus confirmed settings and
+current versus last run; this is not independently observed specialist telemetry.
 
 Board Leads and planners enable native clarification questions when the runtime
 advertises the capability and no managed policy fixes its value. Specialists

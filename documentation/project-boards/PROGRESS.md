@@ -12,15 +12,30 @@ user’s request; its saved rendering work has now been reviewed in the follow-u
 
 ## Current follow-up
 
-- Model and question follow-up implemented, awaiting the combined UI build and
-  release: omitted model/reasoning fields independently inherit source-chat
+- Model and question follow-up implemented and validated: omitted model/reasoning fields independently inherit source-chat
   metadata, explicit card/profile settings survive, and blank specialists inherit
   their Lead. Both planning paths accept explicit overrides. Native questions
   are enabled for supported, configurable board sessions with the existing
-  durable fallback retained. All 250 unit tests pass. The current requested Lead
+  durable fallback retained. Runs read back native model/reasoning after launch;
+  the Lead chat and feature details distinguish Requested from Confirmed by
+  Codex, and current from last-run settings. All 251 unit tests, production build,
+  secret scan, and the desktop/touch-mobile board and chat journeys pass.
+  The current requested Lead
   was explicitly stopped through the board lifecycle; resume that same feature
   after deployment with Full access and its source chat's Astra/xhigh settings.
   Do not create replacement cards or start unrelated boards.
+
+- Work overview now collects requests, current Leads, results and board progress
+  across projects. Activity separates Board work from Chats running and keeps
+  questions first. Existing-board planning names its destination; the larger-plan
+  handoff keeps the selected board and deliberate brief. Titles/names are optional.
+  The desktop header keeps the card controls; project/board navigation, permissions,
+  planning and agent management sit under Board options. A settled 1280×600 browser
+  check reaches the last card through normal wheel scrolling. Phone cards stack,
+  and recording fields show only a compact status with Stop/Cancel. Screenshots
+  were inspected in both themes and touch Chromium; physical iPhone Safari is
+  still unverified. Sidebar layout is unchanged. Publish the final UI commit,
+  verify CI, then perform the authorized one-shot restart and resume above.
 
 - Full access is now the saved board execution default for new and existing
   boards without an explicit setting. Board options can retain Project access;

@@ -5,6 +5,51 @@ description: "Use when implementing or changing user-visible behavior/UI in this
 
 # Codex App Parity Skill
 
+## Findings: Cross-project work visibility and run settings (2026-09-06)
+
+- Boards have no direct native equivalent. Use native attention-before-working
+  grouping and exact chat navigation for a small Work overview; keep live Board
+  work distinct from ordinary Chats running in Activity. Reuse snapshots and
+  request events without polling or inferring child activity from a Lead role.
+- Native metadata can confirm model/reasoning after turn/start. Preserve the
+  launch request separately, record the read-back only for the still-active run,
+  and show Requested when older runtimes omit it. Distinguish This run from Last
+  run so editing future settings never relabels earlier execution.
+- Compact board chrome around the current board title already shown by the app.
+  Keep rare controls under Board options and preserve a scrollable card area.
+  Resize fixtures must wait for DesktopLayout's animation-frame height update
+  before positioning the wheel pointer. Theme checks should inspect visible
+  surfaces after transitions, not demand a hardcoded color from closed controls.
+- A larger-plan handoff must retain the explicitly selected destination board
+  and deliberate brief. Once a new board is created, the planning dialog can
+  name it while retaining a failed draft for retry. Test dialog identity across
+  that title change instead of locating it forever by the original title.
+
+## Findings: Board model inheritance and native clarification (2026-09-06)
+
+- Native thread/read with includeTurns:false exposes configured model and
+  reasoningEffort without downloading history. Resolve each omitted board field
+  through explicit profile, source chat, then app default. Keep blank fields
+  blank in cards/profiles; store resolved launch requests on the run.
+- Native request_user_input in Default mode requires the advertised
+  features.default_mode_request_user_input setting. Reuse managed-policy checks
+  and pass the supported override on board thread start/resume. A loaded chat
+  can ignore configuration changes: isolated probes only enabled its native
+  question tool after idle unsubscribe/resume. A service restart also reloads
+  sessions. Never unload an active chat just to change this preference.
+- Questions remain separate from permissions. Prefer the native Lead question
+  UI, with durable board questions as fallback; specialists relay decisions to
+  their Lead. Preserve cancellation while awaiting configuration preparation.
+
+## Findings: Compact recording status in form fields (2026-09-06)
+
+- The native dictation surface uses icon controls with accessible stop labels.
+  Shared web fields need only a short Recording status next to Stop and Cancel;
+  extra instructions below every input add height on phones without another
+  action. Retain live status, transcription errors/retry, editable insertion,
+  and manual saving. The existing mobile dictation journey verifies 44px controls
+  and unchanged text after cancellation.
+
 ## Findings: Full-access board execution defaults (2026-09-06)
 
 - Native app-initial maps dangerFullAccess plus approvalPolicy never to the

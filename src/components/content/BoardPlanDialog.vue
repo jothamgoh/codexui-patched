@@ -2,8 +2,8 @@
   <DialogRoot :open="open" @update:open="$emit('update:open', $event)">
     <DialogPortal><DialogOverlay class="plan-overlay" />
       <DialogContent class="plan-dialog" aria-describedby="board-plan-description" @open-auto-focus="initializeDraft" @interact-outside="isDictating && $event.preventDefault()">
-        <header><div><DialogTitle>{{ sourceThreadId ? 'Turn this chat into a board' : 'Plan project features' }}</DialogTitle>
-          <p id="board-plan-description">Give your coordinator the goal or an existing plan. It will propose feature cards and dependencies for you to review.</p></div>
+        <header><div><DialogTitle>{{ boardId ? `Add features to ${boardName || 'this board'}` : sourceThreadId ? 'Turn this chat into a board' : 'Plan project features' }}</DialogTitle>
+          <p id="board-plan-description">{{ boardId ? 'Describe more work for this board. The coordinator adds draft cards and dependencies here; existing work stays.' : 'Give your coordinator the goal or an existing plan. It will create a new board of draft feature cards for you to review.' }}</p></div>
           <Button type="button" variant="ghost" size="icon-sm" aria-label="Close planning" :disabled="busy" @click="$emit('update:open', false)"><X /></Button>
         </header>
         <form @submit.prevent="submit">
@@ -13,11 +13,13 @@
             <label><span>Project folder</span><DictationField v-model="draft.folderPath" label="Project folder" v-bind="voiceField('folder')" required placeholder="Full path to the project folder" /></label>
             <label class="plan-checkbox"><input v-model="draft.createFolder" type="checkbox" /><span>Create this folder if it does not exist</span></label>
           </template>
-          <label v-if="!boardId"><span>Board name</span><DictationField v-model="draft.name" label="Board name" v-bind="voiceField('name')" required maxlength="120" placeholder="Project delivery" /></label>
+          <label v-if="!boardId"><span>Board name <small>optional</small></span><DictationField v-model="draft.name" label="Board name" v-bind="voiceField('name')" maxlength="120" :placeholder="suggestedName || 'From your goal or plan'" /></label>
           <label><span>Goal or plan</span><DictationField v-model="draft.plan" label="Goal or plan" v-bind="voiceField('plan')" multiline class="plan-text" required maxlength="20000" rows="9" placeholder="Describe the overall result, paste your plan, or name a plan file in this project. Include what is already done." /></label>
           <p v-if="sourceThreadId" class="plan-help">Includes a bounded excerpt of this chat and links back to it. Paste any important older decisions into the plan.</p>
-          <label><span>Project coordinator</span><select v-model="draft.coordinatorAgentId" aria-label="Project coordinator"><option v-for="agent in agents" :key="agent.id" :value="agent.id">{{ agent.name }}</option></select></label>
-          <BoardExecutionSettings v-model:model="draft.model" v-model:reasoning-effort="draft.reasoningEffort" :inherited-model="coordinator?.model" :inherited-effort="coordinator?.reasoningEffort" inherit-label="Use coordinator settings" label="Coordinator" :show-specialist-note="false" />
+          <details><summary>Coordinator settings</summary>
+            <label><span>Project coordinator</span><select v-model="draft.coordinatorAgentId" aria-label="Project coordinator"><option v-for="agent in agents" :key="agent.id" :value="agent.id">{{ agent.name }}</option></select></label>
+            <BoardExecutionSettings v-model:model="draft.model" v-model:reasoning-effort="draft.reasoningEffort" :source-thread-id="sourceThreadId || inheritedSourceThreadId" :inherited-model="coordinator?.model" :inherited-effort="coordinator?.reasoningEffort" inherit-label="Use coordinator settings" label="Coordinator" :show-specialist-note="false" />
+          </details>
           <p class="plan-help">Planning reads project context and saves cards. Implementation starts when you choose a feature or run the selected queue.</p>
           <footer><Button type="button" variant="ghost" :disabled="busy" @click="$emit('update:open', false)">Cancel</Button><Button type="submit" :disabled="busy || isDictating || !draft.plan.trim() || !draft.coordinatorAgentId"><LoaderCircle v-if="busy" class="animate-spin" />{{ busy ? 'Starting planning…' : 'Create feature plan' }}</Button></footer>
         </form>
@@ -33,12 +35,13 @@ import { LoaderCircle, X } from '@lucide/vue'
 import Button from '../ui/button/Button.vue'
 import DictationField from './DictationField.vue'
 import BoardExecutionSettings from './BoardExecutionSettings.vue'
+import { projectBoardTitleFromBrief } from '../../lib/projectBoardTitle'
 import type { ProjectBoardAgent } from '../../types/projectBoards'
 import type { ReasoningEffort } from '../../types/codex'
 import type { ProjectBoardPlanInput } from '../../api/projectBoards'
 
 export type BoardPlanDraft = ProjectBoardPlanInput & { boardId: string; projectPath: string; createFolder: boolean; name: string }
-const props = defineProps<{ open: boolean; boardId?: string; sourceThreadId?: string; initialPlan?: string; initialProjectPath?: string; initialCoordinatorId?: string; projects: { path: string; name: string }[]; agents: ProjectBoardAgent[]; onPlan: (draft: BoardPlanDraft) => Promise<void> }>()
+const props = defineProps<{ open: boolean; boardId?: string; boardName?: string; sourceThreadId?: string; inheritedSourceThreadId?: string; initialPlan?: string; initialProjectPath?: string; initialCoordinatorId?: string; projects: { path: string; name: string }[]; agents: ProjectBoardAgent[]; onPlan: (draft: BoardPlanDraft) => Promise<void> }>()
 const emit = defineEmits<{ 'update:open': [value: boolean] }>()
 const busy = ref(false)
 const busyVoiceFields = reactive(new Set<string>())
@@ -48,13 +51,15 @@ function voiceField(key: string) {
 }
 const localError = ref('')
 const initializedFor = ref('')
-const draft = reactive({ projectPath: '', folderPath: '', createFolder: false, name: 'Project delivery', plan: '', coordinatorAgentId: '', model: '', reasoningEffort: '' as ReasoningEffort | '' })
+const draft = reactive({ projectPath: '', folderPath: '', createFolder: false, name: '', plan: '', coordinatorAgentId: '', model: '', reasoningEffort: '' as ReasoningEffort | '' })
+const suggestedName = computed(() => projectBoardTitleFromBrief(draft.plan))
 const coordinator = computed(() => props.agents.find((agent) => agent.id === draft.coordinatorAgentId))
 function initializeDraft(): void {
   localError.value = ''
   const key = `${props.boardId ?? ''}:${props.sourceThreadId ?? ''}`
   if (initializedFor.value === key && draft.plan) return
   initializedFor.value = key
+  draft.name = ''
   draft.projectPath = props.initialProjectPath || props.projects[0]?.path || '__new__'
   if (draft.projectPath !== '__new__' && !props.projects.some((project) => project.path === draft.projectPath)) {
     draft.folderPath = draft.projectPath
@@ -68,7 +73,7 @@ async function submit(): Promise<void> {
   if (busy.value || isDictating.value) return
   busy.value = true; localError.value = ''
   try {
-    await props.onPlan({ boardId: props.boardId || '', sourceThreadId: props.sourceThreadId, name: draft.name, projectPath: draft.projectPath === '__new__' ? draft.folderPath.trim() : draft.projectPath, createFolder: draft.projectPath === '__new__' && draft.createFolder, plan: draft.plan, coordinatorAgentId: draft.coordinatorAgentId, model: draft.model, reasoningEffort: draft.reasoningEffort })
+    await props.onPlan({ boardId: props.boardId || '', sourceThreadId: props.sourceThreadId, name: draft.name.trim() || suggestedName.value || 'Project board', projectPath: draft.projectPath === '__new__' ? draft.folderPath.trim() : draft.projectPath, createFolder: draft.projectPath === '__new__' && draft.createFolder, plan: draft.plan, coordinatorAgentId: draft.coordinatorAgentId, model: draft.model, reasoningEffort: draft.reasoningEffort })
     draft.plan = ''; emit('update:open', false)
   } catch (caught) { localError.value = caught instanceof Error ? caught.message : 'Could not start planning.' }
   finally { busy.value = false }
@@ -84,6 +89,8 @@ header p, .plan-help { @apply mt-2 mb-0 text-xs leading-5; color: var(--text-sec
 form { @apply flex flex-col gap-4 p-5; }
 label { @apply flex min-w-0 flex-col gap-1.5; }
 label > span { @apply text-xs font-medium; color: var(--text-secondary); }
+summary { @apply cursor-pointer py-2 text-xs font-medium; color: var(--text-secondary); }
+details > label { @apply my-3; }
 select { @apply h-10 rounded-md border px-2 text-sm; background: var(--surface-elevated); border-color: var(--border-strong); }
 .plan-checkbox { @apply flex-row items-center gap-2; }
 :deep(.plan-text) { min-height: 12rem; field-sizing: fixed; }
@@ -93,7 +100,7 @@ svg { @apply h-4 w-4; }
 @media (max-width: 640px) {
   .plan-dialog { @apply top-auto bottom-0 left-0 max-h-[94dvh] w-full translate-x-0 translate-y-0 rounded-b-none; }
   form { padding-bottom: max(1.25rem, env(safe-area-inset-bottom)); }
-  header button, footer button, select { min-height: 44px; }
+  header button, footer button, select, summary { min-height: 44px; }
   header button { min-width: 44px; }
   select { font-size: 16px; }
 }

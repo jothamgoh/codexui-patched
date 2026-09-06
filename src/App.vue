@@ -430,7 +430,8 @@
     :board-name="boardPlanTarget?.name" :inherited-source-thread-id="boardPlanTarget?.sourceThreadId"
     :initial-plan="boardPlanInitialText" :initial-project-path="boardPlanProjectPath"
     :initial-coordinator-id="boardPlanTarget?.coordinatorAgentId"
-    :projects="projectBoardProjectOptions" :agents="boardPlanAgents"
+    :initial-team="boardPlanTarget"
+    :projects="projectBoardProjectOptions" :agents="projectBoardSnapshot.agents"
     :on-plan="onPlanProjectBoard"
   />
   <div class="build-badge" aria-label="Worktree name">
@@ -454,6 +455,7 @@ import { collectThreadHelpers } from './utils/threadHelpers'
 import { useThreadHelperActivity } from './composables/useThreadHelperActivity'
 import QueuedMessages from './components/content/QueuedMessages.vue'
 import NewThreadFolderPicker from './components/content/NewThreadFolderPicker.vue'
+import { createBoardTeamDraft } from './utils/boardTeamDraft'
 import BoardPlanDialog, { type BoardPlanDraft } from './components/content/BoardPlanDialog.vue'
 import BoardRunSettings from './components/content/BoardRunSettings.vue'
 import Button from './components/ui/button/Button.vue'
@@ -745,7 +747,6 @@ const boardPlanSourceThreadId = ref('')
 const boardPlanInitialText = ref('')
 const boardPlanProjectPath = ref('')
 const boardPlanTarget = computed(() => projectBoardSnapshot.value.boards.find((board) => board.id === boardPlanTargetId.value))
-const boardPlanAgents = computed(() => projectBoardSnapshot.value.agents.filter((agent) => !boardPlanTarget.value || boardPlanTarget.value.agentIds.includes(agent.id)))
 const boardManagedThreadIds = computed(() => Array.from(new Set([
   ...projectBoardSnapshot.value.cards.map((card) => card.threadId),
   ...projectBoardSnapshot.value.boards.map((board) => board.planningThreadId),
@@ -1266,21 +1267,32 @@ function openBoardPlanner(boardId: string, projectPath = ''): void {
 }
 
 async function onPlanProjectBoard(draft: BoardPlanDraft): Promise<void> {
+  let coordinatorAgentId = draft.team.coordinatorAgentId
   let boardId = draft.boardId
   if (!boardId) {
     const projectPath = await openProjectRoot(draft.projectPath, { createIfMissing: draft.createFolder })
     const previousIds = new Set(projectBoardSnapshot.value.boards.map((board) => board.id))
     const projectName = projectBoardProjectOptions.value.find((project) => project.path === projectPath)?.name || projectPath.split('/').filter(Boolean).at(-1) || 'Project'
-    const snapshot = await createProjectBoard({ projectPath, projectName, name: draft.name, isDefault: !projectBoardSnapshot.value.boards.some((board) => board.projectPath === projectPath) })
+    const snapshot = await createProjectBoard({ projectPath, projectName, name: draft.name, isDefault: !projectBoardSnapshot.value.boards.some((board) => board.projectPath === projectPath), ...draft.team })
     boardId = snapshot.boards.find((board) => !previousIds.has(board.id))?.id || ''
     if (!boardId) throw new Error('Could not find the new board.')
     // A retry after planning fails must reuse the board already created.
     boardPlanTargetId.value = boardId
-    const board = snapshot.boards.find((entry) => entry.id === boardId)
-    if (board && draft.coordinatorAgentId && !board.agentIds.includes(draft.coordinatorAgentId)) await updateProjectBoard(boardId, { agentIds: [...board.agentIds, draft.coordinatorAgentId] })
+  } else {
+    const board = projectBoardSnapshot.value.boards.find((entry) => entry.id === boardId)
+    if (!board) throw new Error('This board is no longer available.')
+    const currentTeam = createBoardTeamDraft(projectBoardSnapshot.value.agents, board)
+    const savedTeam = JSON.stringify(currentTeam)
+    const plannedTeam = JSON.stringify(draft.team)
+    if (plannedTeam !== draft.teamBaseFingerprint && plannedTeam !== savedTeam) {
+      if (savedTeam !== draft.teamBaseFingerprint) throw new Error('Team settings changed while this plan was open. Close and reopen planning to load them; your goal text is kept.')
+      await updateProjectBoard(boardId, draft.team)
+    } else if (plannedTeam === draft.teamBaseFingerprint) {
+      coordinatorAgentId = currentTeam.coordinatorAgentId
+    }
   }
   requestBrowserTurnNotificationsPermission()
-  await planProjectBoard(boardId, draft)
+  await planProjectBoard(boardId, { plan: draft.plan, sourceThreadId: draft.sourceThreadId, coordinatorAgentId, model: draft.model, reasoningEffort: draft.reasoningEffort })
   openProjectBoard(boardId)
 }
 

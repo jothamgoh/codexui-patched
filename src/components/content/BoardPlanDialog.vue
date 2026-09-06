@@ -16,12 +16,9 @@
           <label v-if="!boardId"><span>Board name <small>optional</small></span><DictationField v-model="draft.name" label="Board name" v-bind="voiceField('name')" maxlength="120" :placeholder="suggestedName || 'From your goal or plan'" /></label>
           <label><span>Goal or plan</span><DictationField v-model="draft.plan" label="Goal or plan" v-bind="voiceField('plan')" multiline class="plan-text" required maxlength="20000" rows="9" placeholder="Describe the overall result, paste your plan, or name a plan file in this project. Include what is already done." /></label>
           <p v-if="sourceThreadId" class="plan-help">Includes a bounded excerpt of this chat and links back to it. Paste any important older decisions into the plan.</p>
-          <details><summary>Coordinator settings</summary>
-            <label><span>Project coordinator</span><select v-model="draft.coordinatorAgentId" aria-label="Project coordinator"><option v-for="agent in agents" :key="agent.id" :value="agent.id">{{ agent.name }}</option></select></label>
-            <BoardExecutionSettings v-model:model="draft.model" v-model:reasoning-effort="draft.reasoningEffort" :source-thread-id="sourceThreadId || inheritedSourceThreadId" :inherited-model="coordinator?.model" :inherited-effort="coordinator?.reasoningEffort" inherit-label="Use coordinator settings" label="Coordinator" :show-specialist-note="false" />
-          </details>
+          <BoardTeamSettings v-model="team" :agents="agents" :source-thread-id="sourceThreadId || inheritedSourceThreadId" :disabled="busy" @busy-change="setTeamDictating" />
           <p class="plan-help">Planning reads project context and saves cards. Implementation starts when you choose a feature or run the selected queue.</p>
-          <footer><Button type="button" variant="ghost" :disabled="busy" @click="$emit('update:open', false)">Cancel</Button><Button type="submit" :disabled="busy || isDictating || !draft.plan.trim() || !draft.coordinatorAgentId"><LoaderCircle v-if="busy" class="animate-spin" />{{ busy ? 'Starting planning…' : 'Create feature plan' }}</Button></footer>
+          <footer><Button type="button" variant="ghost" :disabled="busy" @click="$emit('update:open', false)">Cancel</Button><Button type="submit" :disabled="busy || isDictating || !draft.plan.trim() || !team.coordinatorAgentId"><LoaderCircle v-if="busy" class="animate-spin" />{{ busy ? 'Starting planning…' : 'Create feature plan' }}</Button></footer>
         </form>
       </DialogContent>
     </DialogPortal>
@@ -29,19 +26,20 @@
 </template>
 
 <script setup lang="ts">
-import { computed, reactive, ref } from 'vue'
+import { computed, reactive, ref, watch } from 'vue'
 import { DialogContent, DialogOverlay, DialogPortal, DialogRoot, DialogTitle } from 'reka-ui'
 import { LoaderCircle, X } from '@lucide/vue'
 import Button from '../ui/button/Button.vue'
 import DictationField from './DictationField.vue'
-import BoardExecutionSettings from './BoardExecutionSettings.vue'
+import BoardTeamSettings from './BoardTeamSettings.vue'
+import { createBoardTeamDraft } from '../../utils/boardTeamDraft'
+import type { ProjectBoardTeamSettings } from '../../utils/projectBoardTeam'
 import { projectBoardTitleFromBrief } from '../../lib/projectBoardTitle'
-import type { ProjectBoardAgent } from '../../types/projectBoards'
-import type { ReasoningEffort } from '../../types/codex'
+import type { ProjectBoard, ProjectBoardAgent } from '../../types/projectBoards'
 import type { ProjectBoardPlanInput } from '../../api/projectBoards'
 
-export type BoardPlanDraft = ProjectBoardPlanInput & { boardId: string; projectPath: string; createFolder: boolean; name: string }
-const props = defineProps<{ open: boolean; boardId?: string; boardName?: string; sourceThreadId?: string; inheritedSourceThreadId?: string; initialPlan?: string; initialProjectPath?: string; initialCoordinatorId?: string; projects: { path: string; name: string }[]; agents: ProjectBoardAgent[]; onPlan: (draft: BoardPlanDraft) => Promise<void> }>()
+export type BoardPlanDraft = ProjectBoardPlanInput & { boardId: string; projectPath: string; createFolder: boolean; name: string; team: ProjectBoardTeamSettings; teamBaseFingerprint: string }
+const props = defineProps<{ open: boolean; boardId?: string; boardName?: string; sourceThreadId?: string; inheritedSourceThreadId?: string; initialPlan?: string; initialProjectPath?: string; initialCoordinatorId?: string; initialTeam?: ProjectBoard; projects: { path: string; name: string }[]; agents: ProjectBoardAgent[]; onPlan: (draft: BoardPlanDraft) => Promise<void> }>()
 const emit = defineEmits<{ 'update:open': [value: boolean] }>()
 const busy = ref(false)
 const busyVoiceFields = reactive(new Set<string>())
@@ -51,12 +49,16 @@ function voiceField(key: string) {
 }
 const localError = ref('')
 const initializedFor = ref('')
-const draft = reactive({ projectPath: '', folderPath: '', createFolder: false, name: '', plan: '', coordinatorAgentId: '', model: '', reasoningEffort: '' as ReasoningEffort | '' })
+const draft = reactive({ projectPath: '', folderPath: '', createFolder: false, name: '', plan: '' })
+const team = ref(createBoardTeamDraft(props.agents, props.initialTeam))
+const teamBaseFingerprint = ref(JSON.stringify(team.value))
 const suggestedName = computed(() => projectBoardTitleFromBrief(draft.plan))
-const coordinator = computed(() => props.agents.find((agent) => agent.id === draft.coordinatorAgentId))
+function setTeamDictating(busy: boolean): void { if (busy) busyVoiceFields.add('team'); else busyVoiceFields.delete('team') }
 function initializeDraft(): void {
   localError.value = ''
   const key = `${props.boardId ?? ''}:${props.sourceThreadId ?? ''}:${props.initialProjectPath ?? ''}`
+  // A cancelled goal can be reused, but reopening must load this board's current Team.
+  if (props.boardId) resetTeam()
   if (initializedFor.value === key && draft.plan) return
   initializedFor.value = key
   draft.name = ''
@@ -66,14 +68,19 @@ function initializeDraft(): void {
     draft.projectPath = '__new__'
   }
   draft.plan = props.initialPlan ?? ''
-  draft.coordinatorAgentId = props.initialCoordinatorId || props.agents.find((agent) => agent.role === 'lead')?.id || props.agents[0]?.id || ''
-  draft.model = ''; draft.reasoningEffort = ''
+  resetTeam()
 }
+function resetTeam(): void {
+  team.value = createBoardTeamDraft(props.agents, props.initialTeam)
+  if (props.initialCoordinatorId && team.value.agentIds.includes(props.initialCoordinatorId)) team.value.coordinatorAgentId = props.initialCoordinatorId
+  teamBaseFingerprint.value = JSON.stringify(team.value)
+}
+watch(() => props.agents.length, () => { if (!team.value.agentIds.length) resetTeam() })
 async function submit(): Promise<void> {
   if (busy.value || isDictating.value) return
   busy.value = true; localError.value = ''
   try {
-    await props.onPlan({ boardId: props.boardId || '', sourceThreadId: props.sourceThreadId, name: draft.name.trim() || suggestedName.value || 'Project board', projectPath: draft.projectPath === '__new__' ? draft.folderPath.trim() : draft.projectPath, createFolder: draft.projectPath === '__new__' && draft.createFolder, plan: draft.plan, coordinatorAgentId: draft.coordinatorAgentId, model: draft.model, reasoningEffort: draft.reasoningEffort })
+    await props.onPlan({ boardId: props.boardId || '', sourceThreadId: props.sourceThreadId, name: draft.name.trim() || suggestedName.value || 'Project board', projectPath: draft.projectPath === '__new__' ? draft.folderPath.trim() : draft.projectPath, createFolder: draft.projectPath === '__new__' && draft.createFolder, plan: draft.plan, coordinatorAgentId: team.value.coordinatorAgentId, team: team.value, teamBaseFingerprint: teamBaseFingerprint.value })
     draft.plan = ''; emit('update:open', false)
   } catch (caught) { localError.value = caught instanceof Error ? caught.message : 'Could not start planning.' }
   finally { busy.value = false }

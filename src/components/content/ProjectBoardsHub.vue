@@ -10,6 +10,7 @@
         </Button>
         <Button v-if="activeQueue?.status === 'running'" type="button" variant="outline" :disabled="isDictating || isMutating" @click="pauseQueue">Pause delivery</Button>
         <Button v-else-if="activeBoard" type="button" variant="outline" :disabled="queueCandidates.length === 0 || Boolean(activeBoardRun) || boardPlanningActive || isMutating" @click="openQueue">{{ activeQueue ? 'Resume selected features' : 'Run selected features' }}</Button>
+        <Button v-if="activeBoard" type="button" variant="outline" @click="openTeamSettings"><Users aria-hidden="true" /> Team &amp; settings</Button>
         <Button type="button" variant="outline" class="board-options-toggle" :aria-expanded="boardOptionsOpen" aria-controls="board-options" @click="boardOptionsOpen = !boardOptionsOpen">Board options <ChevronDown aria-hidden="true" /></Button>
       </div>
     </header>
@@ -48,7 +49,7 @@
       </label>
       <div class="boards-header-actions">
         <Button v-if="activeBoard" type="button" variant="outline" :disabled="Boolean(activeBoardRun) || isMutating" @click="$emit('plan-board', activeBoard.id)"><Sparkles aria-hidden="true" />{{ featureCards.length ? 'Add from a plan' : 'Plan features' }}</Button>
-        <Button type="button" variant="outline" @click="agentDialogOpen = true"><Users aria-hidden="true" /> Agents</Button>
+        <Button type="button" variant="outline" @click="agentDialogOpen = true"><Users aria-hidden="true" /> Shared agent library</Button>
         <Button type="button" variant="outline" :disabled="!selectedProjectPath" @click="openBoardEditor"><Plus aria-hidden="true" /> New board</Button>
         <Button v-if="activeBoard?.sourceThreadId" type="button" variant="ghost" @click="$emit('select-thread', activeBoard.sourceThreadId)">Original chat</Button>
         <Button v-if="activeBoard?.planningThreadId" type="button" variant="ghost" @click="$emit('select-thread', activeBoard.planningThreadId)">Planning chat</Button>
@@ -302,7 +303,7 @@
             <details class="feature-options">
               <summary>Feature settings & actions</summary>
               <p class="detail-muted">Next start: {{ boardExecutionAccess === 'full-access' ? 'Full access · no approval prompts' : 'Project access' }}. Change this in Board options.</p>
-              <p class="detail-muted">Lead settings: {{ selectedCard.model || agentFor(selectedCard.assignedAgentId)?.model || (selectedCard.sourceThreadId || activeBoard?.sourceThreadId ? 'Source chat model' : 'App default model') }} · {{ selectedCard.reasoningEffort || agentFor(selectedCard.assignedAgentId)?.reasoningEffort || (selectedCard.sourceThreadId || activeBoard?.sourceThreadId ? 'Source chat' : 'Default') }} reasoning.</p>
+              <p class="detail-muted">Lead settings: {{ selectedCard.model || effectiveAgentFor(selectedCard.assignedAgentId)?.model || activeBoard?.model || (selectedCard.sourceThreadId || activeBoard?.sourceThreadId ? 'Source chat model' : 'App default model') }} · {{ selectedCard.reasoningEffort || effectiveAgentFor(selectedCard.assignedAgentId)?.reasoningEffort || activeBoard?.reasoningEffort || (selectedCard.sourceThreadId || activeBoard?.sourceThreadId ? 'Source chat' : 'Default') }} reasoning.</p>
               <div class="board-detail-actions">
                 <Button type="button" variant="outline" :disabled="selectedRunIsActive" @click="openEditSelectedCard"><Pencil aria-hidden="true" /> Edit</Button>
                 <Button v-if="selectedCard.sourceThreadId" type="button" variant="ghost" @click="$emit('select-thread', selectedCard.sourceThreadId)">Original chat</Button>
@@ -328,7 +329,7 @@
           <header><div><DialogTitle>{{ editingCardId ? 'Edit feature' : 'New feature' }}</DialogTitle><p>Give the Lead a clear brief. It will make the task plan.</p></div><Button type="button" variant="ghost" size="icon-sm" aria-label="Close" @click="featureDialogOpen = false"><X /></Button></header>
           <form class="board-form" data-testid="new-feature-form" @submit.prevent="createFeature">
             <p v-if="error" class="boards-alert" role="alert">{{ error }}</p>
-            <BoardExecutionSettings v-if="featureModelSettingsFirst" v-model:model="featureDraft.model" v-model:reasoning-effort="featureDraft.reasoningEffort" :source-thread-id="snapshot.cards.find(card => card.id === editingCardId)?.sourceThreadId || activeBoard?.sourceThreadId" :inherited-model="agentFor(featureDraft.assignedAgentId)?.model" :inherited-effort="agentFor(featureDraft.assignedAgentId)?.reasoningEffort" />
+            <BoardExecutionSettings v-if="featureModelSettingsFirst" v-model:model="featureDraft.model" v-model:reasoning-effort="featureDraft.reasoningEffort" :source-thread-id="snapshot.cards.find(card => card.id === editingCardId)?.sourceThreadId || activeBoard?.sourceThreadId" :inherited-model="effectiveAgentFor(featureDraft.assignedAgentId)?.model" :inherited-effort="effectiveAgentFor(featureDraft.assignedAgentId)?.reasoningEffort" />
             <label><span>Brief</span><DictationField v-model="featureDraft.description" label="Brief" v-bind="voiceField('feature-brief')" multiline rows="4" maxlength="20000" placeholder="What should be built, and why?" /></label>
             <label><span>{{ editingCardId ? 'Title' : 'Title (optional)' }}</span><DictationField v-model="featureDraft.title" label="Title" v-bind="voiceField('feature-title')" :required="!!editingCardId" maxlength="240" :placeholder="suggestedFeatureTitle || 'From your brief'" /></label>
             <p v-if="!editingCardId && !featureDraft.title.trim()" class="detail-muted break-words" data-testid="feature-title-preview">{{ suggestedFeatureTitle ? `Title from your brief: ${suggestedFeatureTitle}` : 'Leave the title blank to use a short title from your brief.' }}</p>
@@ -338,7 +339,7 @@
               <label><span>Verification</span><select v-model="featureDraft.verificationPolicy"><option value="none">None</option><option value="self">Self-check</option><option value="independent">Independent verification</option><option value="batch">Review later</option></select></label>
               <label><span>Lead for this feature</span><select v-model="featureDraft.assignedAgentId" aria-label="Lead for this feature"><option v-if="draftLeadUnavailable" :value="featureDraft.assignedAgentId" disabled>{{ agentFor(featureDraft.assignedAgentId)?.name ?? 'Assigned agent' }} · not on this board</option><option v-for="agent in boardAgents" :key="agent.id" :value="agent.id">{{ agent.name }}</option></select></label>
             </div>
-            <BoardExecutionSettings v-if="!featureModelSettingsFirst" v-model:model="featureDraft.model" v-model:reasoning-effort="featureDraft.reasoningEffort" :source-thread-id="snapshot.cards.find(card => card.id === editingCardId)?.sourceThreadId || activeBoard?.sourceThreadId" :inherited-model="agentFor(featureDraft.assignedAgentId)?.model" :inherited-effort="agentFor(featureDraft.assignedAgentId)?.reasoningEffort" />
+            <BoardExecutionSettings v-if="!featureModelSettingsFirst" v-model:model="featureDraft.model" v-model:reasoning-effort="featureDraft.reasoningEffort" :source-thread-id="snapshot.cards.find(card => card.id === editingCardId)?.sourceThreadId || activeBoard?.sourceThreadId" :inherited-model="effectiveAgentFor(featureDraft.assignedAgentId)?.model" :inherited-effort="effectiveAgentFor(featureDraft.assignedAgentId)?.reasoningEffort" />
             <fieldset v-if="dependencyCandidates.length" class="dependency-picker"><legend>Depends on</legend><p class="detail-muted">Shared groundwork belongs in one feature. Select anything this feature needs first.</p><label v-for="feature in dependencyCandidates" :key="feature.id" class="checkbox-row"><input v-model="featureDraft.dependencyIds" type="checkbox" :value="feature.id" /><span>{{ feature.title }} · {{ statusLabel(feature.status) }}</span></label></fieldset>
             <p v-if="draftLeadUnavailable" class="boards-alert">Choose another Lead or enable the assigned agent in the Agent library.</p>
             <p class="verification-help">{{ verificationHelp[featureDraft.verificationPolicy] }}</p>
@@ -351,13 +352,14 @@
     <DialogRoot v-model:open="boardDialogOpen">
       <DialogPortal>
         <DialogOverlay class="board-dialog-backdrop" />
-        <DialogContent @interact-outside="isDictating && $event.preventDefault()" aria-modal="true" class="board-dialog board-dialog-small" :aria-describedby="undefined" @open-auto-focus="rememberFocus('board')" @close-auto-focus="restoreFocus('board', $event)">
+        <DialogContent @interact-outside="isDictating && $event.preventDefault()" aria-modal="true" class="board-dialog" :aria-describedby="undefined" @open-auto-focus="rememberFocus('board')" @close-auto-focus="restoreFocus('board', $event)">
           <header><div><DialogTitle>New board</DialogTitle><p>Use another board for a release, experiment, or separate workstream.</p></div><Button type="button" variant="ghost" size="icon-sm" aria-label="Close" @click="boardDialogOpen = false"><X /></Button></header>
           <form class="board-form" @submit.prevent="createBoard">
             <p v-if="error" class="boards-alert" role="alert">{{ error }}</p>
             <label><span>Name</span><DictationField v-model="boardName" label="Name" v-bind="voiceField('board-name')" required placeholder="Project board" /></label>
             <label class="checkbox-row"><input v-model="boardIsDefault" type="checkbox" /><span>Make this the default board for the project</span></label>
-            <footer><Button type="button" variant="ghost" @click="boardDialogOpen = false">Cancel</Button><Button type="submit" :disabled="isDictating || isMutating">Create board</Button></footer>
+            <BoardTeamSettings v-model="newBoardTeam" :agents="snapshot.agents" :disabled="isMutating" @busy-change="setTeamDictating" />
+            <footer><Button type="button" variant="ghost" @click="boardDialogOpen = false">Cancel</Button><Button type="submit" :disabled="isDictating || isMutating || !newBoardTeam.coordinatorAgentId">Create board</Button></footer>
           </form>
         </DialogContent>
       </DialogPortal>
@@ -379,11 +381,27 @@
       </DialogPortal>
     </DialogRoot>
 
+    <DialogRoot v-model:open="teamDialogOpen">
+      <DialogPortal><DialogOverlay class="board-dialog-backdrop" />
+        <DialogContent class="board-dialog" :aria-describedby="undefined" @interact-outside="isDictating && $event.preventDefault()" @open-auto-focus="rememberFocus('team')" @close-auto-focus="restoreFocus('team', $event)">
+          <header><div><DialogTitle>Team &amp; settings</DialogTitle><p>{{ activeBoard?.name }} · Changes apply only to this board.</p></div><Button type="button" variant="ghost" size="icon-sm" aria-label="Close team settings" @click="teamDialogOpen = false"><X /></Button></header>
+          <form class="board-form" @submit.prevent="saveTeamSettings">
+            <p v-if="error" class="boards-alert" role="alert">{{ error }}</p>
+            <p v-if="teamSettingsLocked" class="boards-alert" role="status">You can view the prompts now. Stop active runs and pause delivery before changing the team.</p>
+            <BoardTeamSettings v-model="teamDraft" :agents="snapshot.agents" :source-thread-id="activeBoard?.sourceThreadId" :disabled="teamSettingsLocked || isMutating" @busy-change="setTeamDictating" />
+            <p class="detail-muted">Applies on the next start or Continue. Feature overrides stay in place; existing features keep their assigned Lead.</p>
+            <Button type="button" variant="ghost" :disabled="isDictating || teamDraftIsDirty" @click="teamDialogOpen = false; agentDialogOpen = true">Manage shared templates</Button>
+            <footer><Button type="button" variant="ghost" :disabled="isDictating" @click="teamDialogOpen = false">Cancel</Button><Button type="submit" :disabled="isDictating || isMutating || teamSettingsLocked || !teamDraftIsDirty || !teamDraft.coordinatorAgentId">Save team settings</Button></footer>
+          </form>
+        </DialogContent>
+      </DialogPortal>
+    </DialogRoot>
+
     <DialogRoot v-model:open="agentDialogOpen">
       <DialogPortal>
         <DialogOverlay class="board-dialog-backdrop" />
         <DialogContent @interact-outside="isDictating && $event.preventDefault()" aria-modal="true" class="board-dialog agent-dialog" :aria-describedby="undefined" @open-auto-focus="rememberFocus('agents')" @close-auto-focus="restoreFocus('agents', $event)">
-          <header><div><DialogTitle>Agent library</DialogTitle><p>Reusable agent profiles. Any agent can lead a feature or work on its tasks.</p></div><Button type="button" variant="ghost" size="icon-sm" aria-label="Close" @click="agentDialogOpen = false"><X /></Button></header>
+          <header><div><DialogTitle>Agent library</DialogTitle><p>Shared templates. Edits here affect every board using this template; use Team &amp; settings for changes to just this board.</p></div><Button type="button" variant="ghost" size="icon-sm" aria-label="Close" @click="agentDialogOpen = false"><X /></Button></header>
           <p v-if="error" class="boards-alert" role="alert">{{ error }}</p>
           <p class="agent-access-note">Work permissions come from the board and are shared by the Lead and its subagents. In Full access, role instructions guide what an agent does; they do not restrict its file or network access.</p>
           <div class="agent-dialog-body">
@@ -477,11 +495,15 @@ import type { ProjectBoardUpdateInput, ProjectBoardCardUpdateInput, ProjectBoard
 import Button from '../ui/button/Button.vue'
 import DictationField from './DictationField.vue'
 import BoardExecutionSettings from './BoardExecutionSettings.vue'
+import BoardTeamSettings from './BoardTeamSettings.vue'
+import { createBoardTeamDraft } from '../../utils/boardTeamDraft'
+import { resolveProjectBoardAgent } from '../../utils/projectBoardTeam'
 import BoardRunSettings from './BoardRunSettings.vue'
 import BoardDailyViews from './BoardDailyViews.vue'
 import type { ReasoningEffort, UiServerRequest } from '../../types/codex'
 import type {
   ProjectBoard,
+  ProjectBoardCreateInput,
   ProjectBoardAgent,
   ProjectBoardAgentCreateInput,
   ProjectBoardCard,
@@ -498,7 +520,7 @@ type ProjectOption = { path: string; name: string }
 type BoardActions = {
   clearError: () => void
   ensureBoard: (input: { projectPath: string; projectName: string }) => Promise<unknown>
-  createBoard: (input: { projectPath: string; projectName: string; name: string; isDefault: boolean }) => Promise<unknown>
+  createBoard: (input: ProjectBoardCreateInput) => Promise<unknown>
   updateBoard: (boardId: string, changes: ProjectBoardUpdateInput) => Promise<unknown>
   deleteBoard: (boardId: string) => Promise<unknown>
   createAgent: (input: ProjectBoardAgentCreateInput) => Promise<unknown>
@@ -558,6 +580,11 @@ const draggedCardId = ref('')
 const featureDialogOpen = ref(false)
 const editingCardId = ref('')
 const boardDialogOpen = ref(false)
+const teamDialogOpen = ref(false)
+const newBoardTeam = ref(createBoardTeamDraft(props.snapshot.agents))
+const teamDraft = ref(createBoardTeamDraft(props.snapshot.agents))
+const initialTeamDraft = ref('')
+const teamDraftIsDirty = computed(() => JSON.stringify(teamDraft.value) !== initialTeamDraft.value)
 const deletingBoardId = ref('')
 const boardToDelete = computed(() => props.snapshot.boards.find(board => board.id === deletingBoardId.value))
 const deletingFeatureCount = computed(() => props.snapshot.cards.filter(card => card.boardId === deletingBoardId.value && card.type === 'feature').length)
@@ -589,7 +616,7 @@ const isDictating = computed(() => busyVoiceFields.size > 0)
 function voiceField(key: string) {
   return { dictationDisabled: isDictating.value && !busyVoiceFields.has(key), onBusyChange: (busy: boolean) => { if (busy) busyVoiceFields.add(key); else busyVoiceFields.delete(key) } }
 }
-watch([featureDialogOpen, boardDialogOpen, agentDialogOpen, startDialogOpen, queueDialogOpen], (open, previous) => {
+watch([featureDialogOpen, boardDialogOpen, teamDialogOpen, agentDialogOpen, startDialogOpen, queueDialogOpen], (open, previous) => {
   if (open.some((value, index) => value && !previous[index])) props.actions.clearError()
 })
 const isDockedDetail = useMediaQuery('(min-width: 1280px) and (pointer: fine)')
@@ -657,6 +684,11 @@ const activeBoard = computed<ProjectBoard | null>(() => {
   if (props.initialBoardId) return projectBoards.value.find((board) => board.id === props.initialBoardId) ?? null
   return projectBoards.value.find((board) => board.isDefault) ?? projectBoards.value[0] ?? null
 })
+const teamSettingsLocked = computed(() => props.snapshot.runs.some((run) => run.boardId === activeBoard.value?.id && ['running', 'queued'].includes(run.status)) || props.snapshot.queues?.some((queue) => queue.boardId === activeBoard.value?.id && queue.status === 'running'))
+const effectiveAgentFor = (id: string) => {
+  const agent = props.snapshot.agents.find((agent) => agent.id === id)
+  return agent && activeBoard.value ? resolveProjectBoardAgent(activeBoard.value, agent) : agent
+}
 const boardAgents = computed(() => props.snapshot.agents.filter((agent) => activeBoard.value?.agentIds.includes(agent.id)))
 const boardExecutionAccess = computed(() => activeBoard.value?.executionAccess ?? 'full-access')
 const featureCards = computed(() => props.snapshot.cards.filter((card) => card.boardId === activeBoard.value?.id && !card.parentCardId))
@@ -748,14 +780,29 @@ function ensureSelectedProjectBoard(): void {
 function openBoardEditor(): void {
   boardName.value = projectBoards.value.length === 0 ? 'Project board' : `Board ${projectBoards.value.length + 1}`
   boardIsDefault.value = projectBoards.value.length === 0
+  newBoardTeam.value = createBoardTeamDraft(props.snapshot.agents)
   boardDialogOpen.value = true
 }
 
 function createBoard(): void {
   const project = projectOptions.value.find((entry) => entry.path === selectedProjectPath.value)
   if (!project || !boardName.value.trim()) return
-  void submitMutation(() => props.actions.createBoard({ projectPath: project.path, projectName: project.name, name: boardName.value.trim(), isDefault: boardIsDefault.value }), () => { boardDialogOpen.value = false })
+  void submitMutation(() => props.actions.createBoard({ projectPath: project.path, projectName: project.name, name: boardName.value.trim(), isDefault: boardIsDefault.value, ...newBoardTeam.value }), () => { boardDialogOpen.value = false })
 }
+
+function setTeamDictating(busy: boolean): void { if (busy) busyVoiceFields.add('team'); else busyVoiceFields.delete('team') }
+function openTeamSettings(): void {
+  if (!activeBoard.value) return
+  teamDraft.value = createBoardTeamDraft(props.snapshot.agents, activeBoard.value)
+  initialTeamDraft.value = JSON.stringify(teamDraft.value)
+  teamDialogOpen.value = true
+}
+function saveTeamSettings(): void {
+  const boardId = activeBoard.value?.id
+  if (!boardId || teamSettingsLocked.value || !teamDraftIsDirty.value) return
+  void submitMutation(() => props.actions.updateBoard(boardId, teamDraft.value), () => { teamDialogOpen.value = false })
+}
+watch(() => activeBoard.value?.id, () => { teamDialogOpen.value = false })
 
 const featureModelSettingsFirst = ref(false)
 function openFeatureModelSettings(): void {
@@ -775,7 +822,7 @@ function openFeatureEditor(): void {
   featureDraft.model = ''
   featureDraft.reasoningEffort = ''
   featureDraft.dependencyIds = []
-  featureDraft.assignedAgentId = boardAgents.value.find((agent) => agent.role === 'lead')?.id ?? boardAgents.value[0]?.id ?? ''
+  featureDraft.assignedAgentId = activeBoard.value?.coordinatorAgentId || boardAgents.value.find((agent) => agent.role === 'lead')?.id || boardAgents.value[0]?.id || ''
   featureDialogOpen.value = true
 }
 
@@ -1214,7 +1261,7 @@ select:disabled { cursor: not-allowed; opacity: 0.65; }
   .boards-header { @apply py-2; }
   .boards-header-actions { @apply w-full; }
   .boards-header-actions button { @apply min-w-0 flex-1; height: auto; min-height: 44px; padding-block: .5rem; white-space: normal; overflow-wrap: anywhere; line-height: 1.3; }
-  .boards-header > .boards-header-actions { @apply grid grid-cols-3; }
+  .boards-header > .boards-header-actions { @apply grid grid-cols-2; }
   .boards-header > .boards-header-actions button { padding-inline: .5rem; font-size: .75rem; }
   .boards-header > .boards-header-actions svg { display: none; }
   .board-options-panel > .boards-header-actions { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); align-items: stretch; }

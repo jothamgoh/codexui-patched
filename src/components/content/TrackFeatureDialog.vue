@@ -9,7 +9,7 @@
           <label><span>Title <small>optional</small></span><DictationField v-model="draft.title" label="Feature title" v-bind="voiceField('title')" maxlength="200" :placeholder="suggestedTitle || 'Generated from your brief'" /></label>
           <label><span>Board</span><select v-model="draft.boardId" aria-label="Track destination board" :disabled="Boolean(createdFeatureId)"><option v-for="board in boards" :key="board.id" :value="board.id">{{ board.name }}</option><option v-if="!boards.length" value="">Create a project board</option></select></label>
           <details><summary>Lead and model settings</summary>
-            <label><span>Lead</span><select v-model="draft.assignedAgentId" aria-label="Feature Lead"><option v-for="agent in eligibleAgents" :key="agent.id" :value="agent.id">{{ agent.name }}</option></select></label>
+            <label><span>Lead</span><select v-model="draft.assignedAgentId" aria-label="Feature Lead" @change="leadExplicit = true"><option v-for="agent in eligibleAgents" :key="agent.id" :value="agent.id">{{ agent.name }}</option></select></label>
             <BoardExecutionSettings v-model:model="draft.model" v-model:reasoning-effort="draft.reasoningEffort" :source-thread-id="sourceThreadId" :inherited-model="lead?.model" :inherited-effort="lead?.reasoningEffort" />
           </details>
           <p class="track-help">Starts with a read-only plan. Review it in the Lead chat, then choose Continue work when ready.</p>
@@ -29,12 +29,14 @@ import Button from '../ui/button/Button.vue'
 import DictationField from './DictationField.vue'
 import BoardExecutionSettings from './BoardExecutionSettings.vue'
 import { projectBoardTitleFromBrief } from '../../lib/projectBoardTitle'
+import { resolveProjectBoardAgent } from '../../utils/projectBoardTeam'
 import type { ProjectBoard, ProjectBoardAgent, ProjectBoardCardCreateInput } from '../../types/projectBoards'
 import type { ReasoningEffort } from '../../types/codex'
 
 const props = defineProps<{ open: boolean; sourceThreadId: string; initialBrief: string; boards: ProjectBoard[]; agents: ProjectBoardAgent[]; createdFeatureId: string; onTrack: (draft: ProjectBoardCardCreateInput) => Promise<void> }>()
 const emit = defineEmits<{ 'update:open': [value: boolean]; 'plan-project': [brief: string, boardId: string] }>()
 const busy = ref(false)
+const leadExplicit = ref(false)
 const error = ref('')
 const busyVoiceFields = reactive(new Set<string>())
 const isDictating = computed(() => busyVoiceFields.size > 0)
@@ -43,21 +45,32 @@ const suggestedTitle = computed(() => projectBoardTitleFromBrief(draft.descripti
 const validTitle = computed(() => draft.title.trim() || suggestedTitle.value)
 const board = computed(() => props.boards.find((entry) => entry.id === draft.boardId))
 const eligibleAgents = computed(() => props.agents.filter((agent) => !board.value || board.value.agentIds.includes(agent.id)))
-const lead = computed(() => eligibleAgents.value.find((agent) => agent.id === draft.assignedAgentId))
+const lead = computed(() => {
+  const agent = eligibleAgents.value.find((entry) => entry.id === draft.assignedAgentId)
+  return agent && board.value ? resolveProjectBoardAgent(board.value, agent) : agent
+})
 let initializedSource = ''
 function voiceField(key: string) {
   return { dictationDisabled: busy.value || (isDictating.value && !busyVoiceFields.has(key)), onBusyChange: (value: boolean) => { if (value) busyVoiceFields.add(key); else busyVoiceFields.delete(key) } }
 }
 function chooseLead() {
-  if (!eligibleAgents.value.some((agent) => agent.id === draft.assignedAgentId)) draft.assignedAgentId = eligibleAgents.value.find((agent) => agent.role === 'lead')?.id || eligibleAgents.value[0]?.id || ''
+  if (!eligibleAgents.value.some((agent) => agent.id === draft.assignedAgentId)) {
+    leadExplicit.value = false
+    draft.assignedAgentId = eligibleAgents.value.find((agent) => agent.id === board.value?.coordinatorAgentId)?.id || eligibleAgents.value.find((agent) => agent.role === 'lead')?.id || eligibleAgents.value[0]?.id || ''
+  }
 }
 function initialize() {
   if (initializedSource === props.sourceThreadId && draft.description) return
   initializedSource = props.sourceThreadId
+  leadExplicit.value = false
   Object.assign(draft, { boardId: props.boards.find((entry) => entry.isDefault)?.id || props.boards[0]?.id || '', title: '', description: props.initialBrief, model: '', reasoningEffort: '', assignedAgentId: '' })
   chooseLead(); error.value = ''
 }
 watch(eligibleAgents, chooseLead)
+watch(() => draft.boardId, () => {
+  if (!leadExplicit.value) draft.assignedAgentId = ''
+  chooseLead()
+})
 watch(() => props.boards, (boards) => {
   if (!draft.boardId && boards.length) draft.boardId = boards.find((entry) => entry.isDefault)?.id || boards[0]!.id
 })

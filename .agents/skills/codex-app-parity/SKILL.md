@@ -5,6 +5,22 @@ description: "Use when implementing or changing user-visible behavior/UI in this
 
 # Codex App Parity Skill
 
+## Findings: Browse host folders from desktop or mobile (2026-09-06)
+
+- Integrated `remote-workspace-root-dialog-f72d5ceb05a9.js` uses
+  `remote-workspace-directory-entries` with `directoryPath` and
+  `directoriesOnly: true`, then an explicit folder/project confirmation.
+- The web equivalent browses the computer hosting CodexUI, through the existing
+  `/codex-api/` bridge. Do not use a browser file picker: on a phone that would
+  select phone storage. Navigation is read-only; selecting a folder is separate
+  from registering a project or creating a folder.
+- Keep Home, Up, recent projects, readable paths, directories-only results and
+  explicit Use folder. Retain typed creation as a separate action; disclose a
+  capped listing, permission errors, and empty folders without hiding recovery.
+- `tests/hostFolderPicker.e2e.mjs` checks the real components with filesystem
+  fixtures in desktop and Chromium touch contexts. It is not an iPhone Safari
+  device test. The dialog has its own scroll area and keeps confirmation visible.
+
 ## Findings: Screen recovery and completed Lead conversations (2026-09-06)
 
 - Rechecked integrated projects-index-page-580ee50ba839.js before the screen fix:

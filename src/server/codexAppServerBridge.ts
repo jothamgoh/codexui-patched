@@ -22,6 +22,7 @@ import { boardPlanningContext, withBoardPlanningContext } from './projectBoardPl
 import { projectBoardThreadIds } from './projectBoardNotificationEvents'
 import { readProjectBoardModels, readProjectBoardThreadSettings, resolveProjectBoardExecutionSettings } from './projectBoardModels'
 import { readProjectBoardQuestionConfig } from './projectBoardQuestions'
+import { HostFolderError, listHostFolders } from './hostFolders'
 import type { ProjectBoardSnapshot } from '../types/projectBoards'
 import { buildThreadReferenceSection, type ThreadReferenceMessage } from '../utils/threadReferences'
 import { getCodexUiChildEnv } from './envFile'
@@ -2293,6 +2294,16 @@ export function createCodexBridgeMiddleware(): CodexBridgeMiddleware {
 
       if (req.method === 'GET' && url.pathname === '/codex-api/home-directory') {
         setJson(res, 200, { data: { path: homedir() } })
+        return
+      }
+
+      if (req.method === 'GET' && url.pathname === '/codex-api/host-folders') {
+        try {
+          setJson(res, 200, { data: await listHostFolders(url.searchParams.get('path') || '', url.searchParams.get('showHidden') === 'true') })
+        } catch (error) {
+          if (!(error instanceof HostFolderError)) throw error
+          setJson(res, error.statusCode, { error: error.message })
+        }
         return
       }
 

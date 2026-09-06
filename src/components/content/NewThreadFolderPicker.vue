@@ -63,9 +63,13 @@
           <p v-if="filteredOptions.length === 0" class="new-thread-folder-empty">No matching projects</p>
         </div>
 
+        <Button class="new-thread-folder-add" variant="ghost" type="button" @click="startBrowsing">
+          <IconTablerFolder class="new-thread-folder-add-icon" />
+          <span>Browse computer folders</span>
+        </Button>
         <Button class="new-thread-folder-add" variant="ghost" type="button" @click="startAdding">
           <Plus class="new-thread-folder-add-icon" />
-          <span>Add new project</span>
+          <span>Create folder or enter a path</span>
         </Button>
       </div>
 
@@ -91,6 +95,7 @@
       </form>
     </PopoverContent>
   </Popover>
+  <HostFolderPicker v-model:open="browserOpen" :initial-path="modelValue" :roots="options.map(option => ({ path: option.value, name: option.label }))" @select="emit('add', $event)" />
 </template>
 
 <script setup lang="ts">
@@ -101,6 +106,7 @@ import { Input } from '@/components/ui/input'
 import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover'
 import IconTablerChevronDown from '../icons/IconTablerChevronDown.vue'
 import IconTablerFolder from '../icons/IconTablerFolder.vue'
+import HostFolderPicker from './HostFolderPicker.vue'
 
 type FolderOption = {
   value: string
@@ -125,6 +131,7 @@ const emit = defineEmits<{
 }>()
 
 const isOpen = ref(false)
+const browserOpen = ref(false)
 const isAdding = ref(false)
 const searchQuery = ref('')
 const addDraft = ref('')
@@ -162,6 +169,11 @@ function startAdding(): void {
   isAdding.value = true
   addDraft.value = props.defaultAddValue.trim()
   void nextTick(() => addInputRef.value?.$el?.focus())
+}
+
+function startBrowsing(): void {
+  isOpen.value = false
+  void nextTick(() => { browserOpen.value = true })
 }
 
 function confirmAdd(): void {
@@ -294,7 +306,7 @@ watch(isOpen, (open) => {
 }
 
 .new-thread-folder-add {
-  @apply h-9 w-full justify-start gap-2 rounded-lg px-2;
+  @apply min-h-11 h-auto w-full justify-start gap-2 whitespace-normal rounded-lg px-2 py-2 text-left;
   border-top: 1px solid var(--border-soft);
   color: var(--text-primary) !important;
 }

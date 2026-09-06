@@ -98,6 +98,10 @@ async function createHarness(t, executionAccess = 'project') {
       dynamicTools: [{ name: 'automation_update' }],
       developerInstructions: 'Keep the existing scheduled-task tool available.',
     }),
+    prepareTurnParams: (params) => ({ ...params, additionalContext: {
+      ...params.additionalContext,
+      codexui_optional_board_planning: { kind: 'application', value: `Optional planning from ${params.threadId}` },
+    } }),
   })
   let snapshot = await service.ensureDefaultBoard({
     projectPath,
@@ -421,7 +425,10 @@ test('Stop retains board ownership until the Lead and its proven descendants hav
 test('managed replies steer the exact Lead turn and preserve native input without falling back', async (t) => {
   const { appServer, feature, service, store } = await createHarness(t)
   await service.startFeature(feature.id, { allowWorkspaceWrite: true })
-  await waitFor(() => appServer.calls.find((call) => call.method === 'turn/start'), 'No feature turn')
+  const firstTurn = await waitFor(() => appServer.calls.find((call) => call.method === 'turn/start'), 'No feature turn')
+  const planningContext = { kind: 'application', value: 'Optional planning from lead-thread' }
+  assert.deepEqual(firstTurn.params.additionalContext.codexui_optional_board_planning, planningContext)
+  assert.equal(firstTurn.params.additionalContext.codexui_project_board_coordinator.kind, 'application', 'Optional planning preserves the tracked coordinator context')
   const input = [
     { type: 'text', text: 'Please check this screenshot and the selected response.', text_elements: [] },
     { type: 'image', url: 'data:image/png;base64,AA==' },
@@ -430,7 +437,7 @@ test('managed replies steer the exact Lead turn and preserve native input withou
   ]
   const message = { input, clientUserMessageId: 'user-steer-1', expectedTurnId: 'lead-turn-1' }
   await service.sendChatMessage('lead-thread', message)
-  assert.deepEqual(appServer.calls.find((call) => call.method === 'turn/steer').params, { threadId: 'lead-thread', ...message })
+  assert.deepEqual(appServer.calls.find((call) => call.method === 'turn/steer').params, { threadId: 'lead-thread', ...message, additionalContext: { codexui_optional_board_planning: planningContext } })
   assert.equal((await store.read()).runs.length, 1)
   await assert.rejects(service.sendChatMessage('lead-thread', { ...message, expectedTurnId: 'stale-turn' }), /turn changed/u)
   await assert.rejects(service.sendChatMessage('lead-thread', { input }), /turn changed/u)

@@ -1608,6 +1608,7 @@ type SharedBridgeState = {
   automationService: AutomationService
   projectBoardService: ProjectBoardService
   projectBoardRecoveryBaseline: Promise<ProjectBoardSnapshot> | null
+  localPort?: number
 }
 
 const SHARED_BRIDGE_KEY = '__codexRemoteSharedBridge__'
@@ -1637,6 +1638,7 @@ function getSharedBridgeState(): SharedBridgeState {
   const projectBoardService = new ProjectBoardService({
     store: projectBoardStore,
     appServer,
+    prepareTurnParams: (params) => withBoardPlanningContext(params, created.localPort) as Record<string, unknown>,
     prepareThreadStartParams: async (params) => {
       const prepared = automationService.augmentThreadStartParams(params)
       const questions = await readProjectBoardQuestionConfig((method, input) => appServer.rpc(method, input))
@@ -1694,7 +1696,8 @@ function getSharedBridgeState(): SharedBridgeState {
 }
 
 export function createCodexBridgeMiddleware(): CodexBridgeMiddleware {
-  const { appServer, threadTitleGenerator, methodCatalog, automationService, projectBoardService } = getSharedBridgeState()
+  const shared = getSharedBridgeState()
+  const { appServer, threadTitleGenerator, methodCatalog, automationService, projectBoardService } = shared
   const localNotificationListeners = new Set<
     (value: { method: string; params: unknown; atIso: string }) => void
   >()
@@ -1712,6 +1715,9 @@ export function createCodexBridgeMiddleware(): CodexBridgeMiddleware {
         next()
         return
       }
+      // Managed continuations need the same local helper connection as ordinary
+      // chat turns. Learn it from the listener, never from a client-supplied URL.
+      if (req.socket.localPort) shared.localPort = req.socket.localPort
 
       const url = new URL(req.url, 'http://localhost')
 
@@ -1743,7 +1749,7 @@ export function createCodexBridgeMiddleware(): CodexBridgeMiddleware {
         const params =
           body.method === 'thread/start'
             ? automationService.augmentThreadStartParams(body.params)
-            : body.method === 'turn/start'
+            : body.method === 'turn/start' || body.method === 'turn/steer'
               ? withBoardPlanningContext(body.params, req.socket.localPort)
               : body.params ?? null
         const result = await appServer.rpc(body.method, params)
@@ -1982,7 +1988,6 @@ export function createCodexBridgeMiddleware(): CodexBridgeMiddleware {
         if (!projectPath || thread?.id !== sourceThreadId) throw new Error('The planning chat’s project is unavailable.')
         const boardId = typeof input.boardId === 'string' ? input.boardId.trim().toLowerCase() : ''
         if (req.method === 'POST') {
-          if (await projectBoardService.isManagedThread(sourceThreadId)) throw new Error('Save this plan from the original planning chat, not a feature Lead chat.')
           const snapshot = await projectBoardService.saveDraftPlan({ ...input, boardId, sourceThreadId, projectPath, projectName: basename(projectPath) })
           setJson(res, 200, { data: {
             version: snapshot.version, boardId, sourceThreadId,

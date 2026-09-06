@@ -5,6 +5,7 @@ description: "Create or revise reviewable feature cards in CodexUI only when the
 
 # Optional board planning from chat
 
+Any chat can plan a board, including an existing conversation or feature Lead.
 Keep this conversation as the user's planning and coordination chat. Use the
 helper connection (`--url`, `--thread`) supplied by CodexUI's application context.
 Never guess the active chat, port, project, or another service's address. If that
@@ -12,10 +13,14 @@ context is unavailable, keep the plan in chat and explain the missing connection
 
 ## Plan and save
 
-1. Read `context` once. Reuse a relevant linked board; for multiple candidates,
-   use the user's named board or ask a focused question. An existing board in the
-   project is not automatically consent to replace its plan. Read relevant code,
-   project instructions, and the conversation's agreed product decisions.
+1. Read `context` once. Extend the user's existing board when the request belongs
+   to that initiative. For a separate initiative, create a named board with a new
+   UUID, even when another board uses the same project folder. A folder can have
+   several independent boards; its default board is only a navigation default.
+   For multiple relevant candidates, use the user's named board or ask a focused
+   question. An existing board is not automatically consent to replace its plan.
+   Read relevant code, project instructions, and the conversation's agreed
+   product decisions.
 2. Propose the fewest separately useful features. Keep overlapping edits together;
    put shared groundwork in one prerequisite card and reference its ID in
    dependents. Small implementation steps belong inside a feature, not new cards.
@@ -38,6 +43,9 @@ context is unavailable, keep the plan in chat and explain the missing connection
    can be revised. Omitted cards remain. Read `--feature` detail before revising
    a card; preserve existing choices and unrelated scope. When the project
    summary is truncated, use `context --board BOARD_ID --full-plan` before editing it.
+   A running board's plan cannot be revised. From its Lead chat, an explicitly
+   requested separate initiative can be saved to a new board while current work
+   continues. Do not change that Lead's current feature or start the new board.
 6. Report the saved board name and how to open **Review board** in this chat.
    Highlight the feature order and any decision the user still needs to make.
    Stop after saving. Planning does not authorize implementation, a queue,

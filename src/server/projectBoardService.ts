@@ -26,6 +26,7 @@ type ProjectBoardServiceOptions = {
   store: ProjectBoardStore
   appServer: RpcClient
   prepareThreadStartParams?: (params: unknown) => Record<string, unknown> | Promise<Record<string, unknown>>
+  prepareTurnParams?: (params: Record<string, unknown>) => Record<string, unknown>
   resolveExecutionSettings?: (settings: { model: string; reasoningEffort: ReasoningEffort | '' }, sourceThreadId?: string) => Promise<{ model: string; reasoningEffort: ReasoningEffort }>
 }
 
@@ -355,6 +356,7 @@ export class ProjectBoardService {
   private readonly store: ProjectBoardStore
   private readonly appServer: RpcClient
   private readonly prepareThreadStartParams: NonNullable<ProjectBoardServiceOptions['prepareThreadStartParams']>
+  private readonly prepareTurnParams: NonNullable<ProjectBoardServiceOptions['prepareTurnParams']>
   private readonly resolveExecutionSettings: NonNullable<ProjectBoardServiceOptions['resolveExecutionSettings']>
   private readonly queues = new Map<string, ActiveBoardQueue>()
   private readonly queuePumping = new Set<string>()
@@ -372,6 +374,7 @@ export class ProjectBoardService {
     this.store = options.store
     this.appServer = options.appServer
     this.prepareThreadStartParams = options.prepareThreadStartParams ?? ((params) => asRecord(params) ?? {})
+    this.prepareTurnParams = options.prepareTurnParams ?? ((params) => params)
   }
 
   async start(): Promise<void> {
@@ -629,9 +632,9 @@ export class ProjectBoardService {
     const expectedTurnId = readString(record.expectedTurnId)
     if (active) {
       if (active.finishing || active.stopping || !active.turnId || expectedTurnId !== active.turnId) throw new Error('The Lead turn changed or is still starting. Wait for its current status, then send again.')
-      await this.appServer.rpc('turn/steer', {
+      await this.appServer.rpc('turn/steer', this.prepareTurnParams({
         threadId, expectedTurnId, input: message.input, clientUserMessageId: message.clientUserMessageId,
-      })
+      }))
       return this.read()
     }
     if (expectedTurnId) throw new Error('That Lead turn has ended. Send again to start a new tracked run.')
@@ -1098,7 +1101,7 @@ export class ProjectBoardService {
       context.threadId = threadId
       const currentFeature = snapshot.cards.find((card) => card.id === feature?.id) ?? feature
       context.turnReady = new Promise<void>((resolve) => { context.resolveTurnReady = resolve })
-      const startedTurn = await this.appServer.rpc('turn/start', {
+      const startedTurn = await this.appServer.rpc('turn/start', this.prepareTurnParams({
         threadId,
         clientUserMessageId: context.message?.clientUserMessageId || randomUUID(),
         input: context.message?.input ?? [{ type: 'text', text: context.kind === 'board_plan' ? this.buildBoardPlanPrompt(snapshot, board, lead, context.sourceContext) : buildFeaturePrompt(snapshot, board, currentFeature!, continuation, context.kind === 'plan') }],
@@ -1129,7 +1132,7 @@ export class ProjectBoardService {
         serviceTier: null,
         summary: 'auto',
         personality: 'pragmatic',
-      })
+      }))
       if (this.activeRunsById.get(run.id) !== context || context.finishing) return
       const turnId = readTurnId(startedTurn)
       if (!turnId || (context.turnId && context.turnId !== turnId)) throw new Error('Codex did not return the expected Lead turn.')

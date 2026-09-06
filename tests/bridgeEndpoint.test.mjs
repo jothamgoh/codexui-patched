@@ -105,3 +105,89 @@ test('completed turns clear only their own pending approval and question UI with
   assert.deepEqual([...bridge.pendingServerRequests.keys()], [4])
   assert.deepEqual(events.filter((event) => event.method === 'server/request/resolved').map((event) => event.params.id), [1, 2, 3])
 })
+
+async function bridgeRouteHarness(path, dependencies) {
+  // Run the actual route branch without initializing Codex, user stores, or
+  // notification sinks. Validation and forwarding remain production code.
+  const source = await readFile(new URL('../src/server/codexAppServerBridge.ts', import.meta.url), 'utf8')
+  const ast = ts.createSourceFile('bridge.ts', source, ts.ScriptTarget.Latest, true)
+  let route
+  function visit(node) {
+    if (ts.isIfStatement(node) && node.expression.getText(ast).includes(`url.pathname === '${path}'`)) route = node
+    ts.forEachChild(node, visit)
+  }
+  visit(ast)
+  assert.ok(route, `Missing production route ${path}`)
+  const compiled = ts.transpileModule(`
+    export function createHarness(dependencies) {
+      const { appServer, projectBoardService, projectBoardThreadIds, withBoardPlanningContext, automationService } = dependencies;
+      const asRecord = (value) => value && typeof value === 'object' && !Array.isArray(value) ? value : null;
+      const readJsonBody = async (request) => request.body;
+      const basename = (path) => path.split('/').filter(Boolean).at(-1);
+      const setJson = (response, status, body) => Object.assign(response, { status, body });
+      return async (req, res) => {
+        const url = new URL(req.url, 'http://localhost');
+        ${route.getText(ast)}
+      };
+    }
+  `, { compilerOptions: { module: ts.ModuleKind.ES2022, target: ts.ScriptTarget.ES2022 } }).outputText
+  return (await import(`data:text/javascript;base64,${Buffer.from(compiled).toString('base64')}`)).createHarness(dependencies)
+}
+
+test('ordinary steering advertises optional board planning without changing native input or turn identity', async () => {
+  const calls = []
+  const route = await bridgeRouteHarness('/codex-api/rpc', {
+    appServer: { rpc: async (method, params) => { calls.push({ method, params }); return { accepted: true } } },
+    withBoardPlanningContext: (params, port) => ({ ...params, additionalContext: { ...params.additionalContext, optionalBoard: { kind: 'application', value: `Local helper on ${port}` } } }),
+  })
+  const params = { threadId: 'existing-chat', expectedTurnId: 'active-turn', clientUserMessageId: 'reply-id', input: [{ type: 'text', text: 'Make a separate board for the new initiative.' }], additionalContext: { prior: { kind: 'application', value: 'Keep this context' } } }
+  const response = {}
+  await route({ url: '/codex-api/rpc', method: 'POST', socket: { localPort: 12345 }, body: { method: 'turn/steer', params } }, response)
+  assert.equal(response.status, 200)
+  assert.equal(calls[0].method, 'turn/steer')
+  assert.equal(calls[0].params.input, params.input)
+  assert.equal(calls[0].params.expectedTurnId, 'active-turn')
+  assert.equal(calls[0].params.clientUserMessageId, 'reply-id')
+  assert.equal(calls[0].params.additionalContext.prior, params.additionalContext.prior)
+  assert.match(calls[0].params.additionalContext.optionalBoard.value, /12345/u)
+  assert.deepEqual(Object.keys(params.additionalContext), ['prior'])
+})
+
+test('a feature Lead can save a separate board draft using its verified project while store guards remain authoritative', async () => {
+  const calls = []
+  const drafts = []
+  let thread = { id: 'managed-lead', cwd: '/verified/project' }
+  let saveError = ''
+  const route = await bridgeRouteHarness('/codex-api/project-board-planning', {
+    appServer: { rpc: async (method, params) => { calls.push({ method, params }); return { thread } } },
+    projectBoardService: {
+      isManagedThread: async () => true,
+      saveDraftPlan: async (input) => { drafts.push(input); if (saveError) throw new Error(saveError); return { version: 12 } },
+    },
+  })
+  const request = { url: '/codex-api/project-board-planning', method: 'POST', body: {
+    sourceThreadId: 'managed-lead', boardId: 'NEW-BOARD', expectedVersion: 11,
+    projectPath: '/client-spoof', projectName: 'Spoofed', summary: 'A separate initiative.', features: [{ id: 'NEW-FEATURE' }],
+  } }
+  const response = {}
+  await route(request, response)
+  assert.equal(response.status, 200)
+  assert.deepEqual(calls[0], { method: 'thread/read', params: { threadId: 'managed-lead', includeTurns: false } })
+  assert.equal(drafts[0].projectPath, '/verified/project')
+  assert.equal(drafts[0].projectName, 'project')
+  assert.equal(drafts[0].boardId, 'new-board')
+  assert.equal(drafts[0].sourceThreadId, 'managed-lead')
+  assert.equal(drafts[0].expectedVersion, 11)
+  assert.equal(drafts[0].features, request.body.features)
+  assert.deepEqual(response.body.data.featureIds, ['new-feature'])
+  assert.match(response.body.data.message, /No work started/u)
+
+  thread = { ...thread, id: 'different-thread' }
+  await assert.rejects(route(request, {}), /project is unavailable/u)
+  assert.equal(drafts.length, 1, 'A mismatched native chat must never reach the store')
+  thread = { id: 'managed-lead', cwd: '/verified/project' }
+  for (const error of ['Wait for this board’s active run to stop before revising its plan.', 'The board changed. Read its latest plan before saving again.']) {
+    saveError = error
+    await assert.rejects(route(request, {}), (caught) => caught.message === error)
+  }
+})

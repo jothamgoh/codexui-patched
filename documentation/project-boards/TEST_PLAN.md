@@ -46,6 +46,12 @@ notification storage too. Retain explicit defense in every bridge fixture:
 
 ## Meaningful scenarios
 
+- Board work defaults to Full access; explicit Project access preserves consent.
+  Single starts, queues, idle replies and automatic continuations retain the
+  accepted choice across board-setting changes. Plan turns stay read-only after
+  a full-access turn in the same native chat. An isolated local-provider probe
+  can verify actual outside-project writes/denials without model-service calls.
+
 - Queue entry: active work in the same project names its feature and exact Lead,
   blocks both button and implicit submission, and preserves an open dialog's
   choices. An unrelated project does not block; completion never auto-starts.

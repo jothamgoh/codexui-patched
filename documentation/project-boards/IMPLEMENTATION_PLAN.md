@@ -46,7 +46,7 @@ alter an ordinary chat's sandbox or authorize implementation.
 
 1. Durable state and native execution: exact agent IDs, current prompts on every
    turn, atomic completion/dependency/QA guards, question provenance, canonical
-   project locks, interruption recovery, and explicit workspace-write consent.
+   project locks, interruption recovery, and saved board work permissions.
 2. Chat reliability: stable turn/final ordering, heavy-content windowing, cache
    limits, transcription retry, and original-chat draft preservation.
 3. Planning and delivery: project plan import, read-only feature planning,
@@ -70,6 +70,10 @@ context. A completed planner save is idempotent within its run. Queue approval
 freezes selected card scope and is checked again atomically before execution.
 Pending continuation also checks its original queue and current consent after
 async waits; pause, replacement, failure, or disabling continuation must win.
+Board execution defaults to Full access; Project access retains the original
+workspace-write consent. Each start, queue, and continuation carries its accepted
+access level. Set the native sandbox and approval policy on every turn: loaded
+threads can ignore thread/resume changes. Plan turns explicitly restore read-only.
 An active turn is allowed to finish. Starter profiles are app-maintained text;
 customized copies retain their own identity and saved instructions.
 

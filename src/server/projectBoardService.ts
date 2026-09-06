@@ -5,6 +5,7 @@ import type {
   ProjectBoard,
   ProjectBoardAgent,
   ProjectBoardCard,
+  ProjectBoardExecutionAccess,
   ProjectBoardPlanResult,
   ProjectBoardFeaturePlan,
   ProjectBoardQueue,
@@ -12,7 +13,7 @@ import type {
   ProjectBoardSnapshot,
 } from '../types/projectBoards'
 import type { ReasoningEffort } from '../types/codex'
-import { ProjectBoardStore, projectBoardFeatureFingerprint } from './projectBoardStore'
+import { ProjectBoardStore, projectBoardFeatureFingerprint, readProjectBoardExecutionAccess } from './projectBoardStore'
 
 type RpcClient = {
   rpc: (method: string, params: unknown) => Promise<unknown>
@@ -37,6 +38,7 @@ type ActiveFeatureRun = {
   responseText: string
   error: string
   workspaceWrite: boolean
+  executionAccess: ProjectBoardExecutionAccess
   kind: ProjectBoardRunKind
   settings: { model: string; reasoningEffort: ReasoningEffort }
   sourceContext: string
@@ -48,6 +50,16 @@ type ActiveFeatureRun = {
   stopPromise?: Promise<ProjectBoardSnapshot>
   nativeTurnEnded?: boolean
   interruptAcknowledged?: boolean
+}
+
+type ExecutionConsent = { executionAccess: ProjectBoardExecutionAccess; allowWorkspaceWrite: boolean }
+type ActiveBoardQueue = ProjectBoardQueue & ExecutionConsent & { id: string; approved: Record<string, string> }
+
+function requestedExecutionConsent(input: Record<string, unknown>): Partial<ExecutionConsent> & { allowWorkspaceWrite: boolean } {
+  return {
+    allowWorkspaceWrite: input.allowWorkspaceWrite === true,
+    ...(input.executionAccess === undefined ? {} : { executionAccess: readProjectBoardExecutionAccess(input.executionAccess) }),
+  }
 }
 
 type ManagedBoardMessage = {
@@ -338,10 +350,10 @@ export class ProjectBoardService {
   private readonly appServer: RpcClient
   private readonly prepareThreadStartParams: (params: unknown) => Record<string, unknown>
   private readonly resolveExecutionSettings: NonNullable<ProjectBoardServiceOptions['resolveExecutionSettings']>
-  private readonly queues = new Map<string, ProjectBoardQueue & { id: string; allowWorkspaceWrite: boolean; approved: Record<string, string> }>()
+  private readonly queues = new Map<string, ActiveBoardQueue>()
   private readonly queuePumping = new Set<string>()
   private readonly activeRunsById = new Map<string, ActiveFeatureRun>()
-  private readonly workspaceWriteByFeatureId = new Map<string, boolean>()
+  private readonly executionConsentByFeatureId = new Map<string, ExecutionConsent>()
   private processGeneration = 0
   private readonly activeFeatureIds = new Set<string>()
   private readonly activeProjectPaths = new Set<string>()
@@ -393,7 +405,7 @@ export class ProjectBoardService {
     const snapshot = await this.store.updateBoard(id, changes)
     if (asRecord(changes)?.autoDispatch === false) {
       for (const feature of snapshot.cards.filter((card) => card.boardId === id && card.type === 'feature')) {
-        this.workspaceWriteByFeatureId.delete(feature.id)
+        this.executionConsentByFeatureId.delete(feature.id)
       }
       const queue = this.queues.get(id)
       if (queue?.currentFeatureId && !this.activeFeatureIds.has(queue.currentFeatureId)) {
@@ -462,7 +474,7 @@ export class ProjectBoardService {
   startFeature(featureId: string, input: unknown = {}): Promise<ProjectBoardSnapshot> {
     const record = asRecord(input) ?? {}
     if (record.mode !== undefined && record.mode !== 'plan' && record.mode !== 'execute') throw new Error('Unknown feature start mode.')
-    return this.startFeatureRun(featureId, false, record.allowWorkspaceWrite === true, record.mode === 'plan' ? 'plan' : 'execute')
+    return this.startFeatureRun(featureId, false, requestedExecutionConsent(record), record.mode === 'plan' ? 'plan' : 'execute')
   }
 
   async stopFeature(featureId: string, input: unknown = {}): Promise<ProjectBoardSnapshot> {
@@ -477,7 +489,7 @@ export class ProjectBoardService {
       || (this.featureStartEpochs.get(featureId) ?? 0) !== observedStartEpoch)) return this.read()
     this.featureStopEpochs.set(featureId, this.featureStartEpochs.get(featureId) ?? 0)
     this.featureStartEpochs.set(featureId, (this.featureStartEpochs.get(featureId) ?? 0) + 1)
-    this.workspaceWriteByFeatureId.delete(featureId)
+    this.executionConsentByFeatureId.delete(featureId)
     this.autoContinuationsByFeatureId.delete(featureId)
     this.pauseQueue(feature.boardId, 'Feature stopped. Start the remaining work again when ready.')
     if (context && !context.finishing) {
@@ -620,7 +632,7 @@ export class ProjectBoardService {
     if (!feature) {
       return this.startBoardPlan(board.id, { plan: board.plan, coordinatorAgentId: board.coordinatorAgentId }, '', message)
     }
-    return this.startFeatureRun(feature.id, false, record.allowWorkspaceWrite === true, record.mode === 'plan' ? 'plan' : 'execute', undefined, message)
+    return this.startFeatureRun(feature.id, false, requestedExecutionConsent(record), record.mode === 'plan' ? 'plan' : 'execute', undefined, message)
   }
 
   async startBoardPlan(boardId: string, input: unknown, sourceContext = '', message?: ManagedBoardMessage): Promise<ProjectBoardSnapshot> {
@@ -649,7 +661,7 @@ export class ProjectBoardService {
       }
       const context: ActiveFeatureRun = {
         runId: run.id, featureId: '', boardId, projectPath, threadId: '', turnId: '', responseText: '', error: '',
-        workspaceWrite: false, kind: 'board_plan', settings, sourceContext: sourceContext.slice(0, 20_000), finishing: false, message,
+        workspaceWrite: false, executionAccess: 'project', kind: 'board_plan', settings, sourceContext: sourceContext.slice(0, 20_000), finishing: false, message,
       }
       this.activeRunsById.set(run.id, context)
       this.publish(started)
@@ -693,6 +705,7 @@ export class ProjectBoardService {
     if (this.queuePumping.has(boardId)) throw new Error('The previous queue start is still settling. Try again shortly.')
     const featureIds = [...new Set(Array.isArray(record.featureIds) ? record.featureIds.map(readString).filter(Boolean) : [])]
     if (!board || !featureIds.length) throw new Error('Select the feature cards to run.')
+    const executionAccess = readProjectBoardExecutionAccess(record.executionAccess, board.executionAccess)
     if (this.queues.get(boardId)?.status === 'running') throw new Error('This queue is already running. Pause it before changing the selection.')
     if (snapshot.runs.some((run) => run.boardId === boardId && run.status === 'running')) throw new Error('Wait for the active run before starting a queue.')
     const approved: Record<string, string> = {}
@@ -702,10 +715,10 @@ export class ProjectBoardService {
       if (feature.status === 'needs_input' || feature.status === 'review') throw new Error('Resolve questions and review before adding those features to the queue.')
       approved[id] = projectBoardFeatureFingerprint(feature)
     }
-    if (snapshot.agents.some((agent) => board.agentIds.includes(agent.id) && agent.sandbox === 'workspace-write') && record.allowWorkspaceWrite !== true) {
+    if (executionAccess === 'project' && snapshot.agents.some((agent) => board.agentIds.includes(agent.id) && agent.sandbox === 'workspace-write') && record.allowWorkspaceWrite !== true) {
       throw new Error('Confirm workspace-write access before starting the selected features.')
     }
-    this.queues.set(boardId, { id: randomUUID(), boardId, status: 'running', featureIds, currentFeatureId: '', reason: '', allowWorkspaceWrite: record.allowWorkspaceWrite === true, approved })
+    this.queues.set(boardId, { id: randomUUID(), boardId, status: 'running', featureIds, currentFeatureId: '', reason: '', executionAccess, allowWorkspaceWrite: record.allowWorkspaceWrite === true, approved })
     await this.advanceBoardQueue(boardId)
     return this.publish(await this.store.read())
   }
@@ -720,7 +733,7 @@ export class ProjectBoardService {
     if (!queue || queue.status !== 'running') return
     queue.status = 'paused'
     queue.reason = reason
-    if (queue.currentFeatureId) this.workspaceWriteByFeatureId.delete(queue.currentFeatureId)
+    if (queue.currentFeatureId) this.executionConsentByFeatureId.delete(queue.currentFeatureId)
   }
 
   private async advanceBoardQueue(boardId: string): Promise<void> {
@@ -760,7 +773,7 @@ export class ProjectBoardService {
         return
       }
       queue.currentFeatureId = next.id
-      try { await this.startFeatureRun(next.id, false, queue.allowWorkspaceWrite, 'execute', queue) }
+      try { await this.startFeatureRun(next.id, false, queue, 'execute', queue) }
       catch (error) {
         if (this.queues.get(boardId) !== queue) return
         this.pauseQueue(boardId, error instanceof Error ? error.message : 'The next feature could not start.')
@@ -769,7 +782,7 @@ export class ProjectBoardService {
     } finally { this.queuePumping.delete(boardId) }
   }
 
-  private async startFeatureRun(featureId: string, continuation: boolean, allowWorkspaceWrite: boolean, kind: 'plan' | 'execute' = 'execute', queue?: ProjectBoardQueue, message?: ManagedBoardMessage): Promise<ProjectBoardSnapshot> {
+  private async startFeatureRun(featureId: string, continuation: boolean, requestedConsent: Partial<ExecutionConsent> & { allowWorkspaceWrite: boolean }, kind: 'plan' | 'execute' = 'execute', queue?: ActiveBoardQueue, message?: ManagedBoardMessage): Promise<ProjectBoardSnapshot> {
     const generation = this.processGeneration
     if (this.activeFeatureIds.has(featureId)) throw new Error('This feature is already running.')
     const startEpoch = (this.featureStartEpochs.get(featureId) ?? 0) + 1
@@ -781,6 +794,10 @@ export class ProjectBoardService {
     const feature = snapshot.cards.find((card) => card.id === featureId)
     const board = snapshot.boards.find((entry) => entry.id === feature?.boardId)
     if (!feature || !board) throw new Error('Feature or board not found.')
+    const consent: ExecutionConsent = {
+      executionAccess: requestedConsent.executionAccess ?? board.executionAccess,
+      allowWorkspaceWrite: requestedConsent.allowWorkspaceWrite,
+    }
     if (feature.type !== 'feature') throw new Error('Only features can start a Lead run. QA-batch execution is not available yet.')
     let projectPath: string
     try {
@@ -796,8 +813,8 @@ export class ProjectBoardService {
       throw new Error('Another feature is running in this project. Let it finish before starting this one.')
     }
     const roster = snapshot.agents.filter((agent) => board.agentIds.includes(agent.id))
-    const workspaceWrite = kind === 'execute' && roster.some((agent) => agent.sandbox === 'workspace-write')
-    if (workspaceWrite && !allowWorkspaceWrite) {
+    const workspaceWrite = kind === 'execute' && consent.executionAccess === 'project' && roster.some((agent) => agent.sandbox === 'workspace-write')
+    if (workspaceWrite && !consent.allowWorkspaceWrite) {
       throw new Error('Confirm workspace-write access before starting. The Lead and all native subagents share permission to edit project files.')
     }
     const assignedAgent = roster.find((agent) => agent.id === feature.assignedAgentId)
@@ -810,7 +827,7 @@ export class ProjectBoardService {
     const settings = await this.resolveExecutionSettings({ model: feature.model || lead.model, reasoningEffort: feature.reasoningEffort || lead.reasoningEffort })
     assertNotStopped()
     // Turning continuation off also cancels a start already awaiting model metadata.
-    if (continuation && !this.workspaceWriteByFeatureId.has(featureId)) return this.read()
+    if (continuation && !this.executionConsentByFeatureId.has(featureId)) return this.read()
     if (queue && (queue.status !== 'running' || this.queues.get(queue.boardId) !== queue || queue.currentFeatureId !== featureId)) {
       throw new Error('The queue was paused or replaced before this feature started.')
     }
@@ -826,8 +843,8 @@ export class ProjectBoardService {
         throw new Error(reason)
       }
       if (!continuation) this.autoContinuationsByFeatureId.delete(feature.id)
-      if (kind === 'execute') this.workspaceWriteByFeatureId.set(feature.id, allowWorkspaceWrite)
-      else this.workspaceWriteByFeatureId.delete(feature.id)
+      if (kind === 'execute') this.executionConsentByFeatureId.set(feature.id, consent)
+      else this.executionConsentByFeatureId.delete(feature.id)
       const context: ActiveFeatureRun = {
         runId: run.id,
         featureId: feature.id,
@@ -837,7 +854,7 @@ export class ProjectBoardService {
         turnId: '',
         responseText: '',
         error: '',
-        workspaceWrite, kind, settings, sourceContext: '',
+        workspaceWrite, executionAccess: consent.executionAccess, kind, settings, sourceContext: '',
         finishing: false, message,
       }
       this.activeRunsById.set(run.id, context)
@@ -944,7 +961,7 @@ export class ProjectBoardService {
     if (notification.method === 'codexui/appServer/exited') {
       this.processGeneration += 1
       for (const queue of this.queues.values()) { queue.status = 'paused'; queue.reason = 'Service interrupted. Review partial work, then start the queue again.' }
-      this.workspaceWriteByFeatureId.clear()
+      this.executionConsentByFeatureId.clear()
       this.autoContinuationsByFeatureId.clear()
       const contexts = [...this.activeRunsById.values()]
       for (const context of contexts) context.finishing = true
@@ -1025,11 +1042,13 @@ export class ProjectBoardService {
       if (!run || (!feature && context.kind !== 'board_plan') || !board || !lead) throw new Error('Feature run context is incomplete.')
       assertActive()
 
+      const fullAccess = context.kind === 'execute' && context.executionAccess === 'full-access'
+      const approvalPolicy = context.kind === 'execute' && !fullAccess ? 'on-request' : 'never'
       const threadParams = {
         cwd: context.projectPath,
         model: context.settings.model || null,
-        approvalPolicy: context.kind === 'execute' ? 'on-request' : 'never',
-        sandbox: context.workspaceWrite ? 'workspace-write' : 'read-only',
+        approvalPolicy,
+        sandbox: fullAccess ? 'danger-full-access' : context.workspaceWrite ? 'workspace-write' : 'read-only',
         persistExtendedHistory: true,
         personality: 'pragmatic',
       }
@@ -1089,10 +1108,10 @@ export class ProjectBoardService {
           },
         },
         cwd: context.projectPath,
-        approvalPolicy: context.kind === 'execute' ? 'on-request' : 'never',
-        sandboxPolicy: context.workspaceWrite
+        approvalPolicy,
+        sandboxPolicy: fullAccess ? { type: 'dangerFullAccess' } : context.workspaceWrite
           ? { type: 'workspaceWrite', writableRoots: [], readOnlyAccess: { type: 'fullAccess' }, networkAccess: false, excludeTmpdirEnvVar: false, excludeSlashTmp: false }
-          : { type: 'readOnly', access: { type: 'fullAccess' } },
+          : { type: 'readOnly', access: { type: 'fullAccess' }, networkAccess: false },
         model: context.settings.model || null,
         effort: context.settings.reasoningEffort,
         serviceTier: null,
@@ -1115,7 +1134,7 @@ export class ProjectBoardService {
       try {
         this.publish(await this.store.failRun(context.runId, error instanceof Error ? error.message : 'Feature run failed.'))
       } finally {
-        this.workspaceWriteByFeatureId.delete(context.featureId)
+        this.executionConsentByFeatureId.delete(context.featureId)
         this.releaseContext(context)
       }
     }
@@ -1127,7 +1146,7 @@ export class ProjectBoardService {
     try {
       if (turnStatus !== 'completed') {
         this.pauseQueue(context.boardId, 'A run failed or was interrupted. Review the feature, then start the queue again.')
-        this.workspaceWriteByFeatureId.delete(context.featureId)
+        this.executionConsentByFeatureId.delete(context.featureId)
         this.publish(await this.store.failRun(context.runId, context.error || `Codex turn ended with status ${turnStatus}.`, turnStatus === 'interrupted' ? 'interrupted' : 'failed', context.stopping === true))
         return
       }
@@ -1146,7 +1165,7 @@ export class ProjectBoardService {
       const feature = snapshot.cards.find((card) => card.id === context.featureId)
       if (!feature || cardTerminalStatus(feature)) {
         this.autoContinuationsByFeatureId.delete(context.featureId)
-        if (feature?.status !== 'needs_input') this.workspaceWriteByFeatureId.delete(context.featureId)
+        if (feature?.status !== 'needs_input') this.executionConsentByFeatureId.delete(context.featureId)
         return
       }
       const board = snapshot.boards.find((entry) => entry.id === feature.boardId)
@@ -1158,7 +1177,7 @@ export class ProjectBoardService {
           status: 'blocked',
           progressNote: tasks.length === 0 ? 'Lead stopped before creating a task plan' : 'Lead stopped making progress; review the feature chat',
         }))
-        this.workspaceWriteByFeatureId.delete(feature.id)
+        this.executionConsentByFeatureId.delete(feature.id)
         return
       }
       this.autoContinuationsByFeatureId.set(feature.id, continuationCount + 1)
@@ -1184,14 +1203,14 @@ export class ProjectBoardService {
     const queue = [...this.queues.values()].find((entry) => entry.status === 'running' && entry.currentFeatureId === featureId)
     const queueIsCurrent = () => !queue || (this.queues.get(queue.boardId) === queue && queue.status === 'running' && queue.currentFeatureId === featureId)
     const timer = setTimeout(() => {
-      if (generation !== this.processGeneration || !queueIsCurrent() || !this.workspaceWriteByFeatureId.has(featureId) || this.activeFeatureIds.has(featureId)) return
-      void this.startFeatureRun(featureId, true, this.workspaceWriteByFeatureId.get(featureId) === true, 'execute', queue).catch(async (error) => {
+      if (generation !== this.processGeneration || !queueIsCurrent() || !this.executionConsentByFeatureId.has(featureId) || this.activeFeatureIds.has(featureId)) return
+      void this.startFeatureRun(featureId, true, this.executionConsentByFeatureId.get(featureId)!, 'execute', queue).catch(async (error) => {
         // A paused/replaced queue cannot authorize a pending continuation, and
         // its late rejection must not block a replacement queue's feature.
-        if (generation !== this.processGeneration || !queueIsCurrent() || !this.workspaceWriteByFeatureId.has(featureId) || this.activeFeatureIds.has(featureId)) return
+        if (generation !== this.processGeneration || !queueIsCurrent() || !this.executionConsentByFeatureId.has(featureId) || this.activeFeatureIds.has(featureId)) return
         const reason = error instanceof Error ? error.message : 'Feature could not continue.'
         if (queue) this.pauseQueue(queue.boardId, reason)
-        this.workspaceWriteByFeatureId.delete(featureId)
+        this.executionConsentByFeatureId.delete(featureId)
         this.publish(await this.store.updateFeatureRuntime(featureId, {
           status: 'blocked',
           progressNote: reason,
@@ -1202,7 +1221,7 @@ export class ProjectBoardService {
   }
 
   private withQueues(snapshot: ProjectBoardSnapshot): ProjectBoardSnapshot {
-    return { ...snapshot, queues: [...this.queues.values()].map(({ allowWorkspaceWrite: _consent, approved: _approved, ...queue }) => ({ ...queue, featureIds: [...queue.featureIds] })) }
+    return { ...snapshot, queues: [...this.queues.values()].map(({ allowWorkspaceWrite: _consent, executionAccess: _access, approved: _approved, ...queue }) => ({ ...queue, featureIds: [...queue.featureIds] })) }
   }
 
   private publish(snapshot: ProjectBoardSnapshot): ProjectBoardSnapshot {

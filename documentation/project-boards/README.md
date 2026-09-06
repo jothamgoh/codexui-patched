@@ -36,8 +36,13 @@ Use chat for the conversation and the board for the project overview.
   then review the proposed cards and dependencies before starting work.
 - Individual starts open the Lead chat. Use its feature link or **View board**
   to return. A selected batch stays on the overview.
+- Board work defaults to **Full access**: the Lead and its subagents can use files,
+  commands, and network access without Codex approval prompts. **Board options →
+  Work permissions** can switch a board to **Project access**. Planning stays
+  read-only. The choice applies to new starts; running work and approved batches
+  retain the access they started with.
 - Reply in the Lead chat to steer active work. When idle, choose **Continue work**
-  and workspace access; completed features require explicit reopening. Lead
+  using the board's work permissions; completed features require explicit reopening. Lead
   settings remain editable on the card. Failed sends retain the draft.
 - **Stop run** ends the active attempt; completed code stays on disk. Stop before
   deleting a feature. Deletion removes its board records, keeping the code and

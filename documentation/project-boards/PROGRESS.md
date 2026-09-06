@@ -12,6 +12,19 @@ user’s request; its saved rendering work has now been reviewed in the follow-u
 
 ## Current follow-up
 
+- Full access is now the saved board execution default for new and existing
+  boards without an explicit setting. Board options can retain Project access;
+  starts, selected batches, and idle Lead replies carry the displayed choice.
+  Queues/continuations retain their accepted permissions; stopping or restarting
+  still revokes continuation. Planning always sets read-only permissions.
+  Native isolated tests proved a loaded chat needs a per-turn permission override:
+  Full access wrote outside its project with zero approvals, and the next planning
+  turn denied writes again. Full tests/build and desktop/mobile browser flows
+  passed. This backend change requires the authorised separate-Terminal restart.
+  The user also requested source-chat model/reasoning inheritance and switching
+  the current Lead to Astra/full access; complete that follow-up before resuming
+  the current feature after deployment. Preserve the same Lead chat and task plan.
+
 - Mobile review flow: Board options collapses management controls; phone cards
   form one vertical list with a status filter. Finished feature details lead
   with the result and keep the Lead review action in the footer; editing, status,

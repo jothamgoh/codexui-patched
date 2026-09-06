@@ -309,6 +309,7 @@
                 <details v-if="selectedChatFeature && !selectedChatIsRunning" ref="boardChatOptionsRef" class="board-chat-options"><summary>{{ selectedChatFeature.status === 'done' ? 'Reopen to continue' : selectedChatFeature.status === 'review' ? 'Request changes' : boardReplyMode === 'plan' ? 'Plan only' : 'Continue work' }}<span v-if="boardChatSendDisabled && !selectedChatQuestion && !selectedChatNativeQuestion"> · choose access</span></summary><div class="board-chat-reply-controls">
                   <label v-if="canPlanChatFeature"><span>Next message</span><select v-model="boardReplyMode" aria-label="Lead reply mode"><option value="plan">Plan only</option><option value="execute">Continue work</option></select></label>
                   <span v-else>Continue this feature</span>
+                  <span v-if="boardReplyMode === 'execute' && chatExecutionAccess === 'full-access'">Full access · no approval prompts</span>
                   <label v-if="selectedChatFeature.status === 'done'"><input v-model="boardReplyReopen" type="checkbox" />Reopen feature</label>
                   <label v-if="boardReplyMode === 'execute' && chatLeadNeedsWrite"><input v-model="boardReplyWrite" type="checkbox" />Allow workspace changes</label>
                   <button type="button" @click="openLinkedFeature">Lead settings</button>
@@ -453,7 +454,7 @@ import {
 } from './api/codexGateway'
 import type { ReasoningEffort, ResponseTextAnnotation, ThreadScrollState, UiMessage, UiThread, UiProjectGroup } from './types/codex'
 import type { AutomationDraft } from './types/automations'
-import type { ProjectBoardCardCreateInput, ProjectBoardCreateInput, ProjectBoardStatus } from './types/projectBoards'
+import type { ProjectBoardCardCreateInput, ProjectBoardCreateInput, ProjectBoardExecutionAccess, ProjectBoardStatus } from './types/projectBoards'
 
 const SkillsHub = defineAsyncComponent(() => import('./components/content/SkillsHub.vue'))
 const McpHub = defineAsyncComponent(() => import('./components/content/McpHub.vue'))
@@ -656,9 +657,10 @@ const selectedChatStatus = computed(() => {
   return 'Paused'
 })
 const canPlanChatFeature = computed(() => !projectBoardSnapshot.value.cards.some((card) => card.parentCardId === selectedChatFeature.value?.id && card.status !== 'backlog'))
+const chatExecutionAccess = computed(() => selectedChatBoard.value?.executionAccess ?? 'full-access')
 const chatLeadNeedsWrite = computed(() => {
   const board = selectedChatBoard.value
-  return Boolean(board && projectBoardSnapshot.value.agents.some((agent) => board.agentIds.includes(agent.id) && agent.sandbox === 'workspace-write'))
+  return Boolean(board && chatExecutionAccess.value === 'project' && projectBoardSnapshot.value.agents.some((agent) => board.agentIds.includes(agent.id) && agent.sandbox === 'workspace-write'))
 })
 const boardChatOptionsRef = ref<HTMLDetailsElement | null>(null)
 function collapseBoardReplyOptions(event: FocusEvent): void {
@@ -1092,10 +1094,10 @@ async function onAnswerProjectBoardQuestion(questionId: string, answer: string):
   await answerProjectBoardQuestion(questionId, { answer })
 }
 
-async function onStartProjectBoardFeature(featureId: string, allowWorkspaceWrite: boolean, mode: 'plan' | 'execute' = 'execute'): Promise<void> {
+async function onStartProjectBoardFeature(featureId: string, allowWorkspaceWrite: boolean, mode: 'plan' | 'execute' = 'execute', executionAccess?: ProjectBoardExecutionAccess): Promise<void> {
   requestBrowserTurnNotificationsPermission()
   const origin = route.fullPath
-  const snapshot = await startProjectBoardFeature(featureId, allowWorkspaceWrite, mode)
+  const snapshot = await startProjectBoardFeature(featureId, allowWorkspaceWrite, mode, executionAccess)
   if (route.fullPath !== origin) return
   const feature = snapshot.cards.find((card) => card.id === featureId)
   if (feature?.threadId) onSelectThread(feature.threadId)
@@ -1112,7 +1114,7 @@ async function onSubmitBoardChatMessage(payload: SubmitPayload): Promise<void> {
   const threadId = selectedThreadId.value
   if (!selectedChatBoard.value || boardChatSendDisabled.value) throw new Error('Resolve the request or choose how to continue before sending.')
   const options = { expectedTurnId: selectedChatIsRunning.value ? selectedThreadActiveTurnId.value : undefined,
-    mode: boardReplyMode.value, allowWorkspaceWrite: boardReplyWrite.value, reopenAndSend: boardReplyReopen.value }
+    mode: boardReplyMode.value, allowWorkspaceWrite: boardReplyWrite.value, executionAccess: chatExecutionAccess.value, reopenAndSend: boardReplyReopen.value }
   const prepared = await prepareThreadMessageInput(threadId, payload)
   requestBrowserTurnNotificationsPermission()
   try { await sendProjectBoardChatMessage(threadId, { ...prepared, ...options, clientUserMessageId: crypto.randomUUID() }) }

@@ -14,6 +14,7 @@ export type ProjectBoardVerificationPolicy = 'none' | 'self' | 'independent' | '
 export type ProjectBoardPriority = 'low' | 'normal' | 'high' | 'urgent'
 export type ProjectBoardAgentRole = 'lead' | 'product' | 'design' | 'engineering' | 'qa' | 'custom'
 export type ProjectBoardAgentSandbox = 'read-only' | 'workspace-write'
+export type ProjectBoardExecutionAccess = 'full-access' | 'project'
 export type ProjectBoardRunKind = 'plan' | 'execute' | 'board_plan'
 export type ProjectBoardRunStatus = 'queued' | 'running' | 'succeeded' | 'failed' | 'interrupted'
 
@@ -38,6 +39,7 @@ export type ProjectBoard = {
   name: string
   isDefault: boolean
   agentIds: string[]
+  executionAccess: ProjectBoardExecutionAccess
   autoDispatch: boolean
   maxConcurrentRuns: number
   plan: string
@@ -149,6 +151,7 @@ export type ProjectBoardCreateInput = {
   projectName: string
   name?: string
   isDefault?: boolean
+  executionAccess?: ProjectBoardExecutionAccess
 }
 
 export type ProjectBoardCardCreateInput = {
@@ -246,6 +249,7 @@ export type ProjectBoardDraftPlanInput = {
 
 export type ProjectBoardStartInput = {
   allowWorkspaceWrite?: boolean
+  executionAccess?: ProjectBoardExecutionAccess
   mode?: 'plan' | 'execute'
 }
 

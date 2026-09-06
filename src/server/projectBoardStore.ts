@@ -12,6 +12,7 @@ import type {
   ProjectBoardCardCreateInput,
   ProjectBoardComment,
   ProjectBoardCreateInput,
+  ProjectBoardExecutionAccess,
   ProjectBoardPlanResult,
   ProjectBoardFeaturePlan,
   ProjectBoardPriority,
@@ -206,6 +207,12 @@ function normalizeAgent(value: unknown): ProjectBoardAgent | null {
   }
 }
 
+export function readProjectBoardExecutionAccess(value: unknown, fallback: ProjectBoardExecutionAccess = 'full-access'): ProjectBoardExecutionAccess {
+  if (value === undefined) return fallback
+  if (value !== 'full-access' && value !== 'project') throw new Error('Unknown board execution access.')
+  return value
+}
+
 function normalizeBoard(value: unknown): ProjectBoard | null {
   const record = asRecord(value)
   const id = readString(record?.id, 200)
@@ -218,6 +225,7 @@ function normalizeBoard(value: unknown): ProjectBoard | null {
     name: readString(record.name, 120) || 'Project board',
     isDefault: record.isDefault === true,
     agentIds: readStringArray(record.agentIds),
+    executionAccess: record.executionAccess === 'project' ? 'project' : 'full-access',
     autoDispatch: record.autoDispatch !== false,
     maxConcurrentRuns: 1,
     plan: readString(record.plan),
@@ -693,6 +701,7 @@ export class ProjectBoardStore {
         name: 'Project board',
         isDefault: true,
         agentIds: current.agents.map((agent) => agent.id),
+        executionAccess: 'full-access',
         autoDispatch: true,
         maxConcurrentRuns: 1,
         plan: '', sourceThreadId: '', planningThreadId: '', coordinatorAgentId: '',
@@ -711,6 +720,7 @@ export class ProjectBoardStore {
         projectName: readString(record.projectName, 200),
         name: readString(record.name, 120),
         isDefault: record.isDefault === true,
+        executionAccess: readProjectBoardExecutionAccess(record.executionAccess),
       }
       if (!input.projectPath) throw new Error('A project folder is required.')
       const projectBoards = current.boards.filter((board) => board.projectPath === input.projectPath)
@@ -723,6 +733,7 @@ export class ProjectBoardStore {
         name: input.name || (projectBoards.length === 0 ? 'Project board' : `Board ${String(projectBoards.length + 1)}`),
         isDefault: makeDefault,
         agentIds: current.agents.map((agent) => agent.id),
+        executionAccess: input.executionAccess!,
         autoDispatch: true,
         maxConcurrentRuns: 1,
         plan: '', sourceThreadId: '', planningThreadId: '', coordinatorAgentId: '',
@@ -743,6 +754,7 @@ export class ProjectBoardStore {
       const existing = current.boards.find((board) => board.id === id)
       if (!existing) throw new Error('Project board not found.')
       const changes = asRecord(changesValue) ?? {}
+      const executionAccess = readProjectBoardExecutionAccess(changes.executionAccess, existing.executionAccess)
       if ('maxConcurrentRuns' in changes && changes.maxConcurrentRuns !== 1) {
         throw new Error('Project boards currently support one active feature per project.')
       }
@@ -765,6 +777,7 @@ export class ProjectBoardStore {
             name: 'name' in changes ? readString(changes.name, 120) || existing.name : existing.name,
             isDefault: makeDefault || ('isDefault' in changes ? changes.isDefault === true : existing.isDefault),
             agentIds,
+            executionAccess,
             plan: 'plan' in changes ? readString(changes.plan) : board.plan,
             autoDispatch: 'autoDispatch' in changes ? changes.autoDispatch !== false : existing.autoDispatch,
             maxConcurrentRuns: 1,
@@ -1288,7 +1301,7 @@ export class ProjectBoardStore {
           id: boardId, projectPath,
           projectName: readString(input.projectName, 200) || projectPath.split('/').filter(Boolean).at(-1) || 'Project',
           name: 'Project board', isDefault: !current.boards.some((entry) => entry.projectPath === projectPath),
-          agentIds: current.agents.map((agent) => agent.id), autoDispatch: true, maxConcurrentRuns: 1,
+          agentIds: current.agents.map((agent) => agent.id), executionAccess: 'full-access', autoDispatch: true, maxConcurrentRuns: 1,
           plan: '', sourceThreadId: '', planningThreadId: '', coordinatorAgentId: '', createdAtIso: now, updatedAtIso: now,
         }),
         name: readString(input.name, 120) || existingBoard?.name || 'Project board',

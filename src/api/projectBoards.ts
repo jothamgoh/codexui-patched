@@ -5,6 +5,7 @@ import type {
   ProjectBoardCard,
   ProjectBoardCardCreateInput,
   ProjectBoardCreateInput,
+  ProjectBoardExecutionAccess,
   ProjectBoardSnapshot,
 } from '../types/projectBoards'
 import type { ReasoningEffort } from '../types/codex'
@@ -12,7 +13,7 @@ import type { ProjectBoardModelCatalog } from '../types/projectBoardModels'
 
 export type ProjectBoardUpdateInput = Partial<Pick<
   ProjectBoard,
-  'name' | 'isDefault' | 'agentIds' | 'autoDispatch' | 'plan' | 'coordinatorAgentId'
+  'name' | 'isDefault' | 'agentIds' | 'autoDispatch' | 'plan' | 'coordinatorAgentId' | 'executionAccess'
 >>
 
 export type ProjectBoardAgentUpdateInput = Partial<Pick<
@@ -51,6 +52,7 @@ export type ProjectBoardChatMessageInput = {
   attachments?: unknown[]
   mode?: 'plan' | 'execute'
   allowWorkspaceWrite?: boolean
+  executionAccess?: ProjectBoardExecutionAccess
   reopenAndSend?: boolean
 }
 
@@ -224,10 +226,10 @@ export function answerProjectBoardQuestion(
   )
 }
 
-export function startProjectBoardFeature(featureId: string, allowWorkspaceWrite = false, mode: 'plan' | 'execute' = 'execute'): Promise<ProjectBoardSnapshot> {
+export function startProjectBoardFeature(featureId: string, allowWorkspaceWrite = false, mode: 'plan' | 'execute' = 'execute', executionAccess?: ProjectBoardExecutionAccess): Promise<ProjectBoardSnapshot> {
   return requestProjectBoardSnapshot(
     projectBoardPath(`project-board-cards/${encodeURIComponent(featureId)}/start`),
-    jsonRequest('POST', { allowWorkspaceWrite, mode }),
+    jsonRequest('POST', { allowWorkspaceWrite, mode, executionAccess }),
   )
 }
 
@@ -243,8 +245,8 @@ export function sendProjectBoardChatMessage(threadId: string, input: ProjectBoar
   return requestProjectBoardSnapshot(projectBoardPath(`project-board-threads/${encodeURIComponent(threadId)}/messages`), jsonRequest('POST', input))
 }
 
-export function startProjectBoardQueue(boardId: string, featureIds: string[], allowWorkspaceWrite: boolean): Promise<ProjectBoardSnapshot> {
-  return requestProjectBoardSnapshot(projectBoardPath(`project-boards/${encodeURIComponent(boardId)}/queue`), jsonRequest('POST', { featureIds, allowWorkspaceWrite }))
+export function startProjectBoardQueue(boardId: string, featureIds: string[], allowWorkspaceWrite: boolean, executionAccess?: ProjectBoardExecutionAccess): Promise<ProjectBoardSnapshot> {
+  return requestProjectBoardSnapshot(projectBoardPath(`project-boards/${encodeURIComponent(boardId)}/queue`), jsonRequest('POST', { featureIds, allowWorkspaceWrite, executionAccess }))
 }
 
 export function stopProjectBoardQueue(boardId: string): Promise<ProjectBoardSnapshot> {

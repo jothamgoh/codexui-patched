@@ -33,7 +33,7 @@ try {
     const workspaceText = 'Keep the user’s existing project work.\n'
     await writeFile(workspaceFile, workspaceText)
     const store = new ProjectBoardStore({ stateFilePath: join(temporary, `${label}.json`) })
-    let snapshot = await store.createBoard({ projectPath: project, projectName: 'Chat workflow', name: 'Product fixes', isDefault: true })
+    let snapshot = await store.createBoard({ projectPath: project, projectName: 'Chat workflow', name: 'Product fixes', isDefault: true, executionAccess: 'project' })
     const board = snapshot.boards[0]
     const sourceId = `source-${label}`
     const leadId = `unlisted-lead-${label}`
@@ -295,6 +295,24 @@ try {
       assert.equal(replies[1].input.mode, 'plan')
       assert.equal(replies[1].input.input[0].text, 'Include a check for the phone keyboard too.')
 
+      await store.updateBoard(board.id, { executionAccess: 'full-access' })
+      await publish()
+      if (await tracked.locator('details').getAttribute('open') === null) await tracked.locator('summary').click()
+      await page.getByLabel('Lead reply mode', { exact: true }).selectOption('execute')
+      assert.equal(await tracked.getByRole('checkbox', { name: 'Allow workspace changes', exact: true }).count(), 0)
+      await composer.fill('Continue the approved work with the board access setting.')
+      assert.equal(await page.getByRole('button', { name: 'Send message', exact: true }).isEnabled(), true)
+      await page.screenshot({ path: join(output, `full-access-chat-${label}.png`), fullPage: true })
+      await page.getByRole('button', { name: 'Send message', exact: true }).click()
+      await page.waitForFunction(() => document.querySelector('textarea.thread-composer-input').value === '')
+      const fullReply = mutations.filter((item) => item.kind === 'reply').at(-1)
+      assert.equal(fullReply.input.mode, 'execute')
+      assert.equal(fullReply.input.executionAccess, 'full-access')
+      await store.updateBoard(board.id, { executionAccess: 'project' })
+      await publish()
+      if (await tracked.locator('details').getAttribute('open') === null) await tracked.locator('summary').click()
+      await page.getByLabel('Lead reply mode', { exact: true }).selectOption('plan')
+
       listedLead = true
       await notify('thread/started', { thread: leadThread })
       if (mobile) await page.getByRole('button', { name: 'Expand sidebar', exact: true }).click()
@@ -421,6 +439,7 @@ try {
       // managed Lead. Keep two linked boards visible and review the exact result.
       snapshot = await store.createBoard({ projectPath: project, projectName: 'Chat workflow', name: 'Next release' })
       const nextBoard = snapshot.boards.find((entry) => entry.id !== board.id)
+      assert.equal(nextBoard.executionAccess, 'full-access', 'New boards default to full access')
       linkedBoardIds.add(board.id)
       linkedBoardIds.add(nextBoard.id)
       await publish()

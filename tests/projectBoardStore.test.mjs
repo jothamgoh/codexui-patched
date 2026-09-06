@@ -88,6 +88,31 @@ function draftPlan(snapshot, features, overrides = {}) {
   }
 }
 
+test('board execution access defaults to full access, persists project access, and migrates legacy boards without changing agents', async (t) => {
+  const { store, stateFilePath, reopen } = await createFixture(t)
+  const originalAgents = (await store.read()).agents
+  const created = await store.createBoard({ projectPath: '/tmp/board-access-project' })
+  assert.equal(created.boards[0].executionAccess, 'full-access')
+  const firstId = created.boards[0].id
+  const defaults = await store.ensureDefaultBoard({ projectPath: '/tmp/board-access-legacy' })
+  assert.equal(defaults.boards[0].executionAccess, 'full-access')
+  let saved = await store.updateBoard(firstId, { executionAccess: 'project' })
+  assert.equal((await reopen().read()).boards.find((board) => board.id === firstId).executionAccess, 'project')
+  for (const executionAccess of [null, '', 'allow-all']) {
+    await assert.rejects(store.updateBoard(firstId, { executionAccess }), /Unknown board execution access/u)
+    await assert.rejects(store.createBoard({ projectPath: '/tmp/invalid-access', executionAccess }), /Unknown board execution access/u)
+  }
+  assert.deepEqual(await store.read(), saved, 'Invalid settings must not create or change a board')
+  delete saved.boards.find((board) => board.id !== firstId).executionAccess
+  await writeFile(stateFilePath, JSON.stringify(saved))
+  saved = await reopen().read()
+  assert.equal(saved.boards.find((board) => board.id !== firstId).executionAccess, 'full-access')
+  assert.equal(saved.boards.find((board) => board.id === firstId).executionAccess, 'project')
+  assert.deepEqual(saved.agents, originalAgents, 'Board access must not change reusable agent profiles')
+  const project = await store.createBoard({ projectPath: '/tmp/explicit-project-access', executionAccess: 'project' })
+  assert.equal(project.boards[0].executionAccess, 'project')
+})
+
 test('saves a whole draft graph and its ordinary chat link atomically without starting work', async (t) => {
   const { store, reopen } = await createFixture(t)
   const first = draftFeature({ model: 'gpt-6-astra', reasoningEffort: 'low', verificationPolicy: 'independent' })
@@ -99,6 +124,7 @@ test('saves a whole draft graph and its ordinary chat link atomically without st
   assert.equal(saved.boards[0].sourceThreadId, input.sourceThreadId)
   assert.equal(saved.boards[0].planningThreadId, '')
   assert.equal(saved.boards[0].plan, input.summary)
+  assert.equal(saved.boards[0].executionAccess, 'full-access')
   assert.deepEqual(saved.cards.map((card) => card.id), [first.id, second.id])
   assert.deepEqual(saved.cards[1].dependencyIds, [first.id])
   assert.equal(saved.cards[0].title, first.description)

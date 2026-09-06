@@ -57,6 +57,7 @@ const snapshot = {
     projectName: 'Board smoke project',
     name: 'Product build',
     isDefault: true,
+    executionAccess: 'project',
     agentIds,
     autoDispatch: false,
     maxConcurrentRuns: 1,
@@ -450,11 +451,12 @@ try {
   assert.equal(startConsent, undefined)
   await consent.getByRole('button', { name: 'Allow edits & start' }).click()
   await consent.getByRole('alert').waitFor()
-  assert.deepEqual(startConsent, { allowWorkspaceWrite: true, mode: 'execute' })
+  assert.deepEqual(startConsent, { allowWorkspaceWrite: true, mode: 'execute', executionAccess: 'project' })
   await page.keyboard.press('Escape')
   await detail.getByRole('button', { name: 'Plan first', exact: true }).click()
   await detail.getByRole('alert').getByText('Smoke test does not run a Lead.').waitFor()
-  assert.deepEqual(startConsent, { allowWorkspaceWrite: false, mode: 'plan' })
+  assert.equal(startConsent.allowWorkspaceWrite, false)
+  assert.equal(startConsent.mode, 'plan')
 
   await page.getByRole('button', { name: 'Close feature', exact: true }).click()
   await visitBoard()
@@ -521,9 +523,36 @@ try {
   await queueDialog.getByRole('button', { name: 'Start selected features' }).click()
   await queueDialog.getByRole('alert').getByText('Queue is paused for this smoke.').waitFor()
   assert.equal(queueRequest.allowWorkspaceWrite, true)
+  assert.equal(queueRequest.executionAccess, 'project')
   assert.ok(queueRequest.featureIds.includes(savedFeature.id))
   assert.ok(!queueRequest.featureIds.includes('feature-done'))
   await page.keyboard.press('Escape')
+
+  // Full access is an explicit board setting: starting work sends that choice
+  // directly, without the project-only edit consent. Calls stay intercepted.
+  await publishQueueSnapshot({ ...queueBaseline, boards: queueBaseline.boards.map((board) => board.id === 'board-1' ? { ...board, executionAccess: 'full-access' } : board) })
+  await page.locator(`[data-feature-id="${savedFeature.id}"] .board-card-main`).click()
+  startConsent = undefined
+  await page.getByTestId('start-feature').click()
+  await detail.getByRole('alert').getByText('Smoke test does not run a Lead.').waitFor()
+  assert.equal(await consent.count(), 0)
+  assert.equal(startConsent.executionAccess, 'full-access')
+  assert.equal(startConsent.mode, 'execute')
+  await page.getByRole('button', { name: 'Close feature', exact: true }).click()
+  await page.getByRole('button', { name: 'Run selected features', exact: true }).click()
+  await queueDialog.getByText(/Full access.*no approval prompts/i).waitFor()
+  assert.equal(await queueDialog.getByRole('checkbox', { name: 'Allow project edits', exact: false }).count(), 0)
+  assert.equal(await queueDialog.getByRole('button', { name: 'Start selected features' }).isEnabled(), true)
+  await page.setViewportSize({ width: 390, height: 844 })
+  assert.ok(await queueDialog.evaluate((element) => element.scrollWidth <= element.clientWidth))
+  await page.screenshot({ path: join(outputDirectory, 'project-board-full-access-mobile.png'), fullPage: true })
+  queueRequest = undefined
+  await queueDialog.getByRole('button', { name: 'Start selected features' }).click()
+  await queueDialog.getByRole('alert').getByText('Queue is paused for this smoke.').waitFor()
+  assert.equal(queueRequest.executionAccess, 'full-access')
+  assert.ok(queueRequest.featureIds.includes(savedFeature.id))
+  await page.keyboard.press('Escape')
+  await page.setViewportSize({ width: 1600, height: 1000 })
   // Resume the real fixture's version stream after the synthetic busy snapshots.
   await page.reload({ waitUntil: 'domcontentloaded' })
 
@@ -622,6 +651,11 @@ try {
   await page.getByLabel('Show features', { exact: true }).selectOption('all')
   await page.screenshot({ path: join(outputDirectory, 'project-board-mobile-overview.png'), fullPage: true })
   await page.getByRole('button', { name: 'Board options', exact: true }).click()
+  const workPermissions = page.getByLabel('Board work permissions', { exact: true })
+  assert.equal(await workPermissions.inputValue(), 'project')
+  const permissionBounds = await workPermissions.boundingBox()
+  assert.ok(permissionBounds.height >= 44 && permissionBounds.x >= 0 && permissionBounds.x + permissionBounds.width <= 390)
+  await page.screenshot({ path: join(outputDirectory, 'project-board-permissions-mobile.png'), fullPage: true })
   await page.getByRole('button', { name: 'Agents', exact: true }).click()
   await library.getByLabel('Find an agent', { exact: true }).fill('Release coordinator')
   await library.getByRole('button', { name: 'Edit Release coordinator', exact: true }).click()

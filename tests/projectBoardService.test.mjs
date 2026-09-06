@@ -73,7 +73,7 @@ function createFakeAppServer() {
   }
 }
 
-async function createHarness(t) {
+async function createHarness(t, executionAccess = 'project') {
   const directory = await mkdtemp(join(tmpdir(), 'codexui-project-board-service-'))
   t.after(() => rm(directory, { recursive: true, force: true }))
   await mkdir(join(directory, 'project'))
@@ -96,6 +96,7 @@ async function createHarness(t) {
     projectPath,
     projectName: 'Fake project',
   })
+  if (snapshot.boards[0].executionAccess !== executionAccess) snapshot = await service.updateBoard(snapshot.boards[0].id, { executionAccess })
   const board = snapshot.boards[0]
   snapshot = await service.createCard({
     boardId: board.id,
@@ -117,6 +118,60 @@ function toolCall(threadId, action, fields = {}) {
     arguments: { action, ...fields },
   }
 }
+
+test('full-access board execution starts and replies without approval while explicit project access retains consent', async (t) => {
+  const { appServer, board, feature, service, store } = await createHarness(t, 'full-access')
+  assert.equal(board.executionAccess, 'full-access')
+  await assert.rejects(service.startFeature(feature.id, { executionAccess: 'project' }), /Confirm workspace-write/u)
+  assert.throws(() => service.startFeature(feature.id, { executionAccess: 'invalid' }), /Unknown board execution access/u)
+  assert.equal((await store.read()).runs.length, 0)
+  const started = await service.startFeature(feature.id)
+  const first = await waitFor(() => appServer.calls.find((call) => call.method === 'turn/start'), 'No full-access turn')
+  assert.equal(appServer.calls.find((call) => call.method === 'thread/start').params.sandbox, 'danger-full-access')
+  assert.equal(first.params.approvalPolicy, 'never')
+  assert.deepEqual(first.params.sandboxPolicy, { type: 'dangerFullAccess' })
+  await service.stopFeature(feature.id, { expectedRunId: started.runs[0].id })
+  await service.updateBoard(board.id, { executionAccess: 'project' })
+  const input = [{ type: 'text', text: 'Continue this tracked repair.' }]
+  await service.sendChatMessage('lead-thread', { input, executionAccess: 'full-access' })
+  const reply = await waitFor(() => appServer.calls.filter((call) => call.method === 'turn/start')[1], 'No same-chat reply')
+  assert.equal(appServer.calls.find((call) => call.method === 'thread/resume').params.sandbox, 'danger-full-access')
+  assert.equal(reply.params.approvalPolicy, 'never')
+  assert.deepEqual(reply.params.sandboxPolicy, { type: 'dangerFullAccess' })
+  assert.deepEqual(reply.params.input, input)
+  await service.handleNotification({ method: 'codexui/appServer/exited', params: {} })
+  await delay(60)
+  assert.equal(appServer.calls.filter((call) => call.method === 'turn/start').length, 2, 'A saved access default must not restart stopped work')
+})
+
+test('a selected batch and its automatic follow-ups retain the accepted access when the board default changes', async (t) => {
+  for (const executionAccess of ['project', 'full-access']) {
+    const { appServer, board, feature, service, store } = await createHarness(t, executionAccess)
+    await service.updateCard(feature.id, { verificationPolicy: 'self' })
+    const cards = await service.createCard({ boardId: board.id, title: 'Dependent feature', dependencyIds: [feature.id], verificationPolicy: 'self' })
+    const dependent = cards.cards.find((card) => card.title === 'Dependent feature')
+    await service.startBoardQueue(board.id, { featureIds: [dependent.id, feature.id], allowWorkspaceWrite: executionAccess === 'project' })
+    await waitFor(() => appServer.calls.find((call) => call.method === 'turn/start'), 'No first batch turn')
+    await service.updateBoard(board.id, { executionAccess: executionAccess === 'project' ? 'full-access' : 'project' })
+    await service.handleDynamicToolCall(toolCall('lead-thread', 'replace_plan', { plan: { summary: 'A small feature.', tasks: [
+      { key: 'work', title: 'Implement', description: 'Do the work.', acceptanceCriteria: 'Checked.', agentId: 'builtin-engineer', taskPurpose: 'work', dependsOn: [] },
+    ] } }))
+    await service.handleNotification({ method: 'turn/completed', params: { threadId: 'lead-thread', turn: { id: 'lead-turn-1', status: 'completed' } } })
+    await waitFor(() => appServer.calls.filter((call) => call.method === 'turn/start')[1], 'No automatic follow-up')
+    const task = (await store.read()).cards.find((card) => card.parentCardId === feature.id)
+    const call = (action, fields) => service.handleDynamicToolCall({ ...toolCall('lead-thread', action, fields), turnId: 'lead-turn-2' })
+    await call('start_task', { taskId: task.id })
+    await call('complete_task', { taskId: task.id, summary: 'Implemented and checked.' })
+    await call('finish_feature', { summary: 'Ready.' })
+    await service.handleNotification({ method: 'turn/completed', params: { threadId: 'lead-thread', turn: { id: 'lead-turn-2', status: 'completed' } } })
+    await waitFor(() => appServer.calls.filter((call) => call.method === 'turn/start')[2], 'No dependent feature')
+    for (const { params } of appServer.calls.filter((entry) => entry.method === 'turn/start')) {
+      assert.equal(params.approvalPolicy, executionAccess === 'full-access' ? 'never' : 'on-request')
+      assert.equal(params.sandboxPolicy.type, executionAccess === 'full-access' ? 'dangerFullAccess' : 'workspaceWrite')
+    }
+    await service.handleNotification({ method: 'codexui/appServer/exited', params: {} })
+  }
+})
 
 test('Stop interrupts only the current run, preserves handoffs, and permits deleting its unanswered questions', async (t) => {
   const { appServer, feature, service, store } = await createHarness(t)
@@ -362,15 +417,16 @@ test('idle managed replies preserve the plan and require fresh write consent and
 })
 
 test('replies in a planning chat remain read-only and retain the original linked plan', async (t) => {
-  const { appServer, board, service, store } = await createHarness(t)
+  const { appServer, board, service, store } = await createHarness(t, 'full-access')
   await service.startBoardPlan(board.id, { plan: 'Ship a useful project.', sourceThreadId: 'original-chat' })
   await waitFor(() => appServer.calls.find((call) => call.method === 'turn/start'), 'No board planner')
   await service.handleNotification({ method: 'turn/completed', params: { threadId: 'lead-thread', turn: { id: 'lead-turn-1', status: 'completed' } } })
   const input = [{ type: 'text', text: 'Include the missing accessibility feature.' }]
-  await service.sendChatMessage('lead-thread', { input, mode: 'execute', allowWorkspaceWrite: true })
+  await service.sendChatMessage('lead-thread', { input, mode: 'execute', executionAccess: 'full-access', allowWorkspaceWrite: true })
   const reply = await waitFor(() => appServer.calls.filter((call) => call.method === 'turn/start')[1], 'No planning reply')
   assert.deepEqual(reply.params.input, input)
   assert.equal(reply.params.sandboxPolicy.type, 'readOnly')
+  assert.equal(reply.params.sandboxPolicy.networkAccess, false)
   assert.equal(reply.params.approvalPolicy, 'never')
   assert.match(reply.params.additionalContext.codexui_project_board_reply.value, /avoiding duplicates/u)
   const snapshot = await store.read()
@@ -779,7 +835,7 @@ test('app-server exit interrupts pending and active turns, releases locks, and r
 
 
 test('plans read-only, preserves the reviewed task graph, and applies feature settings on each run', async (t) => {
-  const { appServer, feature, store } = await createHarness(t)
+  const { appServer, feature, store } = await createHarness(t, 'full-access')
   const service = new ProjectBoardService({ store, appServer, resolveExecutionSettings: async (settings) => {
     if (settings.model === 'unavailable') throw new Error('Selected model is unavailable.')
     return { model: settings.model || 'default-model', reasoningEffort: settings.reasoningEffort }
@@ -816,7 +872,8 @@ test('plans read-only, preserves the reviewed task graph, and applies feature se
   const execution = await waitFor(() => appServer.calls.filter((call) => call.method === 'turn/start')[1], 'No execution turn')
   assert.equal(execution.params.model, 'default-model')
   assert.equal(execution.params.effort, 'high')
-  assert.equal(execution.params.sandboxPolicy.type, 'workspaceWrite')
+  assert.equal(execution.params.sandboxPolicy.type, 'dangerFullAccess')
+  assert.equal(execution.params.approvalPolicy, 'never')
   assert.equal(service.isPlanningThread('lead-thread'), false)
   assert.equal(appServer.calls.filter((call) => call.method === 'thread/start').length, 1)
   snapshot = await store.read()
@@ -829,7 +886,7 @@ test('plans read-only, preserves the reviewed task graph, and applies feature se
 })
 
 test('imports a plan into linked feature cards once, scopes planner authority, and preserves unrelated work on failure', async (t) => {
-  const { appServer, board, feature, service, store } = await createHarness(t)
+  const { appServer, board, feature, service, store } = await createHarness(t, 'full-access')
   await service.startBoardPlan(board.id, { plan: 'Build a foundation, then the interface.', sourceThreadId: 'ordinary-chat', coordinatorAgentId: 'builtin-product', model: 'planner-model', reasoningEffort: 'low' }, 'User and assistant agreed on a small release.')
   const turn = await waitFor(() => appServer.calls.find((call) => call.method === 'turn/start'), 'No board planner')
   assert.equal(turn.params.sandboxPolicy.type, 'readOnly')

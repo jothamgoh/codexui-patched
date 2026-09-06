@@ -126,7 +126,7 @@ per project directory at a time.
 Lead chat replies use the board service. During an active run they steer the
 exact current turn; a stale turn cannot silently become a new run. Idle replies
 create a new tracked run in the same chat using current profile, dependency,
-project-lock, and write-consent checks. Planning chats remain read-only. A done
+project-lock, and work-permission checks. Planning chats remain read-only. A done
 feature requires explicit reopening, retaining prior handoffs and respecting
 its dependents. Ordinary turn/start and goal continuation cannot bypass this
 lifecycle. Submission errors retain the full composer draft. Stop revokes pending
@@ -149,11 +149,15 @@ without another device alert. A board is an
 ongoing container, not a single completable job.
 
 Native subagents share the Lead thread sandbox. Persona labels are guidance,
-not separate security boundaries. Before a write-capable start, the UI explains
-that the Lead and its subagents can edit project files and the start request
-must explicitly authorize workspace writes. Automatic continuations stay within
-that authorization. Existing Codex approvals remain separate from board
-questions and must use the existing approval flow.
+not separate security boundaries. Boards default to Full access for execution:
+files, commands, and network access without Codex approval prompts. This is a
+saved board setting, including for existing boards without an explicit setting.
+Project access remains selectable and retains explicit workspace-write consent
+and the native approval flow for wider access. Planning is always read-only.
+Each start snapshots its displayed permission choice; queues and automatic
+continuations retain that choice if board settings change. Stop/restart still
+revoke continuation and never automatically start work. Ordinary chats retain
+their own permissions. Board questions remain distinct from native approvals.
 
 A board tool mutation must come from the feature's active thread and exact turn.
 Question and artifact records retain the originating run. Reading context does

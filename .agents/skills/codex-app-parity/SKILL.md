@@ -5,6 +5,21 @@ description: "Use when implementing or changing user-visible behavior/UI in this
 
 # Codex App Parity Skill
 
+## Findings: Full-access board execution defaults (2026-09-06)
+
+- Native app-initial maps dangerFullAccess plus approvalPolicy never to the
+  Full access preset. Board-specific saved defaults are a requested web extension;
+  ordinary chat settings remain independent. Project access retains its consent UI.
+- A real isolated app-server probe showed thread/resume can ignore a full-access
+  override for a loaded read-only chat. Set dangerFullAccess/never on turn/start.
+  The probe wrote a known file outside its temporary project without approvals;
+  the next explicit readOnly turn blocked writes again. Planning must set its
+  own policy on every turn, including after execution in the same chat.
+- Snapshot the displayed access when starting a feature, opening a batch, or
+  replying in an idle Lead. Queues and continuations keep that accepted access
+  if the board default changes. Full access does not itself start work, answer
+  product questions, or restore revoked continuation after Stop/restart.
+
 ## Findings: Mobile board review density (2026-09-06)
 
 - Boards remain a web extension. Follow native direct-chat navigation and

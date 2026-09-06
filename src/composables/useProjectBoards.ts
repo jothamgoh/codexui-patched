@@ -34,6 +34,7 @@ import type {
   ProjectBoardAgentCreateInput,
   ProjectBoardCardCreateInput,
   ProjectBoardCreateInput,
+  ProjectBoardExecutionAccess,
   ProjectBoardSnapshot,
 } from '../types/projectBoards'
 import {
@@ -219,16 +220,16 @@ export function useProjectBoards(options: UseProjectBoardsOptions = {}) {
       mutate(() => addProjectBoardComment(cardId, input)),
     answerQuestion: (questionId: string, input: ProjectBoardQuestionAnswerInput) =>
       mutate(() => answerProjectBoardQuestion(questionId, input)),
-    startFeature: (featureId: string, allowWorkspaceWrite = false, mode: 'plan' | 'execute' = 'execute') =>
-      mutate(() => startProjectBoardFeature(featureId, allowWorkspaceWrite, mode)),
+    startFeature: (featureId: string, allowWorkspaceWrite = false, mode: 'plan' | 'execute' = 'execute', executionAccess?: ProjectBoardExecutionAccess) =>
+      mutate(() => startProjectBoardFeature(featureId, allowWorkspaceWrite, mode, executionAccess)),
     stopFeature: (featureId: string, expectedRunId?: string) =>
       mutate(() => stopProjectBoardFeature(featureId, expectedRunId)),
     sendChatMessage: (threadId: string, input: ProjectBoardChatMessageInput) =>
       mutate(() => sendProjectBoardChatMessage(threadId, input)),
     planBoard: (boardId: string, input: ProjectBoardPlanInput) =>
       mutate(() => planProjectBoard(boardId, input)),
-    startQueue: (boardId: string, featureIds: string[], allowWorkspaceWrite: boolean) =>
-      mutate(() => startProjectBoardQueue(boardId, featureIds, allowWorkspaceWrite)),
+    startQueue: (boardId: string, featureIds: string[], allowWorkspaceWrite: boolean, executionAccess?: ProjectBoardExecutionAccess) =>
+      mutate(() => startProjectBoardQueue(boardId, featureIds, allowWorkspaceWrite, executionAccess)),
     stopQueue: (boardId: string) => mutate(() => stopProjectBoardQueue(boardId)),
   }
 }

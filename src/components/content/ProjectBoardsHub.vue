@@ -37,6 +37,7 @@
           </option>
         </select>
       </label>
+      <label v-if="activeBoard" class="board-access-setting"><span>Work permissions</span><select :value="boardExecutionAccess" aria-label="Board work permissions" :disabled="isDictating || isMutating" @change="changeExecutionAccess"><option value="full-access">Full access (default)</option><option value="project">Project access</option></select><small>{{ boardExecutionAccess === 'full-access' ? 'Files, commands and network access without approval prompts.' : 'Project edits only; wider access can ask for approval.' }} Applies to new starts; planning stays read-only.</small></label>
       <label v-if="activeBoard" class="boards-auto-toggle">
         <input
           type="checkbox"
@@ -293,6 +294,7 @@
             </section>
             <details class="feature-options">
               <summary>Feature settings & actions</summary>
+              <p class="detail-muted">Next start: {{ boardExecutionAccess === 'full-access' ? 'Full access · no approval prompts' : 'Project access' }}. Change this in Board options.</p>
               <p class="detail-muted">Lead settings: {{ selectedCard.model || agentFor(selectedCard.assignedAgentId)?.model || 'App default model' }} · {{ selectedCard.reasoningEffort || agentFor(selectedCard.assignedAgentId)?.reasoningEffort || 'Default' }} reasoning.</p>
               <div class="board-detail-actions">
                 <Button type="button" variant="outline" :disabled="selectedRunIsActive" @click="openEditSelectedCard"><Pencil aria-hidden="true" /> Edit</Button>
@@ -359,7 +361,7 @@
         <DialogContent @interact-outside="isDictating && $event.preventDefault()" aria-modal="true" class="board-dialog agent-dialog" :aria-describedby="undefined" @open-auto-focus="rememberFocus('agents')" @close-auto-focus="restoreFocus('agents', $event)">
           <header><div><DialogTitle>Agent library</DialogTitle><p>Reusable agent profiles. Any agent can lead a feature or work on its tasks.</p></div><Button type="button" variant="ghost" size="icon-sm" aria-label="Close" @click="agentDialogOpen = false"><X /></Button></header>
           <p v-if="error" class="boards-alert" role="alert">{{ error }}</p>
-          <p class="agent-access-note">Access is shared by the Lead and its subagents. If any selected agent can edit, read-only role instructions are guidance, not separate sandbox restrictions.</p>
+          <p class="agent-access-note">Work permissions come from the board and are shared by the Lead and its subagents. In Full access, role instructions guide what an agent does; they do not restrict its file or network access.</p>
           <div class="agent-dialog-body">
             <section>
               <h3>Available agents <span class="agent-help">· {{ boardAgents.length }} on this board</span></h3>
@@ -400,8 +402,9 @@
         </div>
         <div class="queue-list"><label v-for="feature in queueCandidates" :key="feature.id" class="queue-feature"><input v-model="queueFeatureIds" type="checkbox" :value="feature.id" /><span><strong>{{ feature.title }}</strong><small>{{ dependencyLabel(feature) || 'Ready when the project is free' }}</small></span></label></div>
         <p class="detail-muted">Pauses for a question, failure, or review. New features are not added to this selection automatically. After a restart, select the remaining features again.</p>
-        <label v-if="boardAgents.some(agent => agent.sandbox === 'workspace-write')" class="checkbox-row"><input v-model="queueAllowEdits" type="checkbox" /><span>Allow project edits for these selected features and their agents.</span></label>
-        <footer><Button type="button" variant="ghost" @click="queueDialogOpen = false">Cancel</Button><Button type="submit" :disabled="isDictating || isMutating || Boolean(activeProjectRun) || !queueFeatureIds.length || (boardAgents.some(agent => agent.sandbox === 'workspace-write') && !queueAllowEdits)">Start selected features</Button></footer>
+        <p v-if="queueExecutionAccess === 'full-access'" class="detail-muted" data-testid="queue-full-access">Full access · no approval prompts for these features and their agents.</p>
+        <label v-else-if="boardAgents.some(agent => agent.sandbox === 'workspace-write')" class="checkbox-row"><input v-model="queueAllowEdits" type="checkbox" /><span>Allow project edits for these selected features and their agents.</span></label>
+        <footer><Button type="button" variant="ghost" @click="queueDialogOpen = false">Cancel</Button><Button type="submit" :disabled="isDictating || isMutating || Boolean(activeProjectRun) || !queueFeatureIds.length || (queueExecutionAccess === 'project' && boardAgents.some(agent => agent.sandbox === 'workspace-write') && !queueAllowEdits)">Start selected features</Button></footer>
       </form>
     </DialogContent></DialogPortal></DialogRoot>
 
@@ -456,6 +459,7 @@ import type {
   ProjectBoardAgentCreateInput,
   ProjectBoardCard,
   ProjectBoardCardCreateInput,
+  ProjectBoardExecutionAccess,
   ProjectBoardPriority,
   ProjectBoardRunStatus,
   ProjectBoardSnapshot,
@@ -476,8 +480,8 @@ type BoardActions = {
   deleteCard: (cardId: string) => Promise<unknown>
   addComment: (cardId: string, text: string) => Promise<unknown>
   answerQuestion: (questionId: string, answer: string) => Promise<unknown>
-  startFeature: (featureId: string, allowWorkspaceWrite: boolean, mode?: 'plan' | 'execute') => Promise<unknown>
-  startQueue: (boardId: string, featureIds: string[], allowWorkspaceWrite: boolean) => Promise<unknown>
+  startFeature: (featureId: string, allowWorkspaceWrite: boolean, mode?: 'plan' | 'execute', executionAccess?: ProjectBoardExecutionAccess) => Promise<unknown>
+  startQueue: (boardId: string, featureIds: string[], allowWorkspaceWrite: boolean, executionAccess?: ProjectBoardExecutionAccess) => Promise<unknown>
   stopQueue: (boardId: string) => Promise<unknown>
   stopFeature: (featureId: string, expectedRunId?: string) => Promise<unknown>
 }
@@ -539,6 +543,7 @@ const startDialogOpen = ref(false)
 const queueDialogOpen = ref(false)
 const queueFeatureIds = ref<string[]>([])
 const queueAllowEdits = ref(false)
+const queueExecutionAccess = ref<ProjectBoardExecutionAccess>('full-access')
 const featureSearch = ref('')
 const boardOptionsOpen = ref(false)
 const isMobileBoard = useMediaQuery('(max-width: 700px)')
@@ -620,6 +625,7 @@ const activeBoard = computed<ProjectBoard | null>(() => {
   return projectBoards.value.find((board) => board.isDefault) ?? projectBoards.value[0] ?? null
 })
 const boardAgents = computed(() => props.snapshot.agents.filter((agent) => activeBoard.value?.agentIds.includes(agent.id)))
+const boardExecutionAccess = computed(() => activeBoard.value?.executionAccess ?? 'full-access')
 const featureCards = computed(() => props.snapshot.cards.filter((card) => card.boardId === activeBoard.value?.id && !card.parentCardId))
 const openBoardQuestions = computed(() => props.snapshot.questions.filter((question) => question.boardId === activeBoard.value?.id && question.status === 'open').sort((a, b) => a.createdAtIso.localeCompare(b.createdAtIso)))
 const attentionCards = computed(() => featureCards.value.filter((card) => requestForCard(card) || ['blocked', 'review'].includes(cardDisplayStatus(card)) || (cardDisplayStatus(card) === 'needs_input' && !openQuestionFor(card))))
@@ -831,6 +837,14 @@ function toggleAutoDispatch(event: Event): void {
   void submitMutation(() => props.actions.updateBoard(boardId, { autoDispatch }))
 }
 
+function changeExecutionAccess(event: Event): void {
+  const boardId = activeBoard.value?.id
+  const select = event.target as HTMLSelectElement
+  const executionAccess = select.value as ProjectBoardExecutionAccess
+  select.value = boardExecutionAccess.value
+  if (boardId) void submitMutation(() => props.actions.updateBoard(boardId, { executionAccess }))
+}
+
 function moveCardFromEvent(card: ProjectBoardCard, event: Event): void {
   const select = event.target as HTMLSelectElement
   const status = select.value as ProjectBoardStatus
@@ -846,7 +860,8 @@ function dropOnColumn(status: ProjectBoardStatus): void {
 }
 
 function startSelectedCard(): void {
-  if (boardAgents.value.some((agent) => agent.sandbox === 'workspace-write')) startDialogOpen.value = true
+  if (boardExecutionAccess.value === 'full-access') runSelectedFeature(false)
+  else if (boardAgents.value.some((agent) => agent.sandbox === 'workspace-write')) startDialogOpen.value = true
   else runSelectedFeature(false)
 }
 
@@ -860,12 +875,13 @@ function openQueue(): void {
   const previous = new Set(activeQueue.value?.featureIds || [])
   queueFeatureIds.value = queueCandidates.value.filter((card) => !previous.size || previous.has(card.id)).map((card) => card.id)
   queueAllowEdits.value = false
+  queueExecutionAccess.value = boardExecutionAccess.value
   queueDialogOpen.value = true
 }
 function runQueue(): void {
   if (activeProjectRun.value) return
   const boardId = activeBoard.value?.id
-  if (boardId) void submitMutation(() => props.actions.startQueue(boardId, [...queueFeatureIds.value], queueAllowEdits.value), () => { queueDialogOpen.value = false })
+  if (boardId) void submitMutation(() => props.actions.startQueue(boardId, [...queueFeatureIds.value], queueAllowEdits.value, queueExecutionAccess.value), () => { queueDialogOpen.value = false })
 }
 function pauseQueue(): void {
   const boardId = activeBoard.value?.id
@@ -879,7 +895,7 @@ function dependencyLabel(card: ProjectBoardCard): string {
 }
 function runSelectedFeature(allowWorkspaceWrite: boolean): void {
   const cardId = selectedCard.value?.id
-  if (cardId) void submitMutation(() => props.actions.startFeature(cardId, allowWorkspaceWrite), () => { startDialogOpen.value = false })
+  if (cardId) void submitMutation(() => props.actions.startFeature(cardId, allowWorkspaceWrite, 'execute', startDialogOpen.value ? 'project' : boardExecutionAccess.value), () => { startDialogOpen.value = false })
 }
 
 function answerSelectedQuestion(): void {
@@ -970,6 +986,8 @@ function formatTime(value: string): string { const date = new Date(value); retur
 .boards-toolbar select, .board-form select, .detail-status-select select, .board-card-move select, .new-agent-form select, .question-picker select { @apply h-9 rounded-md border px-2 text-sm outline-none; background: var(--surface-elevated); border-color: var(--border-strong); color: var(--text-primary); }
 .boards-toolbar select:focus, .board-form select:focus { @apply ring-2 ring-blue-500/25; border-color: var(--accent-blue); }
 .boards-toolbar .boards-auto-toggle { @apply ml-auto flex cursor-pointer flex-row items-center gap-2 pb-2 text-xs; color: var(--text-tertiary); }
+.boards-toolbar .board-access-setting { max-width: 22rem; }
+.board-access-setting small { font-size: 11px; line-height: 1.4; color: var(--text-secondary); }
 .boards-auto-toggle input { @apply h-4 w-4 accent-blue-600; }
 .boards-auto-toggle small { background: var(--surface-muted); @apply rounded-full px-2 py-0.5 text-[10px]; }
 .boards-live-dot { @apply h-2 w-2 rounded-full bg-emerald-500; }
@@ -1143,6 +1161,7 @@ select:disabled { cursor: not-allowed; opacity: 0.65; }
   .board-workflow .boards-header-actions { gap: .5rem; }
   .boards-toolbar { @apply items-stretch; }
   .boards-toolbar label { @apply min-w-0 flex-1; }
+  .boards-toolbar .board-access-setting { width: 100%; max-width: none; flex: none; }
   .boards-toolbar select { @apply w-full; }
   .boards-hub select, .board-detail-panel select, .board-dialog select { font-size: 16px; }
   .boards-hub :deep(button), .boards-hub select, .board-detail-panel :deep(button), .board-detail-panel select, .board-dialog :deep(button), .board-dialog select { min-height: 44px; }

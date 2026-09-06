@@ -155,6 +155,101 @@ async function waitForServer() {
   throw new Error(`Timed out waiting for Vite.\n${serverOutput}`)
 }
 
+async function checkCompletedBoardChats(target, touch, agents) {
+  const destinations = [
+    { id: 'completed-source-board', name: 'Finished source plan', sourceThreadId: 'completed-source', planningThreadId: 'completed-source-planner', threadId: 'completed-source', label: 'Open original chat' },
+    { id: 'completed-planner-board', name: 'Finished planning board', sourceThreadId: '', planningThreadId: 'completed-planner', threadId: 'completed-planner', label: 'Open planning chat' },
+    { id: 'completed-manual-board', name: 'Finished manual board', sourceThreadId: '', planningThreadId: '', threadId: 'completed-latest-lead', label: 'Open latest Lead chat' },
+    { id: 'completed-source-sibling', name: 'Second plan from this chat', sourceThreadId: 'completed-source', planningThreadId: '', threadId: 'completed-source', label: 'Open original chat' },
+  ]
+  const earlier = new Date(Date.parse(now) - 120_000).toISOString()
+  const completeSnapshot = structuredClone({ ...snapshot, version: 9500, agents,
+    boards: destinations.map((destination) => ({ ...snapshot.boards[0], id: destination.id, name: destination.name, sourceThreadId: destination.sourceThreadId, planningThreadId: destination.planningThreadId })),
+    cards: [
+      card({ id: 'completed-source-feature', boardId: destinations[0].id, title: 'Source plan result', status: 'done', threadId: 'completed-source-lead' }),
+      card({ id: 'completed-planner-feature', boardId: destinations[1].id, title: 'Planning board result', status: 'done', threadId: 'completed-planner-lead' }),
+      card({ id: 'completed-latest-feature', boardId: destinations[2].id, title: 'Latest manual result', status: 'done', threadId: 'completed-latest-lead' }),
+      card({ id: 'completed-sibling-feature', boardId: destinations[3].id, title: 'Second source plan result', status: 'done', threadId: 'completed-sibling-lead' }),
+      { ...card({ id: 'completed-older-feature', boardId: destinations[2].id, title: 'Earlier manual result', status: 'done', threadId: 'completed-older-lead' }), updatedAtIso: earlier, completedAtIso: earlier },
+    ], runs: [], queues: [], questions: [], comments: [], artifacts: [] })
+  completeSnapshot.runs = completeSnapshot.cards.map((feature) => ({ ...snapshot.runs[0], id: `${feature.id}-run`, cardId: feature.id, boardId: feature.boardId, threadId: feature.threadId, status: 'succeeded', startedAtIso: feature.completedAtIso, finishedAtIso: feature.completedAtIso })).reverse()
+  completeSnapshot.queues = [{ boardId: destinations[1].id, status: 'paused', featureIds: ['completed-planner-feature'], currentFeatureId: '', reason: 'Earlier queue pause.' }]
+  const originalState = structuredClone(completeSnapshot)
+  const threadIds = new Set([...destinations.flatMap((destination) => [destination.sourceThreadId, destination.planningThreadId]), ...completeSnapshot.cards.map((feature) => feature.threadId)].filter(Boolean))
+  const threads = [...threadIds].map((id) => ({ id, name: `Discussion for ${id}`, preview: `Finished discussion: ${id}.`, cwd: fixtureProject, source: 'vscode', status: { type: 'idle' }, createdAt: 1, updatedAt: 2,
+    turns: [{ id: `${id}-turn`, status: 'completed', items: [{ id: `${id}-answer`, type: 'agentMessage', phase: 'final_answer', text: `Finished discussion: ${id}.` }] }] }))
+  const navigationWrites = []
+  await target.route('**/codex-api/**', (route) => {
+    const request = route.request(), path = new URL(request.url()).pathname
+    const json = (value) => route.fulfill({ json: value })
+    if (/^\/codex-api\/project-board/.test(path) && request.method() !== 'GET') {
+      navigationWrites.push({ path, method: request.method() })
+      return route.fulfill({ status: 409, json: { error: 'Opening a completed board chat cannot change its work.' } })
+    }
+    if (path === '/codex-api/project-boards') return json({ data: completeSnapshot })
+    if (path === '/codex-api/server-requests/pending') return json({ requests: [] })
+    if (path === '/codex-api/rpc') {
+      const { method, params = {} } = request.postDataJSON()
+      if (method === 'thread/list') return json({ result: { data: threads, nextCursor: null } })
+      if (method === 'thread/read' || method === 'thread/resume') return json({ result: { thread: threads.find((thread) => thread.id === params.threadId), model: 'build-model', reasoningEffort: 'high' } })
+      if (method === 'thread/start' || method === 'turn/start') { navigationWrites.push({ method }); return route.fulfill({ status: 409, json: { error: 'Chat navigation cannot start a run.' } }) }
+      if (method === 'thread/goal/get') return json({ result: { goal: null } })
+    }
+    if (path === '/codex-api/thread-page' || path === '/codex-api/thread-resume-lite') return json({ result: { thread: threads.find((thread) => thread.id === request.postDataJSON().threadId), model: 'build-model', reasoningEffort: 'high', page: { startTurnIndex: 0, endTurnIndex: 1, totalTurns: 1, hasEarlier: false } } })
+    return route.fallback()
+  })
+  const press = (locator) => touch ? locator.tap() : locator.click()
+  const overviewUrl = `${origin}/?completed-chats=${touch ? 'touch' : 'desktop'}#/boards`
+  await target.setViewportSize({ width: touch ? 390 : 1600, height: touch ? 844 : 1000 })
+  await target.goto(overviewUrl, { waitUntil: 'domcontentloaded' })
+  const overview = target.getByTestId('board-work-overview')
+  const yourBoards = overview.getByRole('region', { name: 'Your boards', exact: true })
+  for (const destination of [destinations[0], destinations[3], destinations[1], destinations[2]]) {
+    const boardSummary = yourBoards.locator('article').filter({ has: target.getByRole('heading', { name: destination.name, exact: true }) })
+    await overview.locator('.overview-counts').getByText('5 done', { exact: true }).waitFor()
+    const overviewChat = boardSummary.getByRole('button', { name: destination.label, exact: true })
+    await overviewChat.waitFor()
+    if (touch) for (const width of [320, 390]) {
+      await target.setViewportSize({ width, height: 844 })
+      assert.ok((await overviewChat.boundingBox()).height >= 44)
+      assert.equal(await boardSummary.evaluate((element) => element.scrollWidth <= element.clientWidth && document.documentElement.scrollWidth <= innerWidth), true)
+    }
+    await press(overviewChat)
+    await target.waitForURL((url) => url.hash === `#/thread/${destination.threadId}?board=${destination.id}`)
+    await target.getByText(`Finished discussion: ${destination.threadId}.`, { exact: true }).waitFor()
+    if (destination.sourceThreadId) assert.equal(await target.getByRole('combobox', { name: 'Linked board', exact: true }).inputValue(), destination.id, 'Shared source chats select the exact board just opened')
+    await target.goBack()
+    await press(boardSummary.getByRole('button', { name: 'Open board', exact: true }))
+    await target.waitForURL(`**#/board/${destination.id}`)
+    const delivery = target.getByRole('region', { name: 'Board delivery', exact: true })
+    await delivery.getByText('All features complete', { exact: true }).waitFor()
+    assert.equal(await target.getByRole('button', { name: 'Board options', exact: true }).getAttribute('aria-expanded'), 'false')
+    const chat = delivery.getByRole('button', { name: destination.label, exact: true })
+    await chat.waitFor()
+    if (touch) for (const width of [320, 390]) {
+      await target.setViewportSize({ width, height: 844 })
+      await target.getByTestId('project-board').evaluate((element) => { element.scrollTop = 0 })
+      const bounds = await chat.boundingBox()
+      assert.ok(bounds.height >= 44 && bounds.y >= 0 && bounds.y + bounds.height <= 844, 'The completed board chat action is visible without opening options')
+      assert.equal(await delivery.evaluate((element) => element.scrollWidth <= element.clientWidth && document.documentElement.scrollWidth <= innerWidth), true)
+      if (destination === destinations[0]) await target.screenshot({ path: join(outputDirectory, `project-board-complete-${width}-touch.png`), fullPage: true })
+    }
+    else if (destination === destinations[0]) await target.screenshot({ path: join(outputDirectory, 'project-board-complete-desktop.png'), fullPage: true })
+    await press(chat)
+    await target.waitForURL((url) => url.hash === `#/thread/${destination.threadId}?board=${destination.id}`)
+    await target.getByText(`Finished discussion: ${destination.threadId}.`, { exact: true }).waitFor()
+    if (destination.sourceThreadId) assert.equal(await target.getByRole('combobox', { name: 'Linked board', exact: true }).inputValue(), destination.id)
+    await target.goBack()
+    await delivery.getByText('All features complete', { exact: true }).waitFor()
+    await press(delivery.getByRole('button', { name: 'Review finished features', exact: true }))
+    await target.locator('[data-board-status="done"]:visible').waitFor()
+    if (touch) assert.equal(await target.getByLabel('Show features', { exact: true }).inputValue(), 'done')
+    await press(target.getByRole('button', { name: 'All work', exact: true }))
+  }
+  assert.deepEqual(navigationWrites, [], 'Reviewing finished chats creates no run or board status update')
+  assert.deepEqual(completeSnapshot, originalState, 'All completed feature results stay completed')
+}
+
 let browser
 let page
 const pageErrors = []
@@ -169,6 +264,20 @@ try {
   assert.equal(isolatedPushState.subscriptions.length, 0, 'Browser fixture must not load real push subscribers')
   const isolatedTelegram = await (await fetch(`${origin}/codex-api/telegram/config`)).json()
   assert.equal(isolatedTelegram.data.available, false, 'Browser fixture must not load Telegram credentials')
+  if (process.env.CODEXUI_BOARD_SCENARIO === 'completed-chats') {
+    const agents = (await (await fetch(`${origin}/codex-api/project-boards`)).json()).data.agents
+    browser = await chromium.launch({ headless: true })
+    page = await browser.newPage({ viewport: { width: 1600, height: 1000 }, deviceScaleFactor: 1 })
+    mobilePage = await browser.newPage({ ...devices['iPhone 13'], deviceScaleFactor: 1 })
+    for (const target of [page, mobilePage]) {
+      target.on('pageerror', (error) => pageErrors.push(error.message))
+      await target.addInitScript(() => localStorage.setItem('codex-web-local.theme.v1', 'dark'))
+    }
+    await checkCompletedBoardChats(page, false, agents)
+    await checkCompletedBoardChats(mobilePage, true, agents)
+    assert.deepEqual(pageErrors, [])
+    console.log('Completed-board chat navigation passed on desktop and touch mobile (320/390px), preserving completed work and starting no runs.')
+  } else {
   const directTurn = (threadId) => fetch(`${origin}/codex-api/rpc`, {
     method: 'POST', headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ method: 'turn/start', params: { threadId, input: [{ type: 'text', text: 'Fixture request must never execute.' }] } }),
@@ -1282,6 +1391,9 @@ try {
   await checkWorkOverview(page, false)
   await checkWorkOverview(mobilePage, true)
 
+  await checkCompletedBoardChats(page, false, beforeDelete.agents)
+  await checkCompletedBoardChats(mobilePage, true, beforeDelete.agents)
+
   // Exercise helper grouping in the real app with browser-only thread, board,
   // event and question fixtures. No helper turn or reply reaches the runtime.
   async function checkHelperGrouping(target, touch) {
@@ -1436,6 +1548,7 @@ try {
 
   assert.deepEqual(pageErrors, [])
   console.log(`Project board smoke passed: inbox decisions and run receipts, questions, draft/retry preservation, direct model settings and inheritance, Plan first, queue consent, chat-to-board entry, grouped helper Activity and nested reload recovery, voice/manual save, dark dialogs, ${mobileEngineName} touch/mobile layout at 320/390/640px, active-board delete guard and confirmed idle-board removal, and ordinary chat navigation. Model execution is verified separately by the native runtime probe.`)
+  }
 } catch (error) {
   await mobilePage?.screenshot({ path: join(outputDirectory, 'project-board-mobile-failure.png'), fullPage: true }).catch(() => undefined)
   await page?.screenshot({ path: join(outputDirectory, 'project-board-failure.png'), fullPage: true }).catch(() => undefined)

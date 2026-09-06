@@ -59,7 +59,7 @@ const dictation = useDictation({
 const { state, isStarting, canRetry, isSupported, errorMessage, startRecording, stopRecording, retryTranscription, cancelRecording } = dictation
 const busy = computed(() => isStarting.value || state.value !== 'idle' || canRetry.value || !!pendingText.value)
 const status = computed(() => errorMessage.value || (isStarting.value ? 'Opening microphone…'
-  : state.value === 'recording' ? 'Recording… Stop when you’re ready.'
+  : state.value === 'recording' ? 'Recording'
   : state.value === 'transcribing' ? 'Transcribing…'
   : pendingText.value ? 'Your words are saved below. Review them before adding.'
   : inserted.value ? 'Ready — review your words before saving.' : ''))

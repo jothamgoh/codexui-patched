@@ -1324,3 +1324,28 @@ After each feature implementation session that uses this skill:
 - Include saved-board folders alongside recent chat folders. The new-plan target
   and cached draft identity must both include the explicitly selected project,
   preventing an earlier draft from silently retaining another folder.
+
+## Findings: Board Team controls and mobile run visibility (2026-09-06)
+
+- `agent-settings-bdb6c931e7b9.js` in the integrated renderer groups model and
+  reasoning controls with configuration defaults. Board-local rosters and prompt
+  overrides have no direct native board equivalent: use the existing model
+  selectors, explicit inheritance copy, and expandable role instructions.
+- Keep local board overrides separate from reusable profiles. Resolve Lead
+  startup defaults before launch, but leave blank specialist fields inheritable
+  in `read_agent` and roster context: the actual feature Lead may override its
+  board model. `ThreadResumeParams.developerInstructions` and per-turn model /
+  effort fields support refreshing the same Lead chat at its next start.
+- Mobile active-first lanes are an intentional board extension. Use actual run
+  records and native pending requests for visibility; a persisted working label
+  alone must not animate. Disable pulse for reduced-motion preferences.
+- The inspected native command registry in `app-initial-caa927532ffb.js` binds
+  Electron sidebar toggling to CmdOrCtrl+B (browser variant uses Shift+S).
+  The user's requested Cmd/Ctrl+B → Project boards is an explicit deviation.
+  Preserve modal focus, composition, repeat guards, and the existing chat draft.
+- Completed-board discussion is another web-only workflow over native chats.
+  Reuse saved source/planner/feature thread IDs with explicit destination labels;
+  opening a conversation must not create work or change completion. A planner
+  chat reply is allowed to answer without `save_features`; only initial explicit
+  planning requires cards. Persist its follow-up intent on the run so Activity
+  and notifications distinguish a conversation from a new reviewable plan.

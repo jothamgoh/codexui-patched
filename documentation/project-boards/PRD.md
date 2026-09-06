@@ -75,8 +75,11 @@ finish. Pausing or replacing a queue also prevents its old pending starts or
 failures from affecting replacement work.
 
 Features optionally override model and reasoning independently. Each omitted
-field uses the selected profile's explicit setting, then the source chat's
-current setting, then the app default when no source is linked. Maintained
+field uses the board-local agent setting (or shared profile when no local field
+exists), then the board default, source chat's current setting, and app default.
+An explicit blank local field bypasses a fixed shared setting and inherits.
+The board coordinator is also the default Lead for newly created features;
+existing assignments remain unchanged. Maintained
 starter profiles leave both fields blank; blank specialists inherit the Lead.
 Available choices come from advertised runtime capabilities and unsupported
 settings fail visibly. Each run retains
@@ -232,6 +235,34 @@ feature in Review is not evidence that combined QA passed. Prefer one larger
 feature with a final verification task for related changes.
 
 ## UI behavior
+
+Completed boards retain direct conversation actions in All work and the board
+completion panel: original chat, otherwise planner, otherwise latest feature
+Lead. Labels name the actual destination. Review finished features reveals the
+Done lane without changing card state. If a manually completed board has no
+linked chat, Plan next steps offers the existing planning entry.
+An explicit follow-up in a planner chat may answer a question without saving
+new cards. Such a successful conversation does not emit plan-ready or mark the
+board as awaiting plan review; initial planning still must save proposed cards.
+
+Team & settings is directly accessible from boards and during manual board or
+plan creation. It exposes board defaults, coordinator selection, and expandable
+role prompts/model/reasoning. Edits are board-local; Reset to template removes
+that agent's overrides. Pause delivery and stop active runs before saving Team
+changes. Saved defaults apply to subsequent starts and continuations; specialist
+inheritance follows the actual feature Lead, including its feature overrides.
+Collapsed roles load their controls only when opened. Shared templates remain
+separate and are explicitly labelled as affecting other boards.
+
+Phone board lanes show In progress before Backlog. Starting, Planning or Working
+subtitles derive from active run records; waiting questions and stopped runs do
+not animate. Reduced-motion preferences disable the pulse. Cmd/Ctrl+B opens
+Project boards without changing sidebar visibility or losing the chat draft.
+
+Project selection offers a host folder browser, including on phones. It reads
+directories on the CodexUI computer behind the existing authentication boundary;
+Home, Up, recent projects, hidden folders and explicit selection avoid path
+typing. Browsing does not create folders or project state. Manual paths remain.
 
 The Agent library separates saved profiles from current-board membership.
 Checkbox changes save immediately. Creating an agent enables it on the current

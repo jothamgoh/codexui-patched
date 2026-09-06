@@ -12,6 +12,37 @@ user’s request; its saved rendering work has now been reviewed in the follow-u
 
 ## Current follow-up
 
+- Completed boards now offer a direct return to the original chat, otherwise
+  their planner or latest feature Lead, from All work and the completion panel.
+  The destination retains its board link, including shared source chats. Review
+  finished features reveals Done without changing state. Planner replies can
+  discuss outcomes or next steps read-only without saving more cards, triggering
+  false plan-ready alerts, or reopening finished features. Initial planning still
+  requires proposed cards; requested new work stays a draft until started.
+- Team & settings is available directly on boards and during manual board/plan
+  creation. Board defaults and per-agent prompt/model/reasoning overrides are
+  saved locally to that board, with shared-template reset and default coordinator
+  assignment for new features. Feature overrides remain highest; blank helpers
+  inherit the actual executing Lead. Active work/queue guards and launch
+  fingerprints prevent mixed settings. Reopening a cancelled plan refreshes Team
+  settings while keeping its goal; unchanged plans do not overwrite saved Team.
+- Mobile In progress now precedes Backlog. Active-run subtitles pulse subtly,
+  stop for waiting questions or stopped work, and honor reduced motion.
+  Cmd/Ctrl+B opens Project boards while preserving chat drafts and sidebar state.
+- Projects can be added by browsing folders on the CodexUI computer from desktop
+  or phone: Home, Up, recent folders and explicit selection. New plan reuses the
+  browser; manual paths/create remain. Registration failures retain the selected
+  path and show Retry; pending registration disables Send without losing typing.
+- Release checks: all 276 unit tests, production frontend/CLI build and Gitleaks
+  pass. Desktop/touch board, linked-chat and folder-picker browser journeys pass;
+  inspected screenshots include 320/390px Team forms and active-first phone
+  cards. Browser model/audio responses are synthetic. Physical iPhone Safari
+  remains unverified. Local bridge/boards/pending-request health is good.
+  Backend activation is pending: two production board queues remain running and
+  were not interrupted. The frontend refresh serves the mobile/shortcut changes;
+  Team persistence, planner discussion replies and the host-folder endpoint require a backend restart after
+  those runs finish. Do not treat the currently running process as the new backend.
+
 - Work overview now shows named board cards before individual Leads/results.
   Project selection immediately filters boards, work rows and all summary counts;
   All projects restores the full view. Saved-board folders remain selectable even

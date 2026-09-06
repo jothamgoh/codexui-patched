@@ -50,9 +50,19 @@ Use chat for the conversation and the board for the project overview.
   the selected destination board. On a populated board, **Add from a plan** adds
   draft cards there; it is not unfinished setup or a new board. Existing cards
   stay. Feature titles and new-plan board names can be left blank.
-- **Board options** keeps permissions, continuation, and agent management out of
-  the main card area on desktop and phones. **Coordinator settings** similarly
-  keeps planning defaults out of the way until an override is needed.
+- **Team & settings** is available directly on a board, in **New board**, and
+  in **New plan**. Choose board defaults and the coordinator/default Lead, then
+  expand an agent to view or edit its prompt, model, and reasoning. Changes stay
+  on this board; **Reset to template** restores the shared profile. The separate
+  **Shared agent library** under Board options manages reusable templates.
+  Board options also keeps permissions and continuation out of the card area.
+- **Cmd+B** (Ctrl+B on other desktops) opens Project boards. On phones, **In
+  progress** comes before Backlog. A subtle working subtitle reflects an actual
+  run and stops animating while a question is waiting or a run is stopped.
+- When adding a project, **Browse computer folders** lets you navigate folders
+  on the computer running CodexUI, including from a phone. Choose **Use folder**;
+  manual paths and folder creation remain available. New plan offers the same
+  browser when choosing a new project folder.
 - Individual starts open the Lead chat. Use its feature link or **View board**
   to return. A selected batch stays on the overview.
 - Board work defaults to **Full access**: the Lead and its subagents can use files,
@@ -60,20 +70,30 @@ Use chat for the conversation and the board for the project overview.
   Work permissions** can switch a board to **Project access**. Planning stays
   read-only. The choice applies to new starts; running work and approved batches
   retain the access they started with.
-- Leads inherit model and reasoning from the source chat unless a card or
-  customized profile explicitly chooses otherwise. The planning chat can set
+- Leads resolve model and reasoning separately: feature override, board-local
+  agent override (or shared template), board default, then source chat/app.
+  A blank local override follows the board/Lead even if the shared template has
+  a fixed value. The planning chat can set
   either optional parameter when asked; omitted fields still inherit. Starter
   specialists inherit the Lead. Native clarification questions are enabled when
   supported and configurable, with the existing board-question fallback.
   The Lead chat and feature details show **This run** (or **Last run**) settings.
   **Confirmed by Codex** means the native runtime reported them after launch;
   **Requested** is shown when that read-back is unavailable.
+  Team changes apply on the next start or Continue, after active work and delivery
+  have stopped. Existing features keep their assigned Lead and explicit overrides.
 - Reply in the Lead chat to steer active work or continue an idle feature.
   After completion, ask for links, explanations, or tests in the same chat.
   It shows **Conversation** while the card stays **Done** and another feature
   can run. If you request changes, the Lead reopens the affected work through
   the board tool before implementing, with existing dependency and access checks.
   Lead settings remain editable on the card. Failed sends retain the draft.
+- Completed boards remain in **All work**. Their board card and completion panel
+  offer **Open original chat**, or **Open planning chat** when no source is linked.
+  Manual boards fall back to **Open latest Lead chat**. **Review finished features**
+  reveals the saved results and each feature's Lead. Planning-chat follow-ups can
+  answer questions without creating cards; finished features stay Done. New work
+  is proposed as draft cards and still needs a deliberate start.
 - **Stop run** ends the active attempt; completed code stays on disk. Stop before
   deleting a feature. Deletion removes its board records, keeping the code and
   Lead chat. Native approval requests are visible instead of looking like work.

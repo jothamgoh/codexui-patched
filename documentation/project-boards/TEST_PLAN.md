@@ -46,6 +46,24 @@ notification storage too. Retain explicit defense in every bridge fixture:
 
 ## Meaningful scenarios
 
+- Completed boards: source/planner/latest-Lead precedence, exact chat navigation
+  from overview and completion panel, preserved Done/results, no automatic runs
+  from navigation, and mobile review access. A planner follow-up may answer with
+  zero cards and no false plan-ready/review event; initial planning still requires
+  cards, and a requested new plan still creates reviewable drafts.
+- Team: manual board/plan creation, scoped defaults and prompt edits, coordinator
+  assignment, save/reset/reload, feature override precedence, blank specialist
+  inheritance from the actual Lead, and shared-template/other-board isolation.
+  Active runs and queued starts must reject mixed Team snapshots. Touch prompt
+  dictation inserts without saving; collapsed role controls load on demand.
+- Mobile lanes: with both active work and backlog present, In progress is first.
+  Only actual runs pulse; pending questions and stopped work do not. Respect
+  reduced motion and retain desktop lane order. Cmd/Ctrl+B opens work overview
+  while preserving sidebar state/drafts and avoiding modal/composition shortcuts.
+- Host folders: directory-only filesystem checks including links, unavailable/
+  denied directories, hidden folders and bounded large listings. Browser journeys
+  cover Home/Up/recent folders, explicit selection, error/retry, retained manual
+  paths, and desktop/320px/390px touch layout. No production folders are mutated.
 - Work overview: board cards precede Lead/result rows and fit the first mobile
   viewport. Project selection immediately scopes every board, row and summary
   count without writes. Cover two boards in one folder, a board-only project,

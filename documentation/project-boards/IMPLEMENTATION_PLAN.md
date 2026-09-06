@@ -19,6 +19,8 @@ Scope revised: 2026-09-06. PROGRESS.md owns release status and actual evidence.
 | components/content/BoardPlanDialog.vue and TrackFeatureDialog.vue | Multi-card planning or a single tracked feature, with voice and preserved retries. |
 | App.vue, SidebarThreadTree.vue, and NotificationSettingsButton.vue | Linked chats/cards, selected-chat visibility, working/attention/result navigation. |
 | components/content/BoardExecutionSettings.vue | Inherited or explicit supported model/reasoning settings. |
+| components/content/BoardTeamSettings.vue and utils/projectBoardTeam.ts | Board-local prompts/defaults, shared-template fallback, and effective profile resolution. |
+| components/content/HostFolderPicker.vue and server/hostFolders.ts | Bounded, directory-only host browsing and explicit folder selection. |
 | components/content/DictationField.vue | Reusable speech insertion, retry, overflow review, and manual-save state. |
 | components/content/RequestUserInputCard.vue | Native question choices, drafts, manual replies, and retry. |
 | components/content/QuestionSettingControl.vue and composables/useQuestionPreference.ts | Capability/policy-gated browser preference for newly created ordinary chats. |
@@ -45,8 +47,12 @@ full cards and long project plans are fetched explicitly. Planning does not
 alter an ordinary chat's sandbox or authorize implementation.
 
 Source model inheritance reads thread metadata with includeTurns:false, not a
-transcript or resume. Resolve each field as card, explicit profile, source, app
-default and retain the resolved launch settings on the run. Native planner saves
+transcript or resume. Resolve each field as card, board-local agent/shared profile,
+board default, source, app default and retain the resolved launch settings on the
+run. Blank specialists inherit the executing Lead, including its feature overrides;
+do not fill their delegation payload with board defaults. Team changes are guarded
+against active runs/queues and fingerprinted across asynchronous launch waits.
+Native planner saves
 and the ordinary-chat helper both accept optional model/reasoning overrides.
 Board thread preparation asynchronously adds supported question configuration
 to start/resume; recheck cancellation afterward before starting native work.

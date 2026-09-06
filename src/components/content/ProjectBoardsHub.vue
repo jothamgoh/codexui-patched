@@ -102,7 +102,7 @@
 
     <section v-else id="board-view-panel" class="board-view-panel" role="tabpanel" :aria-labelledby="`board-tab-${activeView}`" tabindex="0">
       <template v-if="activeView === 'board'">
-      <label v-if="featureCards.length" class="mobile-feature-filter"><span>Show features</span><select v-model="mobileColumn" aria-label="Show features"><option value="all">All statuses</option><option v-for="column in columns" :key="column.key" :value="column.key">{{ column.label }} ({{ cardsForColumn(column.statuses).length }})</option></select></label>
+      <label v-if="featureCards.length" class="mobile-feature-filter"><span>Show features</span><select v-model="mobileColumn" aria-label="Show features"><option value="all">All statuses</option><option v-for="column in displayColumns" :key="column.key" :value="column.key">{{ column.label }} ({{ cardsForColumn(column.statuses).length }})</option></select></label>
       <div v-if="featureCards.length === 0" class="boards-empty boards-empty-compact">
         <Sparkles aria-hidden="true" />
         <strong>Turn a large build into visible work</strong>
@@ -112,7 +112,7 @@
 
       <div v-else class="boards-lanes" aria-label="Feature board">
         <section
-          v-for="column in columns"
+          v-for="column in displayColumns"
           :key="column.key"
           v-show="!isMobileBoard || (mobileColumn === 'all' ? cardsForColumn(column.statuses).length > 0 : mobileColumn === column.key)"
           class="board-lane"
@@ -146,6 +146,7 @@
                   <span v-else-if="cardHasActiveConversation(card)">Conversation</span>
                 </div>
                 <strong>{{ card.title }}</strong>
+                <p v-if="cardActivityLabel(card)" class="card-live-status"><span aria-hidden="true" />{{ cardActivityLabel(card) }}</p>
                 <p v-if="card.progressNote || card.description">{{ card.progressNote || card.description }}</p>
                 <p v-if="dependencyLabel(card)" class="dependency-note">{{ dependencyLabel(card) }}</p>
                 <div class="board-card-meta">
@@ -607,6 +608,7 @@ const queueExecutionAccess = ref<ProjectBoardExecutionAccess>('full-access')
 const featureSearch = ref('')
 const boardOptionsOpen = ref(false)
 const isMobileBoard = useMediaQuery('(max-width: 700px)')
+const displayColumns = computed(() => isMobileBoard.value ? [...columns.filter((column) => column.key === 'working'), ...columns.filter((column) => column.key !== 'working')] : columns)
 const mobileColumn = ref('all')
 const boardViews = [{ id: 'board', label: 'Board' }, { id: 'needs-you', label: 'Needs you' }, { id: 'runs', label: 'Runs' }] as const
 type BoardView = typeof boardViews[number]['id']
@@ -1002,7 +1004,13 @@ function addSelectedComment(): void {
 }
 
 function requestForCard(card: ProjectBoardCard): UiServerRequest | undefined {
-  return card.threadId ? props.pendingRequests?.find((request) => request.threadId === card.threadId) : undefined
+  const threadId = props.snapshot.runs.find((run) => run.cardId === card.id && ['running', 'queued'].includes(run.status))?.threadId || card.threadId
+  return threadId ? props.pendingRequests?.find((request) => request.threadId === threadId) : undefined
+}
+function cardActivityLabel(card: ProjectBoardCard): string {
+  if (requestForCard(card) || openQuestionFor(card)) return ''
+  const run = props.snapshot.runs.find((entry) => entry.cardId === card.id && ['running', 'queued'].includes(entry.status))
+  return !run ? '' : run.status === 'queued' ? 'Starting…' : run.kind === 'plan' ? 'Planning…' : run.kind === 'follow_up' ? 'Conversation running…' : 'Working…'
 }
 function cardDisplayStatus(card: ProjectBoardCard): ProjectBoardStatus {
   if (card.status === 'done' && cardHasActiveConversation(card)) return 'done'
@@ -1153,6 +1161,10 @@ function formatTime(value: string): string { const date = new Date(value); retur
 .board-card-kicker { @apply mb-2 flex items-center justify-between gap-2 text-[10px] font-semibold uppercase tracking-wide; color: var(--text-muted); }
 .needs-you-pill { @apply rounded-full bg-amber-100 px-2 py-0.5 text-amber-800; }
 .board-card-main > strong { @apply block text-sm font-semibold leading-5; }
+.board-card-main > .card-live-status { display: flex; align-items: center; gap: 6px; color: var(--accent-blue); font-size: 12px; }
+.card-live-status > span { width: 6px; height: 6px; flex-shrink: 0; border-radius: 50%; background: currentColor; animation: board-working-pulse 1.8s ease-in-out infinite; }
+@keyframes board-working-pulse { 50% { opacity: .35; } }
+@media (prefers-reduced-motion: reduce) { .card-live-status > span { animation: none; } }
 .board-card-main > p { @apply mt-1.5 mb-0 line-clamp-2 text-xs leading-[1.15rem]; color: var(--text-secondary); }
 .board-card-meta { @apply mt-3 flex flex-wrap gap-x-3 gap-y-1 text-[11px]; color: var(--text-tertiary); }
 .board-card-meta span { @apply inline-flex items-center gap-1; }

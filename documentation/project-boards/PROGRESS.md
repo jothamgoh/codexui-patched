@@ -2,9 +2,11 @@
 
 Updated: 2026-09-06
 
-Status: chat/board follow-up is verified through 402bb83. Publication and the
-authorized independent-Terminal restart remain to do; the previous release is
-still deployed. Preserve the stopped Lead’s uncommitted
+Status: released through 97500b3. Main was published, CI passed, the verified
+frontend/CLI build was deployed, and one authorized independent-Terminal
+restart completed. Post-restart bridge, boards, models, and pending-request
+endpoints returned healthy responses; no runs or native requests were left
+active. The public UI and API still redirect through the authenticated gateway. Preserve the stopped Lead’s uncommitted
 message-display edits in the main checkout; they are separate from this release.
 A real run waiting at an invisible native test approval was stopped at the
 user’s request; its code edits remain saved.
@@ -183,12 +185,11 @@ References and adopted choices remain in PRD.md and ../UX_BACKLOG.md.
 
 ## Exact next steps
 
-1. Integrate the isolated branch without committing or losing the stopped
-   Lead’s saved edits. Publish main and verify CI. Deploy the already-built
-   committed source separately from those unrelated uncommitted edits.
-2. Perform one authorized independent-Terminal restart after release checks,
-   then verify local health and authenticated public access after reconnecting.
-3. Dogfood one small feature through the new chat flow. The stopped Lead’s
-   saved bug-fix edits still need their own review/verification before release.
-   Physical iPhone Safari remains unverified. Keep provider rotation, scheduling,
-   and automatic batch QA separate unless a real workflow needs them.
+1. Refresh the browser and dogfood one small feature through Track on board →
+   Lead chat → approval/result → feature/board navigation. Existing stopped
+   features can now be deleted after their run is confirmed stopped.
+2. Review and verify the stopped Lead’s saved message-display edits as a separate
+   task. Their exact changes and untracked test were preserved during integration
+   and were not included in the deployed build.
+3. Verify physical iPhone Safari. Keep provider rotation, scheduling, and
+   automatic batch QA separate unless a real workflow needs them.

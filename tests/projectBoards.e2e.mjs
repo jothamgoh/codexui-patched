@@ -435,6 +435,34 @@ try {
   assert.equal(savedFeature.reasoningEffort, 'medium')
   assert.deepEqual(savedFeature.dependencyIds, ['feature-done'])
 
+  // The direct model action opens the same editor with the run settings visible
+  // first. Overrides persist, and blank choices restore independent inheritance.
+  await detail.getByRole('button', { name: 'Model & reasoning', exact: true }).click()
+  const modelEditor = page.getByRole('dialog', { name: 'Edit feature', exact: true })
+  const leadModel = modelEditor.getByLabel('Lead model', { exact: true })
+  const leadReasoning = modelEditor.getByLabel('Lead reasoning', { exact: true })
+  assert.equal(await leadModel.inputValue(), 'review-model')
+  assert.equal(await leadReasoning.inputValue(), 'medium')
+  assert.ok((await leadModel.boundingBox()).y < (await modelEditor.getByLabel('Brief', { exact: true }).boundingBox()).y, 'The direct model action puts model settings before the long brief')
+  await leadModel.selectOption('build-model')
+  await leadReasoning.selectOption('xhigh')
+  await page.screenshot({ path: join(outputDirectory, 'project-board-model-direct-desktop.png'), fullPage: true })
+  await modelEditor.getByRole('button', { name: 'Save feature', exact: true }).click()
+  await modelEditor.waitFor({ state: 'detached' })
+  await page.reload({ waitUntil: 'domcontentloaded' })
+  await detail.getByRole('button', { name: 'Model & reasoning', exact: true }).click()
+  assert.equal(await leadModel.inputValue(), 'build-model')
+  assert.equal(await leadReasoning.inputValue(), 'xhigh')
+  await leadModel.selectOption('')
+  await leadReasoning.selectOption('')
+  await modelEditor.getByRole('button', { name: 'Save feature', exact: true }).click()
+  await modelEditor.waitFor({ state: 'detached' })
+  const inheritedFeature = (await (await fetch(`${origin}/codex-api/project-boards`)).json()).data.cards.find((feature) => feature.id === savedFeature.id)
+  assert.equal(inheritedFeature.model, '')
+  assert.equal(inheritedFeature.reasoningEffort, '')
+  assert.equal(inheritedFeature.assignedAgentId, customAgent.id)
+  assert.deepEqual(inheritedFeature.dependencyIds, ['feature-done'])
+
   // Server owns completion truth; failed moves keep the current value and explain why.
   await detail.locator('.feature-options > summary').click()
   await detail.locator('.detail-status-select select').selectOption('done')
@@ -507,6 +535,27 @@ try {
   const delivery = page.getByRole('region', { name: 'Project delivery' })
   await delivery.getByText(/Project board orchestration.*already running/).waitFor()
   assert.equal(await page.getByRole('button', { name: 'Run selected features', exact: true }).isDisabled(), true)
+  await page.locator('[data-feature-id="feature-working"] .board-card-main').click()
+  assert.equal(await detail.getByRole('button', { name: 'Model & reasoning', exact: true }).isDisabled(), true)
+  await detail.getByText('Stop the run before changing model or reasoning', { exact: false }).waitFor()
+  assert.equal(await detail.getByRole('button', { name: 'Stop run', exact: true }).isEnabled(), true, 'Stopping remains a separate deliberate action')
+  await page.getByRole('button', { name: 'Close feature', exact: true }).click()
+  await page.getByRole('button', { name: 'Board options', exact: true }).click()
+  let activeBoardDeleteRequests = 0
+  await page.route('**/codex-api/project-boards/board-1', (route) => {
+    if (route.request().method() !== 'DELETE') return route.fallback()
+    activeBoardDeleteRequests += 1
+    return route.fulfill({ status: 409, json: { error: 'An active board must not be deleted.' } })
+  })
+  await page.getByRole('button', { name: 'Delete board', exact: true }).click()
+  const activeDeleteDialog = page.getByRole('dialog', { name: 'Delete board?', exact: true })
+  await activeDeleteDialog.getByText('Product build', { exact: false }).waitFor()
+  await activeDeleteDialog.getByText(/stop.*running|running.*stop/i).waitFor()
+  assert.equal(await activeDeleteDialog.getByRole('button', { name: 'Delete board', exact: true }).isDisabled(), true)
+  await activeDeleteDialog.getByRole('button', { name: 'Cancel', exact: true }).click()
+  assert.equal(activeBoardDeleteRequests, 0)
+  await page.unroute('**/codex-api/project-boards/board-1')
+  await page.getByRole('button', { name: 'Board options', exact: true }).click()
   await delivery.getByRole('button', { name: 'Open active Lead chat', exact: true }).click()
   await page.waitForURL('**#/thread/daily-run-thread')
   await page.getByText('The saved storage run is ready to inspect.', { exact: true }).waitFor()
@@ -806,6 +855,32 @@ try {
   assert.equal(await mobilePage.evaluate(() => document.documentElement.scrollWidth <= innerWidth), true)
   assert.equal(await mobilePage.locator('.boards-header-actions').first().getByRole('button').evaluateAll((buttons) => buttons.filter((button) => button.getClientRects().length).every((button) => button.scrollWidth <= button.clientWidth)), true, 'Phone toolbar labels must fit inside their buttons')
   await mobilePage.screenshot({ path: join(outputDirectory, `project-board-${mobileEngineName}-touch.png`), fullPage: true })
+  await mobilePage.getByRole('button', { name: 'Board options', exact: true }).tap()
+  for (const width of [320, 390, 640]) {
+    await mobilePage.setViewportSize({ width, height: 844 })
+    await mobilePage.getByTestId('project-board').evaluate((element) => { element.scrollTop = 0 })
+    const toolbarLayout = await mobilePage.locator('.boards-header-actions').getByRole('button').evaluateAll((buttons) => buttons.filter((button) => button.getClientRects().length).map((button) => {
+      const bounds = button.getBoundingClientRect()
+      const textRects = []
+      const walker = document.createTreeWalker(button, NodeFilter.SHOW_TEXT)
+      while (walker.nextNode()) {
+        if (!walker.currentNode.textContent.trim()) continue
+        const range = document.createRange()
+        range.selectNodeContents(walker.currentNode)
+        textRects.push(...range.getClientRects())
+      }
+      return { label: button.textContent.trim(), height: bounds.height,
+        fits: button.scrollWidth <= button.clientWidth + 1 && button.scrollHeight <= button.clientHeight + 1
+          && textRects.every((rect) => rect.left >= bounds.left - 1 && rect.right <= bounds.right + 1 && rect.top >= bounds.top - 1 && rect.bottom <= bounds.bottom + 1) }
+    }))
+    assert.ok(toolbarLayout.length >= 6 && toolbarLayout.every((button) => button.fits && button.height >= 44), `Toolbar labels stay inside touch buttons at ${width}px: ${JSON.stringify(toolbarLayout)}`)
+    const optionsColumns = await mobilePage.locator('.board-options-panel > .boards-header-actions').evaluate((element) => getComputedStyle(element).gridTemplateColumns.split(' ').length)
+    assert.equal(optionsColumns, 2, `Board options use two readable columns at ${width}px`)
+    assert.equal(await mobilePage.evaluate(() => document.documentElement.scrollWidth <= innerWidth), true)
+    await mobilePage.screenshot({ path: join(outputDirectory, `project-board-options-${width}-${mobileEngineName}-touch.png`), fullPage: true })
+  }
+  await mobilePage.setViewportSize({ width: 390, height: 844 })
+  await mobilePage.getByRole('button', { name: 'Board options', exact: true }).tap()
   for (const [view, label] of [['needs-you', /Needs you/], ['runs', 'Runs']]) {
     await mobilePage.getByRole('tab', { name: label }).tap()
     const mobileDaily = mobilePage.getByTestId(view === 'runs' ? 'board-runs' : 'board-inbox')
@@ -850,8 +925,40 @@ try {
   assert.equal(await touchPlan.evaluate((element) => element.scrollWidth <= element.clientWidth), true)
   await touchPlan.getByRole('button', { name: 'Close planning', exact: true }).tap()
 
+  // Delete only the explicitly chosen idle fixture board. Cancel makes no
+  // request, confirmation shows scope, and another project's work survives.
+  const beforeDelete = (await (await fetch(`${origin}/codex-api/project-boards`)).json()).data
+  const deleteRequests = []
+  await mobilePage.route('**/codex-api/project-boards/board-2', (route) => {
+    if (route.request().method() === 'DELETE') deleteRequests.push(new URL(route.request().url()).pathname)
+    return route.fallback()
+  })
+  await mobilePage.goto(`${origin}/#/board/board-2`, { waitUntil: 'domcontentloaded' })
+  await mobilePage.locator('[data-feature-id="feature-other"]').waitFor()
+  if (await mobilePage.getByRole('button', { name: 'Board options', exact: true }).getAttribute('aria-expanded') !== 'true') await mobilePage.getByRole('button', { name: 'Board options', exact: true }).tap()
+  await mobilePage.getByRole('button', { name: 'Delete board', exact: true }).tap()
+  const deleteDialog = mobilePage.getByRole('dialog', { name: 'Delete board?', exact: true })
+  await deleteDialog.getByText('Another board', { exact: false }).waitFor()
+  await deleteDialog.getByText(/1 feature cards/).waitFor()
+  await deleteDialog.getByText('Your project files, chat history, and agent profiles are kept.', { exact: true }).waitFor()
+  assert.equal(await deleteDialog.getByRole('button', { name: 'Delete board', exact: true }).isEnabled(), true)
+  assert.equal(await deleteDialog.evaluate((element) => element.scrollWidth <= element.clientWidth), true)
+  await mobilePage.screenshot({ path: join(outputDirectory, `project-board-delete-${mobileEngineName}-touch.png`), fullPage: true })
+  await deleteDialog.getByRole('button', { name: 'Cancel', exact: true }).tap()
+  assert.deepEqual(deleteRequests, [])
+  assert.ok((await (await fetch(`${origin}/codex-api/project-boards`)).json()).data.boards.some((board) => board.id === 'board-2'))
+  await mobilePage.getByRole('button', { name: 'Delete board', exact: true }).tap()
+  await deleteDialog.getByRole('button', { name: 'Delete board', exact: true }).tap()
+  await mobilePage.getByTestId('board-work-overview').waitFor()
+  assert.deepEqual(deleteRequests, ['/codex-api/project-boards/board-2'])
+  const afterDelete = (await (await fetch(`${origin}/codex-api/project-boards`)).json()).data
+  assert.equal(afterDelete.boards.some((board) => board.id === 'board-2'), false)
+  assert.equal(afterDelete.cards.some((feature) => feature.boardId === 'board-2'), false)
+  assert.deepEqual(afterDelete.cards.filter((feature) => feature.boardId === 'board-1'), beforeDelete.cards.filter((feature) => feature.boardId === 'board-1'))
+  assert.deepEqual(afterDelete.boards.find((board) => board.id === 'board-1'), beforeDelete.boards.find((board) => board.id === 'board-1'))
+
   assert.deepEqual(pageErrors, [])
-  console.log(`Project board smoke passed: inbox decisions and run receipts, questions, draft/retry preservation, model settings, Plan first, queue consent, chat-to-board entry, Activity and unlisted-child links, voice/manual save, dark dialogs, ${mobileEngineName} touch/mobile layout, and ordinary chat navigation. Model execution is verified separately by the native runtime probe.`)
+  console.log(`Project board smoke passed: inbox decisions and run receipts, questions, draft/retry preservation, direct model settings and inheritance, Plan first, queue consent, chat-to-board entry, Activity and unlisted-child links, voice/manual save, dark dialogs, ${mobileEngineName} touch/mobile layout at 320/390/640px, active-board delete guard and confirmed idle-board removal, and ordinary chat navigation. Model execution is verified separately by the native runtime probe.`)
 } catch (error) {
   await mobilePage?.screenshot({ path: join(outputDirectory, 'project-board-mobile-failure.png'), fullPage: true }).catch(() => undefined)
   await page?.screenshot({ path: join(outputDirectory, 'project-board-failure.png'), fullPage: true }).catch(() => undefined)

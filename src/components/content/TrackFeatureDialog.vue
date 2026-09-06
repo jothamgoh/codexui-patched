@@ -5,9 +5,8 @@
         <header><div><DialogTitle>Track on board</DialogTitle><p id="track-description">Give this work a feature card and its own Lead chat. Your original conversation stays linked.</p></div><Button variant="ghost" size="icon-sm" aria-label="Close tracking" :disabled="busy || isDictating" @click="$emit('update:open', false)"><X /></Button></header>
         <form @submit.prevent="submit"><fieldset :disabled="busy" class="track-fields">
           <p v-if="error" role="alert" class="track-error">{{ error }}</p>
-          <label><span>Brief</span><DictationField v-model="draft.description" label="Feature brief" v-bind="voiceField('brief')" multiline rows="6" maxlength="12000" placeholder="What should the Lead achieve? Include important decisions from this chat." /></label>
+          <label><span>Brief</span><DictationField v-model="draft.description" label="Feature brief" v-bind="voiceField('brief')" multiline rows="6" maxlength="12000" placeholder="Describe the work to track. You can type, dictate, or select useful text in the chat first." /></label>
           <label><span>Title <small>optional</small></span><DictationField v-model="draft.title" label="Feature title" v-bind="voiceField('title')" maxlength="200" :placeholder="suggestedTitle || 'Generated from your brief'" /></label>
-          <p v-if="!draft.title.trim() && suggestedTitle" class="track-help">Title: {{ suggestedTitle }}</p>
           <label><span>Board</span><select v-model="draft.boardId" aria-label="Track destination board" :disabled="Boolean(createdFeatureId)"><option v-for="board in boards" :key="board.id" :value="board.id">{{ board.name }}</option><option v-if="!boards.length" value="">Create a project board</option></select></label>
           <details><summary>Lead and model settings</summary>
             <label><span>Lead</span><select v-model="draft.assignedAgentId" aria-label="Feature Lead"><option v-for="agent in eligibleAgents" :key="agent.id" :value="agent.id">{{ agent.name }}</option></select></label>

@@ -5,6 +5,16 @@ description: "Use when implementing or changing user-visible behavior/UI in this
 
 # Codex App Parity Skill
 
+## Findings: Explicit board navigation and selected context (2026-09-06)
+
+- Rechecked integrated app `app-primary-37ff25fd4643.js`: sidebar actions are
+  explicitly named; `selectedTextOverlay.addToCodex` attaches deliberate user
+  selections to chat. A board has no native equivalent, so keep its navigation
+  separate from creation using the existing Reka popover.
+- A last user message can be “ok done?” rather than a useful feature brief.
+  Only the unsent composer draft and explicit selections/comments seed tracking;
+  start empty otherwise. Keep local title generation tied to that editable brief.
+
 ## Findings: Chat-centered boards and explicit Stop (2026-09-06)
 
 - Rechecked integrated app `26.901.31953`: `app-primary-37ff25fd4643.js`

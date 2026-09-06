@@ -30,8 +30,10 @@ create a second agent runtime.
 ## From a plan to delivery
 
 Chat is the primary working view; the board is the project overview. From a
-normal chat, Track on board creates one linked feature with a brief and optional
-title. Missing titles are generated locally from the brief and remain editable.
+normal chat, the board icon separates Open project board from Track on board.
+Tracking creates one linked feature with a brief and optional title. Only an
+unsent draft and deliberately selected text prefill the brief; otherwise it is
+empty. Never infer the work from the most recent conversational reply. Missing titles are generated locally from the brief and remain editable.
 The original chat stays a reference; a fresh prepared Lead chat owns execution.
 Choose Create several feature cards for a larger plan, or Plan features on a board. The editable brief includes a bounded recent source
 excerpt and a link back to the chat. A read-only coordinator creates distinct

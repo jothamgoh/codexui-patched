@@ -173,7 +173,15 @@
             </span>
           </template>
           <template #actions>
-            <Button v-if="route.name === 'thread' && selectedThreadId && !selectedChatBoard" type="button" variant="ghost" size="icon-sm" title="Track on board" aria-label="Track on board" @click="openTrackFeature"><SquareKanban /></Button>
+            <Popover v-if="route.name === 'thread' && selectedThreadId" v-model:open="chatBoardMenuOpen">
+              <PopoverTrigger as-child><Button type="button" variant="ghost" size="icon-sm" title="Project board" aria-label="Project board actions"><SquareKanban /></Button></PopoverTrigger>
+              <PopoverContent class="chat-board-menu" align="end" aria-label="Project board actions" @close-auto-focus="trackFeatureOpen && $event.preventDefault()">
+                <p>Project board</p>
+                <Button type="button" variant="ghost" @click="openChatProjectBoard">Open project board</Button>
+                <Button v-if="selectedChatFeature" type="button" variant="ghost" @click="chatBoardMenuOpen = false; openLinkedFeature()">Open feature</Button>
+                <Button v-else-if="!selectedChatBoard" type="button" variant="ghost" @click="openTrackFeature">Track on board</Button>
+              </PopoverContent>
+            </Popover>
             <WorkspaceSummaryButton
               v-if="showWorkspaceSummary"
               :thread-id="selectedThreadId"
@@ -403,6 +411,7 @@ import ScheduledTasksHub from './components/content/ScheduledTasksHub.vue'
 import ProjectBoardsHub from './components/content/ProjectBoardsHub.vue'
 import BoardPlanDialog, { type BoardPlanDraft } from './components/content/BoardPlanDialog.vue'
 import Button from './components/ui/button/Button.vue'
+import { Popover, PopoverContent, PopoverTrigger } from './components/ui/popover'
 import ChatSearchDialog from './components/content/ChatSearchDialog.vue'
 import RateLimitsSummary from './components/content/RateLimitsSummary.vue'
 import ThemeToggleButton from './components/content/ThemeToggleButton.vue'
@@ -619,6 +628,7 @@ const boardChatSendDisabled = computed(() => Boolean(selectedChatQuestion.value 
     (selectedChatFeature.value.status === 'done' && !boardReplyReopen.value)
     || (boardReplyMode.value === 'execute' && chatLeadNeedsWrite.value && !boardReplyWrite.value)))))
 const trackFeatureOpen = ref(false)
+const chatBoardMenuOpen = ref(false)
 const trackSourceThreadId = ref('')
 const trackProjectPath = ref('')
 const trackInitialBrief = ref('')
@@ -1062,13 +1072,22 @@ async function onSubmitBoardChatMessage(payload: SubmitPayload): Promise<void> {
 }
 
 function openTrackFeature(): void {
+  chatBoardMenuOpen.value = false
   clearProjectBoardError()
   if (trackSourceThreadId.value !== selectedThreadId.value || !projectBoardSnapshot.value.cards.some((card) => card.id === trackCreatedFeatureId.value)) trackCreatedFeatureId.value = ''
   trackSourceThreadId.value = selectedThreadId.value
   trackProjectPath.value = selectedThread.value?.cwd || newThreadCwd.value
-  trackInitialBrief.value = composerDraftStore.draftFor(selectedThreadId.value).text.trim()
-    || [...messages.value].reverse().find((message) => message.role === 'user' && message.text.trim())?.text.slice(0, 12000) || ''
+  const draft = composerDraftStore.draftFor(selectedThreadId.value)
+  trackInitialBrief.value = [draft.text.trim(), ...draft.responseTextAnnotations.map((selection) =>
+    [selection.text.trim(), selection.annotation?.trim()].filter(Boolean).join('\n'))]
+    .filter(Boolean).join('\n\n').slice(0, 12000)
   trackFeatureOpen.value = true
+}
+
+function openChatProjectBoard(): void {
+  chatBoardMenuOpen.value = false
+  if (selectedChatBoard.value) openProjectBoard(selectedChatBoard.value.id)
+  else openProjectBoardProject(selectedThread.value?.cwd || newThreadCwd.value)
 }
 
 function openTrackProjectPlan(brief: string): void {
@@ -1934,6 +1953,10 @@ async function submitFirstMessageForNewThread(
   @apply flex-1 min-h-0 flex flex-col gap-2.5;
   overscroll-behavior: none;
 }
+
+.chat-board-menu { background: var(--surface-elevated); color: var(--text-primary); }
+.chat-board-menu p { margin: 0; padding: 4px 8px; font-size: 12px; color: var(--text-secondary); }
+.chat-board-menu :deep(button) { justify-content: flex-start; min-height: 44px; }
 
 .board-chat-context { flex: 0 0 auto; margin: 0 12px; padding: 8px 10px; border: 1px solid var(--border-soft); border-radius: 10px; color: var(--text-secondary); font-size: 12px; }
 .board-chat-links, .board-chat-reply-controls { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }

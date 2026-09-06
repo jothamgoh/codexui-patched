@@ -564,6 +564,7 @@ try {
   await page.getByText('The mobile design review is ready.', { exact: true }).waitFor()
   await page.goBack()
   await page.getByText(sourcePlan, { exact: true }).waitFor()
+  await page.getByRole('button', { name: 'Project board actions', exact: true }).click()
   await page.getByRole('button', { name: 'Track on board', exact: true }).click()
   const trackDialog = page.getByRole('dialog', { name: 'Track on board', exact: true })
   await trackDialog.getByLabel('Feature brief', { exact: true }).fill(sourcePlan)

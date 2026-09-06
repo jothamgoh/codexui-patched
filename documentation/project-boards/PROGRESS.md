@@ -13,6 +13,14 @@ user’s request; its code edits remain saved.
 
 ## Current follow-up
 
+- Board-icon correction: Open project board browses existing work; Track on
+  board opens the creation form. The brief uses only the unsent draft and
+  selected text, including selection comments, or starts blank. Casual replies
+  are no longer reused as feature descriptions/titles. The redundant title
+  preview line was removed. Desktop/Chromium touch checks cover navigation
+  without creation, blank-state submission protection, explicit draft/selection
+  context, and the existing voice/retry workflow.
+
 - Chat is the working view; the board is the overview. Track on board creates
   a feature with an optional generated title and a distinct, linked Lead chat.
   Large-plan entry still proposes multiple cards. Voice retains manual save.

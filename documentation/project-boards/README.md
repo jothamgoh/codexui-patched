@@ -16,7 +16,10 @@ exhaustive test checklist. Future ideas are options, not release requirements.
 
 Use chat for the conversation and the board for the project overview.
 
-- In an ordinary chat, choose **Track on board**. Dictate or edit the brief;
+- The chat’s board icon offers **Open project board** to browse existing work
+  and **Track on board** to create a feature. Opening the board creates nothing.
+- Tracking starts from your unsent draft and selected text, or an empty brief;
+  casual replies such as “ok done?” are never guessed to be the work. Dictate or edit the brief;
   leave the title blank to generate it locally. The feature starts with a
   read-only plan in its own Lead chat, linked to the original conversation.
 - For a larger plan, choose **Create several feature cards** in that dialog,

@@ -251,7 +251,7 @@ try {
   }, emptyProject)
   const visitBoard = async (query = '') => {
     await page.goto(`${origin}/#/board/board-1${query}`, { waitUntil: 'domcontentloaded' })
-    await page.getByTestId('board-select').waitFor()
+    await page.getByTestId('board-select').waitFor({ state: 'attached' })
   }
   const rejectOnce = (path, message) => page.route(`**/codex-api/${path}`, (route) => route.fulfill({ status: 409, contentType: 'application/json', body: JSON.stringify({ error: message }) }), { times: 1 })
   const detail = page.getByTestId('feature-detail')
@@ -429,6 +429,7 @@ try {
   assert.deepEqual(savedFeature.dependencyIds, ['feature-done'])
 
   // Server owns completion truth; failed moves keep the current value and explain why.
+  await detail.locator('.feature-options > summary').click()
   await detail.locator('.detail-status-select select').selectOption('done')
   await detail.getByRole('alert').waitFor()
   assert.equal(await detail.locator('.detail-status-select select').inputValue(), 'backlog')
@@ -611,9 +612,16 @@ try {
     documentWidth: document.documentElement.scrollWidth,
     viewport: window.innerWidth,
   }))
-  assert.equal(overflow.scrollable, true)
-  assert.ok(overflow.documentWidth <= overflow.viewport, 'Only the board lanes may overflow horizontally')
+  assert.equal(overflow.scrollable, false, 'Phone features use one vertical list instead of sideways lanes')
+  assert.ok(overflow.documentWidth <= overflow.viewport, 'The board fits the phone width')
+  await page.getByTestId('project-board').evaluate((element) => { element.scrollTop = 0 })
+  const firstMobileCard = await page.locator('.board-card:visible').first().boundingBox()
+  assert.ok(firstMobileCard.y + 50 < 844, 'Actual work appears on the first phone screen')
+  await page.getByLabel('Show features', { exact: true }).selectOption('review')
+  assert.equal(await page.locator('.board-lane:visible').getAttribute('data-board-status'), 'review')
+  await page.getByLabel('Show features', { exact: true }).selectOption('all')
   await page.screenshot({ path: join(outputDirectory, 'project-board-mobile-overview.png'), fullPage: true })
+  await page.getByRole('button', { name: 'Board options', exact: true }).click()
   await page.getByRole('button', { name: 'Agents', exact: true }).click()
   await library.getByLabel('Find an agent', { exact: true }).fill('Release coordinator')
   await library.getByRole('button', { name: 'Edit Release coordinator', exact: true }).click()
@@ -719,7 +727,7 @@ try {
   await mobilePage.getByTestId('project-board').waitFor()
   assert.equal(await mobilePage.evaluate(() => matchMedia('(pointer: coarse)').matches), true)
   assert.equal(await mobilePage.evaluate(() => document.documentElement.scrollWidth <= innerWidth), true)
-  assert.equal(await mobilePage.locator('.boards-header-actions').first().getByRole('button').evaluateAll((buttons) => buttons.every((button) => button.scrollWidth <= button.clientWidth)), true, 'Phone toolbar labels must fit inside their buttons')
+  assert.equal(await mobilePage.locator('.boards-header-actions').first().getByRole('button').evaluateAll((buttons) => buttons.filter((button) => button.getClientRects().length).every((button) => button.scrollWidth <= button.clientWidth)), true, 'Phone toolbar labels must fit inside their buttons')
   await mobilePage.screenshot({ path: join(outputDirectory, `project-board-${mobileEngineName}-touch.png`), fullPage: true })
   for (const [view, label] of [['needs-you', /Needs you/], ['runs', 'Runs']]) {
     await mobilePage.getByRole('tab', { name: label }).tap()
@@ -756,6 +764,7 @@ try {
   await mobilePage.getByTestId('feature-detail').waitFor()
   assert.equal(await mobilePage.getByTestId('feature-detail').getAttribute('aria-modal'), 'true')
   await mobilePage.getByRole('button', { name: 'Close feature', exact: true }).tap()
+  await mobilePage.getByRole('button', { name: 'Board options', exact: true }).tap()
   await mobilePage.getByRole('button', { name: 'Plan features', exact: true }).tap()
   const touchPlan = mobilePage.getByRole('dialog', { name: 'Plan project features', exact: true })
   await touchPlan.getByLabel('Goal or plan', { exact: true }).fill('Build one small feature, then a dependent improvement.')

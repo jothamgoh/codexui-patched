@@ -5,6 +5,19 @@ description: "Use when implementing or changing user-visible behavior/UI in this
 
 # Codex App Parity Skill
 
+## Findings: Mobile board review density (2026-09-06)
+
+- Boards remain a web extension. Follow native direct-chat navigation and
+  responsive disclosure patterns using existing Vue/Reka components. On phones,
+  collapse management controls and stack populated lanes vertically, with an
+  explicit status filter. Actual work should appear on the first screen.
+- Put results ahead of administration in feature details. Use the persistent
+  footer for opening the Lead result; tuck Delete, Edit, and status into settings.
+  Preserve touch targets, existing edit consent, voice input, and manual save.
+- Present pending requests and active runs before saved card statuses. Completed
+  review, approval waiting, and paused partly implemented work are different
+  states. Counts, feature headers, and Lead chat labels should reflect that.
+
 ## Findings: Approval visibility during history hydration (2026-09-06)
 
 - Native runtime distinguishes waitingOnApproval/waitingOnUserInput from ordinary

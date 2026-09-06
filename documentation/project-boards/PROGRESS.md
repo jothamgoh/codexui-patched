@@ -12,6 +12,15 @@ user’s request; its saved rendering work has now been reviewed in the follow-u
 
 ## Current follow-up
 
+- Mobile review flow: Board options collapses management controls; phone cards
+  form one vertical list with a status filter. Finished feature details lead
+  with the result and keep the Lead review action in the footer; editing, status,
+  and deletion live under feature settings. Active requests/runs take priority
+  over saved card labels and completion counts. Desktop and touch Chromium board
+  journeys passed navigation, filters, review, voice/manual save, stop/delete,
+  consent preservation, and responsive layout. These frontend changes are served
+  on refresh and require no interruption of the user's resumed Lead.
+
 - Approval visibility: pending native requests now stay mounted at the chat tail
   while history loads, with a waiting label instead of Thinking. Command, folder,
   reason, retry state, and phone-sized buttons remain reachable after hydration

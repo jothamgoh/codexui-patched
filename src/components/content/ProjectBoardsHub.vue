@@ -1,21 +1,22 @@
 <template>
-  <div class="boards-hub" data-testid="project-board">
+  <div class="boards-hub" :class="{ 'board-options-open': boardOptionsOpen }" data-testid="project-board">
     <header class="boards-header">
       <div class="boards-heading-copy">
         <h2>Project board</h2>
         <p>Review the plan, follow progress, and inspect each feature’s results and checks.</p>
       </div>
       <div class="boards-header-actions">
-        <Button v-if="activeBoard" type="button" variant="outline" :disabled="boardPlanningActive || isMutating" @click="$emit('plan-board', activeBoard.id)"><Sparkles aria-hidden="true" /> Plan features</Button>
-        <Button type="button" variant="outline" @click="agentDialogOpen = true">
+        <Button v-if="activeBoard" type="button" variant="outline" class="board-management-action" :disabled="boardPlanningActive || isMutating" @click="$emit('plan-board', activeBoard.id)"><Sparkles aria-hidden="true" /> Plan features</Button>
+        <Button type="button" variant="outline" class="board-management-action" @click="agentDialogOpen = true">
           <Users aria-hidden="true" /> Agents
         </Button>
-        <Button type="button" variant="outline" :disabled="!selectedProjectPath" @click="openBoardEditor">
+        <Button type="button" variant="outline" class="board-management-action" :disabled="!selectedProjectPath" @click="openBoardEditor">
           <Plus aria-hidden="true" /> New board
         </Button>
         <Button type="button" :disabled="!activeBoard" @click="openFeatureEditor()">
           <Plus aria-hidden="true" /> New feature
         </Button>
+        <Button type="button" variant="outline" class="board-mobile-options" :aria-expanded="boardOptionsOpen" @click="boardOptionsOpen = !boardOptionsOpen">Board options <ChevronDown aria-hidden="true" /></Button>
       </div>
     </header>
 
@@ -51,13 +52,13 @@
 
     <section v-if="activeBoard" class="board-workflow" aria-label="Project delivery">
       <div class="workflow-state">
-        <strong>{{ boardPlanningActive ? 'Planning your features…' : activeQueue?.status === 'running' ? 'Delivery is running' : activeProjectRun ? 'Project work is running' : activeQueue?.status === 'paused' ? 'Delivery paused' : boardComplete ? 'All features complete' : 'Ready when you are' }}</strong>
-        <p>{{ activeProjectRun && activeQueue?.status !== 'running' ? queueBusyMessage : activeQueue?.reason || (boardPlanningActive ? 'Your coordinator is reading the plan and preparing cards. No implementation yet.' : boardComplete ? 'Open a finished card to review the result, checks, and Lead chat.' : 'Review and edit the feature cards, then run the ones you approve. Open finished cards to inspect the results.') }}</p>
+        <strong>{{ activeProjectRequest ? 'Waiting for you' : boardPlanningActive ? 'Planning your features…' : activeQueue?.status === 'running' ? 'Delivery is running' : activeProjectRun ? 'Project work is running' : activeQueue?.status === 'paused' ? 'Delivery paused' : boardComplete ? 'All features complete' : 'Ready when you are' }}</strong>
+        <p :class="{ 'workflow-help': !activeProjectRun && !activeQueue?.reason && !boardPlanningActive }">{{ activeProjectRun && activeQueue?.status !== 'running' ? queueBusyMessage : activeQueue?.reason || (boardPlanningActive ? 'Your coordinator is reading the plan and preparing cards. No implementation yet.' : boardComplete ? 'Open a finished card to review the result, checks, and Lead chat.' : 'Review and edit the feature cards, then run the ones you approve. Open finished cards to inspect the results.') }}</p>
       </div>
       <div class="boards-header-actions">
-        <Button v-if="activeBoard.sourceThreadId" type="button" size="sm" variant="ghost" @click="$emit('select-thread', activeBoard.sourceThreadId)">Planning chat</Button>
-        <Button v-if="activeBoard.planningThreadId" type="button" size="sm" variant="ghost" @click="$emit('select-thread', activeBoard.planningThreadId)">Coordinator chat</Button>
-        <Button v-if="activeProjectThreadId && activeQueue?.status !== 'running'" type="button" size="sm" variant="outline" @click="$emit('select-thread', activeProjectThreadId)">Open active Lead chat</Button>
+        <Button v-if="activeBoard.sourceThreadId" type="button" size="sm" variant="ghost" class="board-management-action" @click="$emit('select-thread', activeBoard.sourceThreadId)">Planning chat</Button>
+        <Button v-if="activeBoard.planningThreadId" type="button" size="sm" variant="ghost" class="board-management-action" @click="$emit('select-thread', activeBoard.planningThreadId)">Coordinator chat</Button>
+        <Button v-if="activeProjectThreadId && (activeQueue?.status !== 'running' || activeProjectRequest)" type="button" size="sm" variant="outline" @click="$emit('select-thread', activeProjectThreadId)">{{ activeProjectRequest ? 'Open request in Lead chat' : 'Open active Lead chat' }}</Button>
         <Button v-if="activeQueue?.status === 'running'" type="button" size="sm" variant="outline" :disabled="isDictating || isMutating" @click="pauseQueue">Pause delivery</Button>
         <Button v-else type="button" size="sm" :disabled="queueCandidates.length === 0 || Boolean(activeProjectRun) || boardPlanningActive || isMutating" @click="openQueue">{{ activeQueue ? 'Resume selected features' : 'Run selected features' }}</Button>
       </div>
@@ -98,6 +99,7 @@
 
     <section v-else id="board-view-panel" class="board-view-panel" role="tabpanel" :aria-labelledby="`board-tab-${activeView}`" tabindex="0">
       <template v-if="activeView === 'board'">
+      <label v-if="featureCards.length" class="mobile-feature-filter"><span>Show features</span><select v-model="mobileColumn" aria-label="Show features"><option value="all">All statuses</option><option v-for="column in columns" :key="column.key" :value="column.key">{{ column.label }} ({{ cardsForColumn(column.statuses).length }})</option></select></label>
       <div v-if="featureCards.length === 0" class="boards-empty boards-empty-compact">
         <Sparkles aria-hidden="true" />
         <strong>Turn a large build into visible work</strong>
@@ -109,6 +111,7 @@
         <section
           v-for="column in columns"
           :key="column.key"
+          v-show="!isMobileBoard || (mobileColumn === 'all' ? cardsForColumn(column.statuses).length > 0 : mobileColumn === column.key)"
           class="board-lane"
           :data-board-status="column.key"
           @dragover.prevent
@@ -122,6 +125,7 @@
           <p class="lane-hint">{{ column.hint }}</p>
 
           <div class="board-lane-list">
+            <p v-if="isMobileBoard && !cardsForColumn(column.statuses).length" class="lane-hint">No features in this status.</p>
             <article
               v-for="card in cardsForColumn(column.statuses)"
               :key="card.id"
@@ -175,7 +179,7 @@
           @interact-outside="keepDockedDetailOpen" @open-auto-focus="rememberFocus('detail')" @close-auto-focus="restoreFocus('detail', $event)">
           <header class="board-detail-header">
             <div>
-              <span>{{ selectedCard.type === 'qa_batch' ? 'QA batch' : requestForCard(selectedCard) ? nativeRequestLabel(selectedCard) : statusLabel(selectedCard.status) }}</span>
+              <span>{{ selectedCard.type === 'qa_batch' ? 'QA batch' : requestForCard(selectedCard) ? nativeRequestLabel(selectedCard) : statusLabel(cardDisplayStatus(selectedCard)) }}</span>
               <DialogTitle>{{ selectedCard.title }}</DialogTitle>
             </div>
             <Button type="button" variant="ghost" size="icon-sm" aria-label="Close feature" @click="closeCard">
@@ -185,7 +189,7 @@
 
           <div class="board-detail-body">
             <p v-if="error" class="boards-alert" role="alert">{{ error }}</p>
-            <div class="board-detail-actions">
+            <div v-if="canStartSelectedCard || selectedRunIsActive || (!selectedHasResult && selectedCard.threadId)" class="board-detail-actions">
               <Button
                 v-if="canStartSelectedCard"
                 type="button"
@@ -197,36 +201,23 @@
               </Button>
               <Button v-if="canStartSelectedCard && !selectedTasks.some(task => task.status === 'working' || task.status === 'done')" type="button" variant="outline" :disabled="selectedRunIsActive || Boolean(selectedOpenQuestion) || isMutating" @click="planSelectedFeature"><Sparkles aria-hidden="true" />{{ selectedCard.planStatus === 'ready' ? 'Revise plan' : 'Plan first' }}</Button>
               <Button v-if="selectedRunIsActive" type="button" variant="outline" :disabled="isMutating" @click="stopSelectedFeature"><LoaderCircle v-if="stoppingFeatureId === selectedCard.id" class="animate-spin" aria-hidden="true" /><Square v-else aria-hidden="true" />{{ stoppingFeatureId === selectedCard.id ? 'Stopping…' : 'Stop run' }}</Button>
-              <Button v-if="selectedCard.threadId" type="button" variant="outline" @click="$emit('select-thread', selectedCard.threadId)">
+              <Button v-if="selectedCard.threadId && !selectedHasResult && !requestForCard(selectedCard)" type="button" variant="outline" @click="$emit('select-thread', selectedCard.threadId)">
                 <MessageSquare aria-hidden="true" /> Open Lead chat
               </Button>
-              <Button v-if="selectedCard.sourceThreadId" type="button" variant="ghost" @click="$emit('select-thread', selectedCard.sourceThreadId)">Original chat</Button>
-              <Button type="button" variant="outline" :disabled="selectedRunIsActive" @click="openEditSelectedCard">
-                <Pencil aria-hidden="true" /> Edit
-              </Button>
-              <label class="detail-status-select">
-                <span>Status</span>
-                <select :value="selectedCard.status" :disabled="cardIsLocked(selectedCard) || isMutating" @change="moveCardFromEvent(selectedCard, $event)">
-                  <option v-for="status in moveStatuses" :key="status.value" :value="status.value" :disabled="status.value === 'needs_input'">{{ status.label }}</option>
-                </select>
-              </label>
             </div>
 
             <section v-if="requestForCard(selectedCard)" class="needs-you-card" aria-label="Lead request"><strong>{{ nativeRequestLabel(selectedCard) }}</strong><p>The Lead is waiting for you. Open its chat to review the request, or stop this run.</p><Button type="button" variant="outline" @click="$emit('select-thread', selectedCard.threadId)">Review in Lead chat</Button></section>
             <p v-if="!selectedRunIsActive && selectedRuns[0]?.error" class="detail-muted" role="status">{{ selectedRuns[0].error }}</p>
             <p v-if="dependencyLabel(selectedCard)" class="dependency-note">{{ dependencyLabel(selectedCard) }}</p>
-            <section v-if="selectedCard.summary || selectedCard.status === 'done'" class="detail-section feature-result" aria-label="Feature result">
-              <h3>{{ selectedCard.status === 'review' ? 'Ready for review' : selectedCard.status === 'done' ? 'Result' : 'Previous result' }}</h3>
-              <p class="detail-prewrap">{{ selectedCard.summary || 'This feature is complete. Review the Lead chat for its final response.' }}</p>
+            <section v-if="selectedHasResult" class="detail-section feature-result" aria-label="Feature result">
+              <h3>{{ selectedRunIsActive ? 'Previous result · work is continuing' : selectedCard.status === 'review' ? 'Ready for review' : selectedCard.status === 'done' ? 'Result' : 'Previous result' }}</h3>
+              <p class="detail-prewrap">{{ selectedCard.summary || (selectedCard.status === 'review' ? 'The work is ready for its final check. Review the Lead chat and verification tasks below.' : 'This feature is complete. Review the Lead chat for its final response.') }}</p>
               <p v-if="selectedTasks.some(task => task.taskPurpose === 'verification')" class="detail-muted">{{ selectedTasks.filter(task => task.taskPurpose === 'verification' && task.status === 'done').length }}/{{ selectedTasks.filter(task => task.taskPurpose === 'verification').length }} verification tasks completed. Check their findings below.</p>
-              <Button v-if="selectedCard.threadId" type="button" size="sm" variant="outline" @click="$emit('select-thread', selectedCard.threadId)"><MessageSquare aria-hidden="true" /> Review result in Lead chat</Button>
               <p v-if="selectedCard.threadId" class="detail-muted">For code changes, open Summary → Changes in the chat.</p>
             </section>
             <section v-if="selectedCard.planSummary" class="detail-section"><h3>{{ selectedPlanNeedsReview ? 'Plan ready' : 'Plan' }}</h3><p class="detail-prewrap">{{ selectedCard.planSummary }}</p><p v-if="selectedPlanNeedsReview" class="detail-muted">Review the tasks below. Start work when you are ready, or revise the brief and plan again.</p></section>
-            <p class="detail-muted">Lead settings: {{ selectedCard.model || agentFor(selectedCard.assignedAgentId)?.model || 'App default model' }} · {{ selectedCard.reasoningEffort || agentFor(selectedCard.assignedAgentId)?.reasoningEffort || 'Default' }} reasoning.</p>
 
             <p v-if="selectedCard.type === 'qa_batch'" class="detail-muted">QA batch cards track later verification. Automated batch runs are not available yet.</p>
-            <p v-if="cardIsLocked(selectedCard)" class="detail-muted">Status is controlled by the active run or open questions.</p>
 
             <section v-if="selectedOpenQuestion" class="needs-you-card" data-testid="needs-you-question">
               <div class="needs-you-heading"><CircleHelp aria-hidden="true" /><strong>Needs your answer</strong></div>
@@ -300,13 +291,22 @@
                 <Button type="submit" size="sm" variant="outline" :disabled="isDictating || isMutating || !commentText.trim()">Add</Button>
               </form>
             </section>
+            <details class="feature-options">
+              <summary>Feature settings & actions</summary>
+              <p class="detail-muted">Lead settings: {{ selectedCard.model || agentFor(selectedCard.assignedAgentId)?.model || 'App default model' }} · {{ selectedCard.reasoningEffort || agentFor(selectedCard.assignedAgentId)?.reasoningEffort || 'Default' }} reasoning.</p>
+              <div class="board-detail-actions">
+                <Button type="button" variant="outline" :disabled="selectedRunIsActive" @click="openEditSelectedCard"><Pencil aria-hidden="true" /> Edit</Button>
+                <Button v-if="selectedCard.sourceThreadId" type="button" variant="ghost" @click="$emit('select-thread', selectedCard.sourceThreadId)">Original chat</Button>
+                <label class="detail-status-select"><span>Status</span><select :value="cardDisplayStatus(selectedCard)" :disabled="cardIsLocked(selectedCard) || isMutating" @change="moveCardFromEvent(selectedCard, $event)"><option v-for="status in moveStatuses" :key="status.value" :value="status.value" :disabled="status.value === 'needs_input'">{{ status.label }}</option></select></label>
+              </div>
+              <p v-if="cardIsLocked(selectedCard)" class="detail-muted">Status is controlled by the active run or open questions.</p>
+              <Button type="button" variant="ghost" class="danger-button" :disabled="selectedRunIsActive || isMutating" @click="deleteSelectedCard"><Trash2 aria-hidden="true" /> Delete feature</Button>
+              <p v-if="selectedRunIsActive" class="detail-muted">Stop the run before deleting. Your code files are kept.</p>
+            </details>
           </div>
 
-          <footer class="board-detail-footer">
-            <Button type="button" variant="ghost" class="danger-button" :disabled="selectedRunIsActive || isMutating" @click="deleteSelectedCard">
-              <Trash2 aria-hidden="true" /> Delete feature
-            </Button>
-            <span v-if="selectedRunIsActive" class="detail-muted">Stop the run before deleting. Your code files are kept.</span>
+          <footer v-if="selectedHasResult && selectedCard.threadId && !requestForCard(selectedCard)" class="board-detail-footer">
+            <Button type="button" @click="$emit('select-thread', selectedCard.threadId)"><MessageSquare aria-hidden="true" /> {{ selectedRunIsActive ? 'Open Lead chat' : 'Review result in Lead chat' }}</Button>
           </footer>
         </DialogContent>
       </DialogPortal>
@@ -540,6 +540,9 @@ const queueDialogOpen = ref(false)
 const queueFeatureIds = ref<string[]>([])
 const queueAllowEdits = ref(false)
 const featureSearch = ref('')
+const boardOptionsOpen = ref(false)
+const isMobileBoard = useMediaQuery('(max-width: 700px)')
+const mobileColumn = ref('all')
 const boardViews = [{ id: 'board', label: 'Board' }, { id: 'needs-you', label: 'Needs you' }, { id: 'runs', label: 'Runs' }] as const
 type BoardView = typeof boardViews[number]['id']
 const activeView = ref<BoardView>('board')
@@ -619,10 +622,10 @@ const activeBoard = computed<ProjectBoard | null>(() => {
 const boardAgents = computed(() => props.snapshot.agents.filter((agent) => activeBoard.value?.agentIds.includes(agent.id)))
 const featureCards = computed(() => props.snapshot.cards.filter((card) => card.boardId === activeBoard.value?.id && !card.parentCardId))
 const openBoardQuestions = computed(() => props.snapshot.questions.filter((question) => question.boardId === activeBoard.value?.id && question.status === 'open').sort((a, b) => a.createdAtIso.localeCompare(b.createdAtIso)))
-const attentionCards = computed(() => featureCards.value.filter((card) => requestForCard(card) || card.status === 'blocked' || card.status === 'review' || (card.status === 'needs_input' && !openQuestionFor(card))))
+const attentionCards = computed(() => featureCards.value.filter((card) => requestForCard(card) || ['blocked', 'review'].includes(cardDisplayStatus(card)) || (cardDisplayStatus(card) === 'needs_input' && !openQuestionFor(card))))
 const attentionCount = computed(() => openBoardQuestions.value.length + attentionCards.value.length)
 const workingFeatureCount = computed(() => featureCards.value.filter((card) => cardDisplayStatus(card) === 'working').length)
-const completedFeatureCount = computed(() => featureCards.value.filter((card) => card.status === 'done').length)
+const completedFeatureCount = computed(() => featureCards.value.filter((card) => cardDisplayStatus(card) === 'done').length)
 const boardComplete = computed(() => featureCards.value.length > 0 && completedFeatureCount.value === featureCards.value.length)
 const dependencyCandidates = computed(() => featureCards.value.filter((card) => card.type === 'feature' && card.id !== editingCardId.value))
 const activeQueue = computed(() => props.snapshot.queues?.find((queue) => queue.boardId === activeBoard.value?.id))
@@ -632,7 +635,8 @@ const activeProjectRun = computed(() => activeBoard.value && props.snapshot.runs
 ))
 const activeProjectCard = computed(() => props.snapshot.cards.find((card) => card.id === activeProjectRun.value?.cardId))
 const activeProjectThreadId = computed(() => activeProjectRun.value?.threadId || activeProjectCard.value?.threadId || '')
-const queueBusyMessage = computed(() => `${activeProjectCard.value ? `“${activeProjectCard.value.title}”` : 'Project planning'} is already running. Wait for it to finish before starting selected features.`)
+const activeProjectRequest = computed(() => props.pendingRequests?.find((request) => request.threadId === activeProjectThreadId.value))
+const queueBusyMessage = computed(() => `${activeProjectCard.value ? `“${activeProjectCard.value.title}”` : 'Project planning'} ${activeProjectRequest.value ? 'is waiting for your response in the Lead chat.' : 'is already running. Wait for it to finish before starting selected features.'}`)
 const queueCandidates = computed(() => featureCards.value.filter((card) => card.type === 'feature' && card.status !== 'done' && card.status !== 'review' && !cardIsLocked(card)))
 const latestBoardPlanRun = computed(() => props.snapshot.runs.filter((run) => run.boardId === activeBoard.value?.id && run.kind === 'board_plan').sort((a, b) => b.startedAtIso.localeCompare(a.startedAtIso))[0])
 const boardPlanningActive = computed(() => latestBoardPlanRun.value?.status === 'running' || latestBoardPlanRun.value?.status === 'queued')
@@ -646,9 +650,10 @@ const selectedArtifacts = computed(() => props.snapshot.artifacts.filter((artifa
 const selectedRuns = computed(() => props.snapshot.runs.filter((run) => run.cardId === selectedCard.value?.id).sort((a, b) => b.startedAtIso.localeCompare(a.startedAtIso)))
 const selectedComments = computed(() => props.snapshot.comments.filter((comment) => comment.cardId === selectedCard.value?.id || selectedTaskIds.value.has(comment.cardId)).sort((a, b) => a.createdAtIso.localeCompare(b.createdAtIso)))
 const selectedRunIsActive = computed(() => selectedRuns.value.some((run) => run.status === 'running' || run.status === 'queued'))
+const selectedHasResult = computed(() => Boolean(selectedCard.value && (selectedCard.value.summary || ['review', 'done'].includes(selectedCard.value.status))))
 const canStartSelectedCard = computed(() => selectedCard.value?.type === 'feature' && selectedCard.value.status !== 'done' && selectedCard.value.status !== 'review')
 
-watch(() => activeBoard.value?.id, () => { activeView.value = 'board' })
+watch(() => activeBoard.value?.id, () => { activeView.value = 'board'; mobileColumn.value = 'all' })
 watch([() => activeBoard.value?.id, () => props.initialFeatureId, selectedProjectPath], () => {
   questionAnswer.value = ''
   commentText.value = ''
@@ -895,7 +900,8 @@ function requestForCard(card: ProjectBoardCard): UiServerRequest | undefined {
   return card.threadId ? props.pendingRequests?.find((request) => request.threadId === card.threadId) : undefined
 }
 function cardDisplayStatus(card: ProjectBoardCard): ProjectBoardStatus {
-  return requestForCard(card) ? 'needs_input' : card.status
+  if (requestForCard(card) || openQuestionFor(card)) return 'needs_input'
+  return props.snapshot.runs.some((run) => run.cardId === card.id && ['running', 'queued'].includes(run.status)) ? 'working' : card.status
 }
 function nativeRequestLabel(card: ProjectBoardCard): string {
   return requestForCard(card)?.method.includes('requestUserInput') ? 'Answer needed' : 'Approval needed'
@@ -1071,6 +1077,10 @@ function formatTime(value: string): string { const date = new Date(value); retur
 .comment-list li { background: var(--surface-muted); @apply rounded-lg px-3 py-2; }
 .comment-form { @apply mt-2 flex gap-2; }
 .board-detail-footer { @apply flex justify-end border-t px-5 py-3; border-color: var(--border-soft); }
+.feature-options { border-top: 1px solid var(--border-soft); padding-top: .5rem; }
+.feature-options summary { cursor: pointer; padding: .75rem 0; font-size: .875rem; color: var(--text-secondary); }
+.feature-options .board-detail-actions { margin-block: 1rem; }
+.board-mobile-options, .mobile-feature-filter { display: none; }
 .danger-button { @apply text-rose-600 hover:bg-rose-50 hover:text-rose-700; }
 .board-dialog { @apply fixed top-1/2 left-1/2 z-[70] max-h-[92dvh] w-[calc(100%_-_2rem)] max-w-2xl -translate-x-1/2 -translate-y-1/2 overflow-y-auto overscroll-contain rounded-xl border shadow-2xl outline-none; background: var(--surface-elevated); color: var(--text-primary); border-color: var(--border-soft); }
 .board-dialog-small { @apply max-w-md; }
@@ -1123,21 +1133,39 @@ select:disabled { cursor: not-allowed; opacity: 0.65; }
   .boards-header-actions { @apply w-full; }
   .boards-header-actions button { @apply flex-1; }
   .boards-header > .boards-header-actions { @apply grid grid-cols-2; }
+  .board-mobile-options { display: inline-flex; }
+  .boards-hub:not(.board-options-open) .board-management-action,
+  .boards-hub:not(.board-options-open) .boards-toolbar,
+  .boards-hub:not(.board-options-open) .workflow-help { display: none; }
+  .board-management-action { order: 1; }
+  .boards-header-actions button { white-space: normal; }
+  .board-workflow { padding: .75rem; gap: .5rem; }
+  .board-workflow .boards-header-actions { gap: .5rem; }
   .boards-toolbar { @apply items-stretch; }
   .boards-toolbar label { @apply min-w-0 flex-1; }
   .boards-toolbar select { @apply w-full; }
   .boards-hub select, .board-detail-panel select, .board-dialog select { font-size: 16px; }
   .boards-hub :deep(button), .boards-hub select, .board-detail-panel :deep(button), .board-detail-panel select, .board-dialog :deep(button), .board-dialog select { min-height: 44px; }
   .boards-hub :deep(button), .board-detail-panel :deep(button), .board-dialog :deep(button) { min-width: 44px; }
-  .board-card-main { @apply pb-14; }
-  .board-card-move select { @apply text-xs; }
+  .board-card-main { @apply pb-3; }
+  .board-card-move, .lane-add { display: none; }
   .boards-toolbar .boards-auto-toggle { @apply ml-0 min-h-11 w-full flex-none pb-0; }
-  .board-lane { @apply w-[85vw]; }
-  .boards-lanes { flex: none; height: max(24rem, 60dvh); }
+  .mobile-feature-filter { display: flex; align-items: center; justify-content: space-between; gap: .5rem; margin-bottom: .5rem; font-size: .75rem; color: var(--text-secondary); }
+  .mobile-feature-filter select { border: 1px solid var(--border-strong); border-radius: .375rem; background: var(--surface-elevated); color: var(--text-primary); padding: .5rem; min-width: 0; }
+  .board-lane { width: 100%; flex: none; }
+  .boards-lanes { flex: none; height: auto; flex-direction: column; overflow: visible; }
+  .board-lane-list { overflow: visible; }
   .board-view-tabs { @apply mb-3; }
   .board-view-tabs button { @apply flex-1 justify-center; }
   .board-view-panel { flex: none; }
   .board-detail-panel { @apply max-w-none; }
+  .board-detail-header { padding: .75rem 1rem; }
+  .board-detail-header :deep(h2) { font-size: 1.125rem; }
+  .board-detail-body { padding: 1rem; }
+  .board-detail-footer :deep(button) { width: 100%; white-space: normal; }
+  .board-detail-header > div, .board-detail-actions > * { min-width: 0; }
+  .board-detail-panel :deep(button) { white-space: normal; }
+  .feature-result .detail-muted { padding: .5rem 0; background: transparent; }
   .board-form-grid, .agent-dialog-body { @apply grid-cols-1; }
   .board-dialog { @apply top-auto bottom-0 left-0 max-h-[94dvh] w-full translate-x-0 translate-y-0 rounded-b-none; }
   .board-detail-footer, .board-form { padding-bottom: max(1rem, env(safe-area-inset-bottom)); }

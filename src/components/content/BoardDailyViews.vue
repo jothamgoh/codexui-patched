@@ -103,7 +103,11 @@ function openQuestion(question: ProjectBoardQuestion): void {
 }
 function openRunFeature(run: ProjectBoardRun): void { const feature = featureFor(run.cardId); if (feature) emit('open-feature', feature) }
 function runKind(run: ProjectBoardRun): string { return run.kind === 'board_plan' ? 'Project planning' : run.kind === 'plan' ? 'Feature planning' : 'Feature work' }
-function runStatus(run: ProjectBoardRun): string { return ({ queued: 'Queued', running: 'Working', succeeded: 'Completed', failed: 'Failed', interrupted: 'Interrupted' })[run.status] }
+function runStatus(run: ProjectBoardRun): string {
+  const request = ['queued', 'running'].includes(run.status) && props.pendingRequests?.find((entry) => entry.threadId === run.threadId)
+  if (request) return request.method.includes('requestUserInput') ? 'Answer needed' : 'Approval needed'
+  return ({ queued: 'Queued', running: 'Working', succeeded: 'Completed', failed: 'Failed', interrupted: 'Interrupted' })[run.status]
+}
 function formatTime(value: string): string {
   const date = new Date(value)
   return Number.isNaN(date.getTime()) ? 'Time unavailable' : new Intl.DateTimeFormat(undefined, { dateStyle: 'medium', timeStyle: 'short' }).format(date)

@@ -13,7 +13,7 @@ import type { ProjectBoardModelCatalog } from '../types/projectBoardModels'
 
 export type ProjectBoardUpdateInput = Partial<Pick<
   ProjectBoard,
-  'name' | 'isDefault' | 'agentIds' | 'autoDispatch' | 'plan' | 'coordinatorAgentId' | 'executionAccess'
+  'name' | 'isDefault' | 'agentIds' | 'autoDispatch' | 'plan' | 'coordinatorAgentId' | 'executionAccess' | 'model' | 'reasoningEffort' | 'agentOverrides'
 >>
 
 export type ProjectBoardAgentUpdateInput = Partial<Pick<

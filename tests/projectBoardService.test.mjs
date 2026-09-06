@@ -19,13 +19,15 @@ async function compileTypeScriptModule(sourcePath, replacements = []) {
 
 const storeSourceUrl = new URL('../src/server/projectBoardStore.ts', import.meta.url)
 const titleModuleUrl = await compileTypeScriptModule(new URL('../src/lib/projectBoardTitle.ts', import.meta.url))
-const storeModuleUrl = await compileTypeScriptModule(storeSourceUrl, [["from '../lib/projectBoardTitle'", `from '${titleModuleUrl}'`]])
+const teamModuleUrl = await compileTypeScriptModule(new URL('../src/utils/projectBoardTeam.ts', import.meta.url))
+const storeModuleUrl = await compileTypeScriptModule(storeSourceUrl, [["from '../lib/projectBoardTitle'", `from '${titleModuleUrl}'`], ["from '../utils/projectBoardTeam'", `from '${teamModuleUrl}'`]])
 const { ProjectBoardStore } = await import(storeModuleUrl)
 const serviceSourceUrl = new URL('../src/server/projectBoardService.ts', import.meta.url)
 const notificationModuleUrl = await compileTypeScriptModule(new URL('../src/utils/projectBoardNotifications.ts', import.meta.url))
 const runtimeModuleUrl = await compileTypeScriptModule(new URL('../src/server/runtimeConfig.ts', import.meta.url))
 const modelsModuleUrl = await compileTypeScriptModule(new URL('../src/server/projectBoardModels.ts', import.meta.url), [["from './runtimeConfig'", `from '${runtimeModuleUrl}'`]])
 const serviceModuleUrl = await compileTypeScriptModule(serviceSourceUrl, [
+  ["from '../utils/projectBoardTeam'", `from '${teamModuleUrl}'`],
   ["from './projectBoardModels'", `from '${modelsModuleUrl}'`],
   ["from '../utils/projectBoardNotifications'", `from '${notificationModuleUrl}'`],
   ["from './projectBoardStore'", `from '${storeModuleUrl}'`],
@@ -129,6 +131,79 @@ function toolCall(threadId, action, fields = {}) {
     arguments: { action, ...fields },
   }
 }
+
+test('board-local Team profiles reach start, same-chat replies, planning and effective agent context without changing templates', async (t) => {
+  const { appServer, board, store } = await createHarness(t, 'full-access')
+  const service = new ProjectBoardService({ store, appServer, resolveExecutionSettings: async (settings) => ({ model: settings.model || 'source-model', reasoningEffort: settings.reasoningEffort || 'medium' }) })
+  const created = await service.createAgent({ name: 'Template coordinator', role: 'engineering', instructions: 'Reusable template prompt.', model: 'template-model', reasoningEffort: 'low' })
+  const profile = created.agents.find((agent) => !agent.builtIn)
+  const overrides = { [profile.id]: { instructions: 'Local product and coordination instructions.', model: '', reasoningEffort: '' }, 'builtin-engineer': { instructions: 'Local specialist instructions.' }, 'builtin-qa': { model: 'qa-model', reasoningEffort: 'low' } }
+  await service.updateBoard(board.id, { agentIds: [...board.agentIds, profile.id], coordinatorAgentId: profile.id, model: 'board-model', reasoningEffort: 'xhigh', agentOverrides: overrides })
+  const feature = (await service.createCard({ boardId: board.id, title: 'Use the saved Team' })).cards[0]
+  assert.equal(feature.assignedAgentId, profile.id)
+  await service.startFeature(feature.id)
+  let turn = await waitFor(() => appServer.calls.filter((entry) => entry.method === 'turn/start')[0], 'No local Team start')
+  assert.deepEqual([turn.params.model, turn.params.effort], ['board-model', 'xhigh'])
+  assert.match(turn.params.input[0].text, /Local product and coordination instructions/u)
+  const readAgent = async (agentId) => JSON.parse((await service.handleDynamicToolCall(toolCall('lead-thread', 'read_agent', { agentId }))).contentItems[0].text)
+  assert.deepEqual([...(await Promise.all([readAgent(profile.id), readAgent('builtin-engineer')])).map((agent) => agent.instructions)], ['Local product and coordination instructions.', 'Local specialist instructions.'])
+  const context = JSON.parse((await service.handleDynamicToolCall(toolCall('lead-thread', 'read_context'))).contentItems[0].text)
+  assert.equal(context.board.model, 'board-model')
+  assert.equal(context.agents.find((agent) => agent.id === profile.id).model, '', 'Profile context preserves native inheritance instead of pinning the board model')
+  assert.equal(context.executionSettings.model, 'board-model')
+  assert.deepEqual((await store.read()).agents.find((agent) => agent.id === profile.id), profile)
+  await assert.rejects(service.updateBoard(board.id, { agentOverrides: {} }), /stop running board work/u)
+  await service.stopFeature(feature.id)
+  await service.updateBoard(board.id, { agentOverrides: { ...overrides, [profile.id]: { instructions: 'Updated local reply instructions.', model: 'local-model', reasoningEffort: 'high' } } })
+  const input = [{ type: 'text', text: 'Continue with the updated Team.' }]
+  await service.sendChatMessage('lead-thread', { input })
+  turn = await waitFor(() => appServer.calls.filter((entry) => entry.method === 'turn/start')[1], 'No same-chat local Team reply')
+  assert.deepEqual([turn.params.model, turn.params.effort, turn.params.threadId], ['local-model', 'high', 'lead-thread'])
+  assert.deepEqual(turn.params.input, input)
+  assert.equal((await readAgent(profile.id)).instructions, 'Updated local reply instructions.')
+  assert.match(appServer.calls.filter((entry) => entry.method === 'thread/resume').at(-1).params.developerInstructions, new RegExp(profile.id, 'u'))
+  await service.stopFeature(feature.id)
+  await service.updateCard(feature.id, { model: 'feature-model', reasoningEffort: 'low' })
+  await service.startFeature(feature.id)
+  turn = await waitFor(() => appServer.calls.filter((entry) => entry.method === 'turn/start')[2], 'No explicit feature override')
+  assert.deepEqual([turn.params.model, turn.params.effort], ['feature-model', 'low'])
+  const helper = await readAgent('builtin-engineer')
+  const qa = await readAgent('builtin-qa')
+  assert.deepEqual([helper.model, helper.reasoningEffort], ['', ''], 'Blank specialists inherit this executing feature Lead, not the different board default')
+  assert.deepEqual([qa.model, qa.reasoningEffort], ['qa-model', 'low'], 'Explicit specialist settings still override Lead inheritance')
+  await service.stopFeature(feature.id)
+  await service.updateBoard(board.id, { model: '', reasoningEffort: '', agentOverrides: { [profile.id]: { instructions: 'Plan with this board context.', model: '', reasoningEffort: '' } } })
+  await service.startBoardPlan(board.id, { plan: 'Propose the next feature.' })
+  turn = await waitFor(() => appServer.calls.filter((entry) => entry.method === 'turn/start')[3], 'No local Team planner')
+  assert.deepEqual([turn.params.model, turn.params.effort], ['source-model', 'medium'], 'Blank local and board settings reach source defaults, bypassing the explicit template')
+  assert.match(turn.params.input[0].text, /Plan with this board context/u)
+  const planner = JSON.parse((await service.handleDynamicToolCall(toolCall('lead-thread-2', 'read_context'))).contentItems[0].text)
+  assert.equal(planner.agents.find((agent) => agent.id === profile.id).model, '')
+})
+
+test('pending Team edits cannot mix launch settings and queued delivery blocks team changes', async (t) => {
+  for (const kind of ['feature', 'planner', 'queue']) {
+    const { appServer, board, feature, store } = await createHarness(t, 'full-access')
+    let release
+    const service = new ProjectBoardService({ store, appServer, resolveExecutionSettings: (settings) => new Promise((resolve) => { release = () => resolve({ model: settings.model || 'old-model', reasoningEffort: settings.reasoningEffort || 'high' }) }) })
+    const pending = kind === 'planner' ? service.startBoardPlan(board.id, { plan: 'Plan with saved defaults.' })
+      : kind === 'queue' ? service.startBoardQueue(board.id, { featureIds: [feature.id] }) : service.startFeature(feature.id)
+    await waitFor(() => release, 'Launch did not wait for model metadata')
+    if (kind === 'queue') {
+      await assert.rejects(service.updateBoard(board.id, { model: 'new-model' }), /Pause delivery/u)
+      release()
+      await pending
+      await waitFor(() => appServer.calls.find((entry) => entry.method === 'turn/start'), 'Queue did not retain its Team')
+      await service.stopFeature(feature.id)
+    } else {
+      await service.updateBoard(board.id, { model: 'new-model' })
+      release()
+      await assert.rejects(pending, /Team changed while starting/u)
+      assert.equal((await store.read()).runs.length, 0)
+      assert.equal(appServer.calls.some((entry) => entry.method === 'turn/start'), false)
+    }
+  }
+})
 
 test('full-access board execution starts and replies without approval while explicit project access retains consent', async (t) => {
   const { appServer, board, feature, service, store } = await createHarness(t, 'full-access')

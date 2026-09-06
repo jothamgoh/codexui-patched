@@ -19,9 +19,12 @@ async function compileTypeScriptModule(sourcePath, replacements = []) {
 }
 
 const titleModuleUrl = await compileTypeScriptModule(new URL('../src/lib/projectBoardTitle.ts', import.meta.url))
+const teamModuleUrl = await compileTypeScriptModule(new URL('../src/utils/projectBoardTeam.ts', import.meta.url))
+const { resolveProjectBoardAgent } = await import(teamModuleUrl)
 const storeSourceUrl = new URL('../src/server/projectBoardStore.ts', import.meta.url)
 const { ProjectBoardStore } = await import(await compileTypeScriptModule(storeSourceUrl, [
   ["from '../lib/projectBoardTitle'", `from '${titleModuleUrl}'`],
+  ["from '../utils/projectBoardTeam'", `from '${teamModuleUrl}'`],
 ]))
 
 async function createFixture(t, nowIso = '2026-09-05T02:00:00.000Z') {
@@ -64,6 +67,47 @@ async function createBoardAndFeature(store, feature = {}) {
     snapshot,
   }
 }
+
+test('board Team defaults and prompts stay local, validate atomically, and reset only when explicitly supplied', async (t) => {
+  const { store, reopen } = await createFixture(t)
+  const withProfile = await store.createAgent({ name: 'Reusable specialist', instructions: 'Shared instructions.', model: 'template-model', reasoningEffort: 'low' })
+  const profile = withProfile.agents.find((agent) => !agent.builtIn)
+  const overrides = { [profile.id]: { instructions: 'Only this board’s instructions.', model: '', reasoningEffort: '' }, 'builtin-lead': { instructions: 'Local Lead instructions.' } }
+  const created = await store.createBoard({ projectPath: '/tmp/team-project', name: 'Local Team', agentIds: ['builtin-lead', profile.id], coordinatorAgentId: profile.id, model: 'board-model', reasoningEffort: 'xhigh', agentOverrides: overrides })
+  const board = created.boards[0]
+  const sibling = (await store.createBoard({ projectPath: board.projectPath, name: 'Independent Team' })).boards[0]
+  assert.deepEqual([resolveProjectBoardAgent(board, profile).model, resolveProjectBoardAgent(board, profile).reasoningEffort], ['board-model', 'xhigh'], 'Explicit blanks bypass template settings')
+  assert.equal(resolveProjectBoardAgent(board, profile).instructions, 'Only this board’s instructions.')
+  assert.deepEqual(resolveProjectBoardAgent(sibling, profile), profile, 'A shared profile on another board remains unchanged')
+  const card = (await store.createCard({ boardId: board.id, title: 'Default coordinator assignment' })).cards[0]
+  assert.equal(card.assignedAgentId, profile.id)
+  await store.updateBoard(board.id, { name: 'Renamed Team', model: 'new-board-model' })
+  let snapshot = await reopen().read()
+  assert.deepEqual(snapshot.boards.find((entry) => entry.id === board.id).agentOverrides, overrides)
+  assert.deepEqual(snapshot.agents.find((agent) => agent.id === profile.id), profile)
+  for (const changes of [
+    { agentIds: ['missing'] }, { agentIds: [] }, { coordinatorAgentId: 'missing' },
+    { agentOverrides: { missing: { model: '' } } }, { reasoningEffort: 'unsupported' },
+    { agentOverrides: { [profile.id]: { reasoningEffort: 'unsupported' } } },
+    { agentOverrides: { [profile.id]: { instructions: '' } } },
+    { agentOverrides: { [profile.id]: { sandbox: 'workspace-write' } } },
+  ]) {
+    await assert.rejects(store.updateBoard(board.id, changes))
+    assert.deepEqual(await store.read(), snapshot, 'Invalid Team changes must be atomic')
+  }
+  await assert.rejects(store.createBoard({ projectPath: '/tmp/invalid-team', model: 'allowed', agentOverrides: { missing: {} } }))
+  assert.deepEqual(await store.read(), snapshot)
+  const reset = (await store.updateBoard(board.id, { agentOverrides: {} })).boards.find((entry) => entry.id === board.id)
+  assert.equal(resolveProjectBoardAgent(reset, profile).model, 'template-model', 'Removing an override restores the shared template before the board default')
+  assert.equal(resolveProjectBoardAgent(reset, profile).instructions, profile.instructions)
+  const { run } = await store.startRun(card.id, profile.id, 'execute')
+  await assert.rejects(store.updateBoard(board.id, { model: 'future-model' }), /Stop running board work/u)
+  await store.updateBoard(sibling.id, { model: 'independent-model' })
+  await store.failRun(run.id, 'Pause to change Team', 'interrupted')
+  await store.updateBoard(board.id, { model: '', reasoningEffort: '' })
+  snapshot = await reopen().read()
+  assert.equal(snapshot.boards.find((entry) => entry.id === board.id).model, '')
+})
 
 test('serializes starts per board while other boards in the same folder remain independent', async (t) => {
   const { store } = await createFixture(t)

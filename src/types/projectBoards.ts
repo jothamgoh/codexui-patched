@@ -15,6 +15,12 @@ export type ProjectBoardPriority = 'low' | 'normal' | 'high' | 'urgent'
 export type ProjectBoardAgentRole = 'lead' | 'product' | 'design' | 'engineering' | 'qa' | 'custom'
 export type ProjectBoardAgentSandbox = 'read-only' | 'workspace-write'
 export type ProjectBoardExecutionAccess = 'full-access' | 'project'
+export type ProjectBoardAgentOverride = {
+  instructions?: string
+  /** Present but blank means use the board default, bypassing the template. */
+  model?: string
+  reasoningEffort?: ReasoningEffort | ''
+}
 export type ProjectBoardRunKind = 'plan' | 'execute' | 'board_plan' | 'follow_up'
 export type ProjectBoardRunStatus = 'queued' | 'running' | 'succeeded' | 'failed' | 'interrupted'
 
@@ -46,6 +52,9 @@ export type ProjectBoard = {
   sourceThreadId: string
   planningThreadId: string
   coordinatorAgentId: string
+  model?: string
+  reasoningEffort?: ReasoningEffort | ''
+  agentOverrides?: Record<string, ProjectBoardAgentOverride>
   createdAtIso: string
   updatedAtIso: string
 }
@@ -155,6 +164,11 @@ export type ProjectBoardCreateInput = {
   name?: string
   isDefault?: boolean
   executionAccess?: ProjectBoardExecutionAccess
+  agentIds?: string[]
+  coordinatorAgentId?: string
+  model?: string
+  reasoningEffort?: ReasoningEffort | ''
+  agentOverrides?: Record<string, ProjectBoardAgentOverride>
 }
 
 export type ProjectBoardCardCreateInput = {

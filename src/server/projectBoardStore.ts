@@ -2,9 +2,11 @@ import { randomUUID } from 'node:crypto'
 import { mkdir, readFile, rename, rm, writeFile } from 'node:fs/promises'
 import { dirname } from 'node:path'
 import { projectBoardTitleFromBrief } from '../lib/projectBoardTitle'
+import { hasProjectBoardTeamChanges, projectBoardTeamFingerprint } from '../utils/projectBoardTeam'
 import type {
   ProjectBoard,
   ProjectBoardAgent,
+  ProjectBoardAgentOverride,
   ProjectBoardAgentCreateInput,
   ProjectBoardAgentRole,
   ProjectBoardArtifact,
@@ -243,6 +245,9 @@ function normalizeBoard(value: unknown): ProjectBoard | null {
     sourceThreadId: readString(record.sourceThreadId, 200),
     planningThreadId: readString(record.planningThreadId, 200),
     coordinatorAgentId: readString(record.coordinatorAgentId, 200),
+    model: readString(record.model, 200),
+    reasoningEffort: readOptionalEffort(record.reasoningEffort),
+    agentOverrides: readBoardAgentOverrides(record.agentOverrides),
     createdAtIso: readString(record.createdAtIso, 100) || new Date(0).toISOString(),
     updatedAtIso: readString(record.updatedAtIso, 100) || new Date(0).toISOString(),
   }
@@ -379,6 +384,46 @@ function readOptionalEffort(value: unknown): ReasoningEffort | '' {
   return effort
 }
 
+function readTeamString(value: unknown, field: string, maxLength = 200): string {
+  if (value !== undefined && typeof value !== 'string') throw new Error(`${field} must be text.`)
+  if (typeof value === 'string' && value.length > maxLength) throw new Error(`${field} is too long.`)
+  return readString(value, maxLength)
+}
+
+function readBoardAgentOverrides(value: unknown): Record<string, ProjectBoardAgentOverride> {
+  if (value === undefined) return {}
+  const record = asRecord(value)
+  if (!record) throw new Error('Agent overrides must be an object.')
+  return Object.fromEntries(Object.entries(record).map(([id, raw]) => {
+    const fields = asRecord(raw)
+    if (!fields || Object.keys(fields).some((key) => !['instructions', 'model', 'reasoningEffort'].includes(key))) throw new Error('Agent overrides only support instructions, model, and reasoningEffort.')
+    const override: ProjectBoardAgentOverride = {}
+    if ('instructions' in fields) {
+      override.instructions = readTeamString(fields.instructions, 'Agent instructions', 20_000)
+      if (!override.instructions) throw new Error('Agent instructions cannot be empty; remove the override to restore the template.')
+    }
+    if ('model' in fields) override.model = readTeamString(fields.model, 'Agent model')
+    if ('reasoningEffort' in fields) override.reasoningEffort = readOptionalEffort(readTeamString(fields.reasoningEffort, 'Agent reasoning effort'))
+    return [id, override]
+  }))
+}
+
+function readBoardTeam(record: Record<string, unknown>, agents: ProjectBoardAgent[], existing?: ProjectBoard) {
+  const knownIds = new Set(agents.map((agent) => agent.id))
+  if ('agentIds' in record && (!Array.isArray(record.agentIds) || record.agentIds.some((id) => typeof id !== 'string' || !knownIds.has(id)))) throw new Error('Every team member must be a known agent.')
+  const agentIds = 'agentIds' in record ? readStringArray(record.agentIds) : existing?.agentIds ?? [...knownIds]
+  if (!agentIds.length) throw new Error('A board must have at least one agent.')
+  const coordinatorAgentId = 'coordinatorAgentId' in record ? readTeamString(record.coordinatorAgentId, 'Coordinator agent') : existing?.coordinatorAgentId ?? ''
+  if (coordinatorAgentId && !agentIds.includes(coordinatorAgentId)) throw new Error('The default Lead must be enabled on this board.')
+  const agentOverrides = 'agentOverrides' in record ? readBoardAgentOverrides(record.agentOverrides) : existing?.agentOverrides ?? {}
+  if (Object.keys(agentOverrides).some((id) => !agentIds.includes(id))) throw new Error('Agent overrides must belong to enabled team members. Remove their overrides when removing members.')
+  return {
+    agentIds, coordinatorAgentId, agentOverrides,
+    model: 'model' in record ? readTeamString(record.model, 'Board model') : existing?.model ?? '',
+    reasoningEffort: 'reasoningEffort' in record ? readOptionalEffort(readTeamString(record.reasoningEffort, 'Board reasoning effort')) : existing?.reasoningEffort ?? '',
+  }
+}
+
 function assertCardDependencies(snapshot: ProjectBoardSnapshot): void {
   const byId = new Map(snapshot.cards.map((card) => [card.id, card]))
   const visiting = new Set<string>()
@@ -454,6 +499,10 @@ function normalizeSnapshot(value: unknown, now: Date): ProjectBoardSnapshot {
         agentIds: board.agentIds.filter((id) => knownAgentIds.has(id)),
       }))
       .map((board) => ({ ...board, agentIds: board.agentIds.length > 0 ? board.agentIds : fallbackAgentIds }))
+      .map((board) => ({ ...board,
+        coordinatorAgentId: board.agentIds.includes(board.coordinatorAgentId) ? board.coordinatorAgentId : '',
+        agentOverrides: Object.fromEntries(Object.entries(board.agentOverrides ?? {}).filter(([id]) => board.agentIds.includes(id))),
+      }))
     : []
   return {
     boards,
@@ -605,6 +654,7 @@ function buildPlanCards(
   const keyToId = new Map(rawTasks.map((task) => [readString(task.key, 100), randomUUID()]))
   const roster = snapshot.agents.filter((agent) => board.agentIds.includes(agent.id))
   const lead = roster.find((agent) => agent.id === feature.assignedAgentId)
+    ?? roster.find((agent) => agent.id === board.coordinatorAgentId)
     ?? roster.find((agent) => agent.role === 'lead')
     ?? roster[0]
   const tasks: ProjectBoardCard[] = rawTasks.map((rawTask) => {
@@ -718,11 +768,11 @@ export class ProjectBoardStore {
         projectName: readString(input.projectName, 200) || projectPath.split('/').filter(Boolean).at(-1) || 'Project',
         name: 'Project board',
         isDefault: true,
-        agentIds: current.agents.map((agent) => agent.id),
+        ...readBoardTeam(input, current.agents),
         executionAccess: 'full-access',
         autoDispatch: true,
         maxConcurrentRuns: 1,
-        plan: '', sourceThreadId: '', planningThreadId: '', coordinatorAgentId: '',
+        plan: '', sourceThreadId: '', planningThreadId: '',
         createdAtIso: now.toISOString(),
         updatedAtIso: now.toISOString(),
       }
@@ -750,11 +800,11 @@ export class ProjectBoardStore {
         projectName: input.projectName || input.projectPath.split('/').filter(Boolean).at(-1) || 'Project',
         name: input.name || (projectBoards.length === 0 ? 'Project board' : `Board ${String(projectBoards.length + 1)}`),
         isDefault: makeDefault,
-        agentIds: current.agents.map((agent) => agent.id),
+        ...readBoardTeam(record, current.agents),
         executionAccess: input.executionAccess!,
         autoDispatch: true,
         maxConcurrentRuns: 1,
-        plan: '', sourceThreadId: '', planningThreadId: '', coordinatorAgentId: '',
+        plan: '', sourceThreadId: '', planningThreadId: '',
         createdAtIso: now.toISOString(),
         updatedAtIso: now.toISOString(),
       }
@@ -772,16 +822,13 @@ export class ProjectBoardStore {
       const existing = current.boards.find((board) => board.id === id)
       if (!existing) throw new Error('Project board not found.')
       const changes = asRecord(changesValue) ?? {}
+      if (hasProjectBoardTeamChanges(changes) && current.runs.some((run) => run.boardId === id && ['running', 'queued'].includes(run.status))) throw new Error('Stop running board work before changing its Team.')
       const executionAccess = readProjectBoardExecutionAccess(changes.executionAccess, existing.executionAccess)
       if ('maxConcurrentRuns' in changes && changes.maxConcurrentRuns !== 1) {
         throw new Error('Project boards currently support one active feature per board.')
       }
       const makeDefault = changes.isDefault === true
-      const knownAgentIds = new Set(current.agents.map((agent) => agent.id))
-      const agentIds = 'agentIds' in changes
-        ? readStringArray(changes.agentIds).filter((agentId) => knownAgentIds.has(agentId))
-        : existing.agentIds
-      if (agentIds.length === 0) throw new Error('A board must have at least one agent.')
+      const team = readBoardTeam(changes, current.agents, existing)
       const now = this.now()
       return {
         ...current,
@@ -794,7 +841,7 @@ export class ProjectBoardStore {
             ...board,
             name: 'name' in changes ? readString(changes.name, 120) || existing.name : existing.name,
             isDefault: makeDefault || ('isDefault' in changes ? changes.isDefault === true : existing.isDefault),
-            agentIds,
+            ...team,
             executionAccess,
             plan: 'plan' in changes ? readString(changes.plan) : board.plan,
             autoDispatch: 'autoDispatch' in changes ? changes.autoDispatch !== false : existing.autoDispatch,
@@ -919,6 +966,8 @@ export class ProjectBoardStore {
         boards: current.boards.map((board) => ({
           ...board,
           agentIds: board.agentIds.filter((agentId) => agentId !== id),
+          coordinatorAgentId: board.coordinatorAgentId === id ? '' : board.coordinatorAgentId,
+          agentOverrides: Object.fromEntries(Object.entries(board.agentOverrides ?? {}).filter(([agentId]) => agentId !== id)),
         })),
       }
     })
@@ -985,7 +1034,7 @@ export class ProjectBoardStore {
         status: input.status ?? 'backlog',
         priority: input.priority ?? 'normal',
         verificationPolicy: input.verificationPolicy ?? 'self',
-        assignedAgentId: input.assignedAgentId || board.agentIds[0] || '',
+        assignedAgentId: input.assignedAgentId || board.coordinatorAgentId || board.agentIds[0] || '',
         dependencyIds: input.dependencyIds ?? [],
         autoRun: input.autoRun === true,
         model: input.model ?? '', reasoningEffort: input.reasoningEffort ?? '', planSummary: '', planStatus: 'none', toolSchemaVersion: 1,
@@ -1182,11 +1231,13 @@ export class ProjectBoardStore {
     })
   }
 
-  startRun(cardId: string, agentId: string, kind: ProjectBoardRunKind, expectedFingerprint?: string, settings?: { model: string; reasoningEffort: ReasoningEffort }, reopen = false): Promise<{ snapshot: ProjectBoardSnapshot; run: ProjectBoardRun }> {
+  startRun(cardId: string, agentId: string, kind: ProjectBoardRunKind, expectedFingerprint?: string, settings?: { model: string; reasoningEffort: ReasoningEffort }, reopen = false, expectedTeam?: string): Promise<{ snapshot: ProjectBoardSnapshot; run: ProjectBoardRun }> {
     let createdRun!: ProjectBoardRun
     return this.mutate((current) => {
       const card = current.cards.find((entry) => entry.id === cardId)
       if (!card) throw new Error('Board card not found.')
+      const board = current.boards.find((entry) => entry.id === card.boardId)
+      if (expectedTeam !== undefined && (!board || projectBoardTeamFingerprint(board) !== expectedTeam)) throw new Error('The board Team changed while starting. Review its settings and start again.')
       if (expectedFingerprint !== undefined && projectBoardFeatureFingerprint(card) !== expectedFingerprint) throw new Error('The feature changed while starting. Review its settings and start again.')
       if (card.type !== 'feature') throw new Error('Only features can start a Lead run; QA batches are not executable yet.')
       assertManualEdit(current, card)
@@ -1235,11 +1286,12 @@ export class ProjectBoardStore {
     }).then((snapshot) => ({ snapshot, run: createdRun }))
   }
 
-  startBoardPlan(boardId: string, agentId: string, plan: string, sourceThreadId: string, settings?: { model: string; reasoningEffort: ReasoningEffort }): Promise<{ snapshot: ProjectBoardSnapshot; run: ProjectBoardRun }> {
+  startBoardPlan(boardId: string, agentId: string, plan: string, sourceThreadId: string, settings?: { model: string; reasoningEffort: ReasoningEffort }, expectedTeam?: string): Promise<{ snapshot: ProjectBoardSnapshot; run: ProjectBoardRun }> {
     let run!: ProjectBoardRun
     return this.mutate((current) => {
       const board = current.boards.find((entry) => entry.id === boardId)
       if (!board || !board.agentIds.includes(agentId)) throw new Error('Choose a coordinator enabled on this board.')
+      if (expectedTeam !== undefined && projectBoardTeamFingerprint(board) !== expectedTeam) throw new Error('The board Team changed while starting. Review its settings and start again.')
       if (current.runs.some((entry) => entry.boardId === boardId && entry.kind !== 'follow_up' && entry.status === 'running')) throw new Error('Wait for this board’s active run to finish.')
       if (!readString(plan)) throw new Error('A project plan is required.')
       const now = this.now().toISOString()
@@ -1321,7 +1373,7 @@ export class ProjectBoardStore {
           projectName: readString(input.projectName, 200) || projectPath.split('/').filter(Boolean).at(-1) || 'Project',
           name: 'Project board', isDefault: !current.boards.some((entry) => entry.projectPath === projectPath),
           agentIds: current.agents.map((agent) => agent.id), executionAccess: 'full-access', autoDispatch: true, maxConcurrentRuns: 1,
-          plan: '', sourceThreadId: '', planningThreadId: '', coordinatorAgentId: '', createdAtIso: now, updatedAtIso: now,
+          plan: '', sourceThreadId: '', planningThreadId: '', coordinatorAgentId: '', model: '', reasoningEffort: '', agentOverrides: {}, createdAtIso: now, updatedAtIso: now,
         }),
         name: readString(input.name, 120) || existingBoard?.name || 'Project board',
         plan: readString(input.summary), sourceThreadId, updatedAtIso: now,
@@ -1345,7 +1397,7 @@ export class ProjectBoardStore {
         const title = (feature.title === undefined ? existing?.title : readString(feature.title, 240)) || projectBoardTitleFromBrief(description)
         if (!title) throw new Error('Every feature needs a brief or a title.')
         if (!Array.isArray(feature.dependsOn) || feature.dependsOn.some((dependency) => typeof dependency !== 'string' || !uuid.test(dependency))) throw new Error('Feature dependencies must be card UUIDs.')
-        const assignedAgentId = feature.agentId === undefined ? existing?.assignedAgentId || board.agentIds[0] || '' : readString(feature.agentId, 200)
+        const assignedAgentId = feature.agentId === undefined ? existing?.assignedAgentId || board.coordinatorAgentId || board.agentIds[0] || '' : readString(feature.agentId, 200)
         if (!board.agentIds.includes(assignedAgentId)) throw new Error('Every feature must choose an enabled agent.')
         if (feature.verificationPolicy !== undefined && !VERIFICATION_POLICIES.has(feature.verificationPolicy as ProjectBoardVerificationPolicy)) throw new Error('Unknown verification policy.')
         const card: ProjectBoardCard = {

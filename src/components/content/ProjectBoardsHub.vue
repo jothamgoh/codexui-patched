@@ -52,6 +52,7 @@
         <Button type="button" variant="outline" :disabled="!selectedProjectPath" @click="openBoardEditor"><Plus aria-hidden="true" /> New board</Button>
         <Button v-if="activeBoard?.sourceThreadId" type="button" variant="ghost" @click="$emit('select-thread', activeBoard.sourceThreadId)">Original chat</Button>
         <Button v-if="activeBoard?.planningThreadId" type="button" variant="ghost" @click="$emit('select-thread', activeBoard.planningThreadId)">Planning chat</Button>
+        <Button v-if="activeBoard" type="button" variant="ghost" class="danger-button" :disabled="isMutating" @click="openDeleteBoard"><Trash2 aria-hidden="true" /> Delete board</Button>
       </div>
     </div>
 
@@ -361,6 +362,22 @@
       </DialogPortal>
     </DialogRoot>
 
+    <DialogRoot :open="Boolean(deletingBoardId)" @update:open="!$event && (deletingBoardId = '')">
+      <DialogPortal>
+        <DialogOverlay class="board-dialog-backdrop" />
+        <DialogContent aria-modal="true" class="board-dialog board-dialog-small" :aria-describedby="undefined" @open-auto-focus="rememberFocus('delete-board')" @close-auto-focus="restoreFocus('delete-board', $event)">
+          <header><DialogTitle>Delete board?</DialogTitle><Button type="button" variant="ghost" size="icon-sm" aria-label="Close delete board" @click="deletingBoardId = ''"><X /></Button></header>
+          <form class="board-form" @submit.prevent="confirmDeleteBoard">
+            <p>Delete “{{ boardToDelete?.name }}” and its {{ deletingFeatureCount }} feature cards, tasks, and board history? This cannot be undone.</p>
+            <p>Your project files, chat history, and agent profiles are kept.</p>
+            <p v-if="deletingBoardBusy" class="boards-alert" role="status">Stop running work and pause delivery before deleting this board.</p>
+            <p v-if="error" class="boards-alert" role="alert">{{ error }}</p>
+            <footer><Button type="button" variant="ghost" :disabled="isMutating" @click="deletingBoardId = ''">Cancel</Button><Button type="submit" variant="destructive" :disabled="!boardToDelete || deletingBoardBusy || isMutating || isDictating">Delete board</Button></footer>
+          </form>
+        </DialogContent>
+      </DialogPortal>
+    </DialogRoot>
+
     <DialogRoot v-model:open="agentDialogOpen">
       <DialogPortal>
         <DialogOverlay class="board-dialog-backdrop" />
@@ -482,6 +499,7 @@ type BoardActions = {
   ensureBoard: (input: { projectPath: string; projectName: string }) => Promise<unknown>
   createBoard: (input: { projectPath: string; projectName: string; name: string; isDefault: boolean }) => Promise<unknown>
   updateBoard: (boardId: string, changes: ProjectBoardUpdateInput) => Promise<unknown>
+  deleteBoard: (boardId: string) => Promise<unknown>
   createAgent: (input: ProjectBoardAgentCreateInput) => Promise<unknown>
   updateAgent: (agentId: string, changes: ProjectBoardAgentUpdateInput) => Promise<unknown>
   createCard: (input: ProjectBoardCardCreateInput) => Promise<unknown>
@@ -539,6 +557,10 @@ const draggedCardId = ref('')
 const featureDialogOpen = ref(false)
 const editingCardId = ref('')
 const boardDialogOpen = ref(false)
+const deletingBoardId = ref('')
+const boardToDelete = computed(() => props.snapshot.boards.find(board => board.id === deletingBoardId.value))
+const deletingFeatureCount = computed(() => props.snapshot.cards.filter(card => card.boardId === deletingBoardId.value && card.type === 'feature').length)
+const deletingBoardBusy = computed(() => props.snapshot.runs.some(run => run.boardId === deletingBoardId.value && ['running', 'queued'].includes(run.status)) || props.snapshot.queues?.some(queue => queue.boardId === deletingBoardId.value && queue.status === 'running'))
 const agentDialogOpen = ref(false)
 const editingAgentId = ref('')
 const copyingAgentName = ref('')
@@ -955,6 +977,20 @@ function deleteSelectedCard(): void {
   const card = selectedCard.value
   if (!card || selectedRunIsActive.value || !window.confirm(`Delete “${card.title}” and its board history? Your code files and Lead chat are kept.`)) return
   void submitMutation(() => props.actions.deleteCard(card.id), closeCard)
+}
+
+function openDeleteBoard(): void {
+  if (activeBoard.value) { props.actions.clearError(); deletingBoardId.value = activeBoard.value.id }
+}
+
+function confirmDeleteBoard(): void {
+  const boardId = deletingBoardId.value
+  if (!boardId || !boardToDelete.value || deletingBoardBusy.value) return
+  void submitMutation(() => props.actions.deleteBoard(boardId), () => {
+    deletingBoardId.value = ''
+    closeCard()
+    emit('show-overview')
+  })
 }
 
 async function submitMutation(operation: () => Promise<unknown>, onSuccess?: () => void): Promise<void> {

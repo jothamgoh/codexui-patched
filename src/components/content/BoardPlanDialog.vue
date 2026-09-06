@@ -10,6 +10,7 @@
           <p v-if="localError" class="plan-error" role="alert">{{ localError }}</p>
           <label v-if="!boardId"><span>Project</span><select v-model="draft.projectPath" aria-label="Plan project"><option v-for="project in projects" :key="project.path" :value="project.path">{{ project.name }}</option><option value="__new__">Open or create a project folder…</option></select></label>
           <template v-if="!boardId && draft.projectPath === '__new__'">
+            <Button type="button" variant="outline" class="browse-project-folder" :disabled="busy || isDictating" @click="folderBrowserOpen = true">Browse computer folders</Button>
             <label><span>Project folder</span><DictationField v-model="draft.folderPath" label="Project folder" v-bind="voiceField('folder')" required placeholder="Full path to the project folder" /></label>
             <label class="plan-checkbox"><input v-model="draft.createFolder" type="checkbox" /><span>Create this folder if it does not exist</span></label>
           </template>
@@ -23,6 +24,7 @@
       </DialogContent>
     </DialogPortal>
   </DialogRoot>
+  <HostFolderPicker v-model:open="folderBrowserOpen" :initial-path="draft.folderPath" :roots="projects" @select="selectHostFolder" />
 </template>
 
 <script setup lang="ts">
@@ -32,6 +34,7 @@ import { LoaderCircle, X } from '@lucide/vue'
 import Button from '../ui/button/Button.vue'
 import DictationField from './DictationField.vue'
 import BoardTeamSettings from './BoardTeamSettings.vue'
+import HostFolderPicker from './HostFolderPicker.vue'
 import { createBoardTeamDraft } from '../../utils/boardTeamDraft'
 import type { ProjectBoardTeamSettings } from '../../utils/projectBoardTeam'
 import { projectBoardTitleFromBrief } from '../../lib/projectBoardTitle'
@@ -42,6 +45,7 @@ export type BoardPlanDraft = ProjectBoardPlanInput & { boardId: string; projectP
 const props = defineProps<{ open: boolean; boardId?: string; boardName?: string; sourceThreadId?: string; inheritedSourceThreadId?: string; initialPlan?: string; initialProjectPath?: string; initialCoordinatorId?: string; initialTeam?: ProjectBoard; projects: { path: string; name: string }[]; agents: ProjectBoardAgent[]; onPlan: (draft: BoardPlanDraft) => Promise<void> }>()
 const emit = defineEmits<{ 'update:open': [value: boolean] }>()
 const busy = ref(false)
+const folderBrowserOpen = ref(false)
 const busyVoiceFields = reactive(new Set<string>())
 const isDictating = computed(() => busyVoiceFields.size > 0)
 function voiceField(key: string) {
@@ -53,6 +57,11 @@ const draft = reactive({ projectPath: '', folderPath: '', createFolder: false, n
 const team = ref(createBoardTeamDraft(props.agents, props.initialTeam))
 const teamBaseFingerprint = ref(JSON.stringify(team.value))
 const suggestedName = computed(() => projectBoardTitleFromBrief(draft.plan))
+function selectHostFolder(path: string): void {
+  draft.projectPath = '__new__'
+  draft.folderPath = path
+  draft.createFolder = false
+}
 function setTeamDictating(busy: boolean): void { if (busy) busyVoiceFields.add('team'); else busyVoiceFields.delete('team') }
 function initializeDraft(): void {
   localError.value = ''
@@ -107,7 +116,7 @@ svg { @apply h-4 w-4; }
 @media (max-width: 640px) {
   .plan-dialog { @apply top-auto bottom-0 left-0 max-h-[94dvh] w-full translate-x-0 translate-y-0 rounded-b-none; }
   form { padding-bottom: max(1.25rem, env(safe-area-inset-bottom)); }
-  header button, footer button, select, summary { min-height: 44px; }
+  header button, footer button, .browse-project-folder, select, summary { min-height: 44px; }
   header button { min-width: 44px; }
   select { font-size: 16px; }
 }

@@ -12,7 +12,7 @@ create a second agent runtime.
 
 ## Current scope
 
-- One default board per project directory, with optional additional boards.
+- Multiple independent boards per directory, with one navigation default.
 - Feature cards with a brief, acceptance criteria, priority, dependencies, and
   verification policy. A feature may own tasks and one persistent Lead chat.
 - Reusable agents with editable prompts and a board roster. Lead, Product,
@@ -29,7 +29,7 @@ create a second agent runtime.
 
 ## From a plan to delivery
 
-Board planning is an explicit opt-in. An ordinary existing chat can use the
+Board planning is an explicit opt-in. Any existing chat can use the
 bundled board-planning skill when the user asks to put a plan in a board. A
 generic planning request or large task does not create cards automatically.
 The current chat saves a concise project brief and separately useful feature
@@ -38,7 +38,8 @@ revise untouched Backlog cards after user feedback. Omitted cards and execution
 history remain intact; stale updates fail visibly without partial writes.
 
 Saving is metadata only: it creates no native run, execution chat, queue, or
-implementation. The source chat remains an ordinary coordination chat. Its
+implementation. The source chat retains its existing role: an ordinary chat
+stays ordinary, and a feature Lead retains its tracked execution lifecycle. Its
 Review board control opens the exact linked board, with a selector when several
 boards are linked. The user reviews/edits cards and explicitly starts a feature
 or Run selected features through existing execution controls. Finished cards
@@ -119,8 +120,8 @@ not leave another card referring to a missing dependency.
 Lead is a responsibility for a feature. Any enabled agent can coordinate it;
 specialty labels do not grant exclusive capabilities. Users can create as many
 profiles as they need, including several with the same specialty. Execution
-still obeys native Codex concurrency/depth limits and the shared-project writer
-constraint. Nested delegation uses native Codex, without another runtime or a
+still obeys native Codex concurrency/depth limits and one active feature per
+board. Nested delegation uses native Codex, without another runtime or a
 mandatory hierarchy editor.
 
 Plans assign tasks by exact agent ID. Each task states whether its purpose is
@@ -131,20 +132,22 @@ alone is not evidence of independence.
 
 Starting a feature creates or resumes its Lead chat in the project directory.
 The Lead proposes the smallest useful task graph and works through eligible
-tasks. Independent read-only specialists may run together; multiple writers in
-one project must not run together. The service permits one orchestrated feature
-per project directory at a time.
+tasks. Each board permits one orchestrated feature at a time, while separate
+boards in any folder may run independently. This includes a read-only planning
+run on one board while another board works. Boards share their project files;
+keep overlapping work together or coordinate it explicitly. This is not worktree
+isolation, and cross-board dependencies are not inferred or enforced.
 
 Lead chat replies use the board service. During an active run they steer the
 exact current turn; a stale turn cannot silently become a new run. Idle replies
 create a new tracked run in the same chat using current profile, dependency,
-project-lock, and work-permission checks. Planning chats remain read-only. A done
+board-lock, and work-permission checks. Planning chats remain read-only. A done
 feature requires explicit reopening, retaining prior handoffs and respecting
 its dependents. Ordinary turn/start and goal continuation cannot bypass this
 lifecycle. Submission errors retain the full composer draft. Stop revokes pending
 continuation/queue consent and targets the current run; a stale Stop cannot
 cancel a newer attempt. Cancellation is confirmed for the Lead and its owned
-native subagents before releasing the project lock; uncertainty keeps the run
+native subagents before releasing the board lock; uncertainty keeps the run
 locked with retry guidance. Active work must stop before deletion. Idle unanswered
 questions may be deleted with their feature without fabricating answers; code
 files and the Lead conversation remain intact.
@@ -294,7 +297,8 @@ authentication boundary documented in repository `AGENTS.md` remains required.
 - Reminder policies and digests beyond existing notification delivery.
 - Rich live specialist telemetry and separate durable specialist runs.
 - Automatic batch membership, result fan-out, and waivers.
-- Multiple concurrent features/worktrees, leases, or live restart reconciliation.
+- Multiple concurrent features within one board, worktree isolation, leases, or
+  live restart reconciliation.
 - Multi-tab conflict resolution, project identity across directory moves, and
   immutable agent-profile snapshots.
 - Saved views, project workflow templates, portfolio views, and provider/account

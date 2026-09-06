@@ -62,9 +62,17 @@ notification storage too. Retain explicit defense in every bridge fixture:
   a full-access turn in the same native chat. An isolated local-provider probe
   can verify actual outside-project writes/denials without model-service calls.
 
-- Queue entry: active work in the same project names its feature and exact Lead,
+- Queue entry: active work on the same board names its feature and exact Lead,
   blocks both button and implicit submission, and preserves an open dialog's
-  choices. An unrelated project does not block; completion never auto-starts.
+  choices. Other boards in the same folder do not block; switching boards shows
+  each board's own active Lead. Completion never auto-starts an unapproved queue.
+- Same-folder service starts/queues remain independent, including canonical-path
+  aliases. Same-board starts are serialized in the store. Pausing/stopping one
+  board leaves the other running; process exit interrupts all without automatic
+  resumption. Planning one idle board may coexist with another board's work.
+- Optional planning is available on ordinary starts/steers and managed Lead
+  turns. Native input and coordinator context survive. Any chat can save a new
+  board draft; source-directory identity, version and active-board guards remain.
 - Startup: open the routed chat while sidebar/model/account requests remain
   pending, even if a different chat was previously selected. Load a five-turn
   tail, keep older-page cursors and reconnect catch-up, and retain early model,

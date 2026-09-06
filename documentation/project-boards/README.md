@@ -16,14 +16,20 @@ exhaustive test checklist. Future ideas are options, not release requirements.
 
 Use chat for the conversation and the board for the project overview.
 
+- Any folder can contain multiple independent boards. Each board runs one
+  feature at a time, following its dependencies; another board in that folder
+  can run alongside it. Create a new board for a separate initiative and extend
+  the existing board for related work. Boards share the folder's files.
 - **Work overview** collects current Leads, things needing you, recent results,
   and progress across boards. Open a named board for its feature cards or open
   a Lead for the conversation. Activity separates **Board work** from **Chats
   running**, with questions and approvals first.
 
-- Boards are optional. Say **“Make a plan in the board”** in your existing chat
+- Boards are optional. Say **“Make a plan in the board”** in any existing chat
   to have it save a project brief and feature cards for review. Ordinary tasks
   and ordinary planning stay in chat. No extra coordinator chat is needed.
+  A feature Lead can also plan a separate board when asked; the current board's
+  active plan stays protected. Saving a new board does not change the chat's role.
 - **Review board** appears in the linked chat. Review the brief, dependencies,
   done conditions, and Lead settings; ask the same chat to revise untouched
   cards, or edit them with typing/voice. Saving a plan starts no implementation.
@@ -66,8 +72,8 @@ Use chat for the conversation and the board for the project overview.
 - **Stop run** ends the active attempt; completed code stays on disk. Stop before
   deleting a feature. Deletion removes its board records, keeping the code and
   Lead chat. Native approval requests are visible instead of looking like work.
-- To switch model or reasoning, stop the feature, open **Feature settings &
-  actions → Edit**, save the new settings, then continue. This starts a new turn
+- To switch model or reasoning, stop the feature, open **Model & reasoning**
+  in feature details, save the new settings, then continue. This starts a new turn
   in the same Lead chat with its saved tasks. Stopping also halts its active
   descendants. New specialists inherit the changed defaults unless a profile
   overrides them; existing child chats are not automatically reconfigured.

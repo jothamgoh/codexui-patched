@@ -53,8 +53,8 @@ to start/resume; recheck cancellation afterward before starting native work.
 ## Implemented delivery groups
 
 1. Durable state and native execution: exact agent IDs, current prompts on every
-   turn, atomic completion/dependency/QA guards, question provenance, canonical
-   project locks, interruption recovery, and saved board work permissions.
+   turn, atomic completion/dependency/QA guards, question provenance, board-scoped
+   execution locks, interruption recovery, and saved board work permissions.
 2. Chat reliability: stable turn/final ordering, heavy-content windowing, cache
    limits, transcription retry, and original-chat draft preservation.
 3. Planning and delivery: project plan import, read-only feature planning,
@@ -109,7 +109,8 @@ state and environment loading, not just board data; see TEST_PLAN.md.
 
 ## Deliberate limits
 
-One orchestrated feature per project; session-scoped queues/consent; blocked
+One orchestrated feature per board, with independent boards in any folder;
+session-scoped queues/consent; blocked
 restart recovery; mutable profiles; no automatic batch QA or provider rotation.
 The bridge still reads a full native transcript before returning browser pages.
 Use actual dogfood friction to choose the next implementation.

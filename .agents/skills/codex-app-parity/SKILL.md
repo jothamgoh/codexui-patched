@@ -328,6 +328,20 @@ description: "Use when implementing or changing user-visible behavior/UI in this
   shells and explicitly loaded active history remain. Do not describe browser
   heap measurements as total device memory.
 
+## Findings: Independent boards and planning in any chat (2026-09-06)
+
+- Boards remain an intentional CodexUI extension. Multiple boards in one folder
+  can run independently; one active feature per board is an application workflow
+  rule, not a native folder-wide Codex restriction or worktree isolation.
+- The installed runtime's generated `TurnSteerParams` supports keyed
+  `additionalContext`. The optional board-planning pointer can therefore be
+  supplied on starts and steering without rewriting native user input or its
+  expected-turn precondition. Preserve the managed coordinator context too.
+- Retain the current Lead's controls when it plans another board. Show that
+  separate board through the existing compact linked-board review surface and
+  exclude a duplicate link to its own board. Validate both desktop and touch
+  layouts; Chromium emulation does not establish physical iPhone Safari parity.
+
 ## Findings: Composable board agents (2026-09-05)
 
 - Integrated `26.901.31953` chunks `subagents-5f95f3a1e0e2.js` and

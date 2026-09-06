@@ -12,6 +12,24 @@ user’s request; its saved rendering work has now been reviewed in the follow-u
 
 ## Current follow-up
 
+- Independent boards now apply globally: any folder can hold multiple boards
+  running alongside one another. Each board still permits one active feature
+  or dedicated planning run. Service reservations, atomic store guards, queue
+  controls and live Lead links use board IDs, with no data migration. Tests
+  cover same-folder/path-alias starts, concurrent queues, separate Stop ownership,
+  and restart cleanup. Optional board planning is advertised on ordinary starts,
+  steering and managed Lead turns; any chat can save a separate board draft.
+  A Lead's chat keeps its current run controls and also shows review links for
+  separate boards it planned, including in the header menu.
+  Existing project identity, version checks, active-board guards and explicit
+  planning opt-in remain. Related work stays on one board; separate boards share
+  files and have no automatic cross-board dependency or worktree isolation.
+  All 257 unit tests and the production build pass. Full desktop/touch-mobile
+  board and chat journeys pass, including independent queue controls and exact
+  Lead-created board navigation. Physical iPhone Safari remains unverified.
+  Server deployment needs a restart after current user work settles. Do not
+  interrupt the active real Lead or other chats merely to refresh the frontend.
+
 - Board controls follow-up: mobile option actions use two columns and grow to
   fit wrapped labels. Feature details expose Model & reasoning directly, opening
   the existing model picker first while retaining source inheritance and active
@@ -95,10 +113,10 @@ user’s request; its saved rendering work has now been reviewed in the follow-u
   local WebKit crashes on app navigation, so iPhone Safari remains unverified.
 
 - Active-run queue entry: the remaining cards no longer offer an invalid start
-  while the board/project already has work running. The board and open dialog
+  while the board already has work running. The board and open dialog
   name the active feature and link to its Lead. Selection/consent stay intact;
   finishing the active run does not auto-start another queue. The existing full
-  board browser journey passed same/different-project and late-arriving-run
+  board browser journey passed same/other-board and late-arriving-run
   checks, explicit/implicit submission, completion, and mobile layout. This is
   a frontend correction; it does not alter or restart the user's running work.
 
@@ -173,7 +191,7 @@ planning remains in chat unless the user explicitly requests a board.
   stay in history quietly and the final batch emits one summary.
 - Stop shows the reason for waiting, revokes continuation consent, and confirms
   that the exact Lead and owned native subagents ended before releasing the
-  project lock. Failure/uncertainty keeps Delete disabled with retry guidance;
+  board lock. Failure/uncertainty keeps Delete disabled with retry guidance;
   a stale Stop cannot cancel a replacement run. Confirmed Stop clears pending
   approvals even if a native completion event was missed. Deletion preserves
   code files and the Lead chat; it does not fabricate answers.

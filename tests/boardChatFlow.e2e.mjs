@@ -571,7 +571,28 @@ try {
       await existingPlan.waitFor()
       assert.equal(await existingPlan.getByLabel('Goal or plan', { exact: true }).inputValue(), '', 'Adding work to a populated board starts a fresh brief')
       await existingPlan.getByRole('button', { name: 'Close planning', exact: true }).click()
+      // A stale or interrupted screen download must not leave All work blank.
+      // Hold the real component request to check loading, then fail it once.
+      let failOverviewDownload
+      const overviewDownload = new Promise((resolve) => { failOverviewDownload = resolve })
+      await page.route('**/src/components/content/BoardWorkOverview.vue', async (request) => {
+        await overviewDownload
+        await request.abort('failed')
+      })
       await page.getByRole('button', { name: 'All work', exact: true }).click()
+      await page.getByRole('status').getByText('Opening this screen…', { exact: true }).waitFor()
+      failOverviewDownload()
+      const failedScreen = page.getByRole('alert').filter({ hasText: 'This screen couldn’t load' })
+      await failedScreen.waitFor()
+      assert.equal(await failedScreen.evaluate((element) => element.scrollWidth <= element.clientWidth), true)
+      await page.screenshot({ path: join(output, `screen-load-error-${label}.png`), fullPage: true })
+      assert.ok(await failedScreen.getByRole('button', { name: 'Refresh app' }).isEnabled())
+      await page.unroute('**/src/components/content/BoardWorkOverview.vue')
+      await Promise.all([
+        page.waitForEvent('domcontentloaded'),
+        failedScreen.getByRole('button', { name: 'Refresh app', exact: true }).click(),
+      ])
+      await page.waitForURL('**/#/boards')
       const overview = page.getByTestId('board-work-overview')
       await overview.waitFor()
       const recentResults = overview.getByRole('region', { name: 'Recent results', exact: true })

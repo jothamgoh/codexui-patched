@@ -476,12 +476,19 @@ import type { ReasoningEffort, ResponseTextAnnotation, ThreadScrollState, UiMess
 import type { AutomationDraft } from './types/automations'
 import type { ProjectBoardCardCreateInput, ProjectBoardCreateInput, ProjectBoardExecutionAccess, ProjectBoardStatus } from './types/projectBoards'
 
-const SkillsHub = defineAsyncComponent(() => import('./components/content/SkillsHub.vue'))
-const McpHub = defineAsyncComponent(() => import('./components/content/McpHub.vue'))
-const PluginsHub = defineAsyncComponent(() => import('./components/content/PluginsHub.vue'))
-const ScheduledTasksHub = defineAsyncComponent(() => import('./components/content/ScheduledTasksHub.vue'))
-const ProjectBoardsHub = defineAsyncComponent(() => import('./components/content/ProjectBoardsHub.vue'))
-const BoardWorkOverview = defineAsyncComponent(() => import('./components/content/BoardWorkOverview.vue'))
+import { h, type AsyncComponentLoader } from 'vue'
+import ScreenLoadState from './components/content/ScreenLoadState.vue'
+
+function lazyScreen(loader: AsyncComponentLoader) {
+  return defineAsyncComponent({ loader, loadingComponent: ScreenLoadState,
+    errorComponent: () => h(ScreenLoadState, { failed: true }), delay: 200, timeout: 20_000 })
+}
+const SkillsHub = lazyScreen(() => import('./components/content/SkillsHub.vue'))
+const McpHub = lazyScreen(() => import('./components/content/McpHub.vue'))
+const PluginsHub = lazyScreen(() => import('./components/content/PluginsHub.vue'))
+const ScheduledTasksHub = lazyScreen(() => import('./components/content/ScheduledTasksHub.vue'))
+const ProjectBoardsHub = lazyScreen(() => import('./components/content/ProjectBoardsHub.vue'))
+const BoardWorkOverview = lazyScreen(() => import('./components/content/BoardWorkOverview.vue'))
 
 const SIDEBAR_COLLAPSED_STORAGE_KEY = 'codex-web-local.sidebar-collapsed.v1'
 const SIDEBAR_TOOLS_OPEN_STORAGE_KEY = 'codex-web-local.sidebar-tools-open.v1'

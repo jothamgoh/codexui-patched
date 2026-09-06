@@ -5,6 +5,24 @@ description: "Use when implementing or changing user-visible behavior/UI in this
 
 # Codex App Parity Skill
 
+## Findings: Approval visibility during history hydration (2026-09-06)
+
+- Native runtime distinguishes waitingOnApproval/waitingOnUserInput from ordinary
+  active work. Keep the turn active while showing its actual waiting state.
+  An approval is not completed work awaiting review.
+- A pending request must survive loading and sit at the transcript tail. Putting
+  approvals above all history, then scrolling to the bottom, hides the action;
+  replacing the whole list with Loading can make it flash and disappear.
+- Render the requested command/folder/reason, preserve reply error/sending state,
+  and honor advertised availableDecisions. A policy amendment object is not an
+  acceptForSession decision. Keep existing choices only for legacy payloads
+  without an advertised list. Do not silently broaden permissions.
+- Existing Chromium long-chat and board journeys cover delayed hydration,
+  scrolling, mobile action sizes, supported choices, and retry payloads. A
+  read-only production reload verified the real request remained reachable.
+  Local WebKit launches but crashes on app navigation (exit 133), so neither
+  WebKit nor physical iPhone Safari parity is established by this pass.
+
 ## Findings: Queue entry while a feature is active (2026-09-06)
 
 - Queue creation currently rejects an already active board run. Filtering that

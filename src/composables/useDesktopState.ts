@@ -1318,6 +1318,18 @@ export function useDesktopState() {
   const selectedLiveOverlay = computed<UiLiveOverlay | null>(() => {
     const threadId = selectedThreadId.value
     if (!threadId) return null
+    const pendingRequest = selectedThreadServerRequests.value.find((request) =>
+      request.threadId === threadId && (request.method === 'item/commandExecution/requestApproval'
+        || request.method === 'item/fileChange/requestApproval' || request.method === 'item/tool/requestUserInput'),
+    )
+    if (pendingRequest) {
+      return {
+        activityLabel: pendingRequest.method === 'item/tool/requestUserInput' ? 'Waiting for your answer' : 'Waiting for approval',
+        activityDetails: [],
+        reasoningText: '',
+        errorText: '',
+      }
+    }
     if (inProgressById.value[threadId] !== true) return null
 
     const activity = turnActivityByThreadId.value[threadId]

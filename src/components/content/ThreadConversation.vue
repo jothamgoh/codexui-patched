@@ -1,6 +1,6 @@
 <template>
   <section ref="conversationRootRef" class="conversation-root">
-    <p v-if="isLoading" class="conversation-loading">Loading messages...</p>
+    <p v-if="isLoading && pendingRequests.length === 0" class="conversation-loading">Loading messages...</p>
 
     <p
       v-else-if="messages.length === 0 && pendingRequests.length === 0 && automationProposals.length === 0 && !liveOverlay"
@@ -20,47 +20,6 @@
         <div class="conversation-history-status">
           <span v-if="isLoadingEarlierMessages" class="conversation-history-spinner" aria-hidden="true" />
           <span>{{ isLoadingEarlierMessages ? 'Loading earlier messages…' : 'Couldn’t load earlier messages. Scroll up to retry.' }}</span>
-        </div>
-      </li>
-
-      <li
-        v-for="request in otherPendingRequests"
-        :key="`server-request:${request.id}`"
-        class="conversation-item conversation-item-request"
-      >
-        <div class="message-row">
-          <div class="message-stack">
-            <article class="request-card">
-              <p class="request-title">{{ request.method }}</p>
-              <p class="request-meta">Request #{{ request.id }} · {{ formatIsoTime(request.receivedAtIso) }}</p>
-
-              <p v-if="readRequestReason(request)" class="request-reason">{{ readRequestReason(request) }}</p>
-
-              <section v-if="request.method === 'item/commandExecution/requestApproval'" class="request-actions">
-                <button type="button" class="request-button request-button-primary" @click="onRespondApproval(request.id, 'accept')">Accept</button>
-                <button type="button" class="request-button" @click="onRespondApproval(request.id, 'acceptForSession')">Accept for Session</button>
-                <button type="button" class="request-button" @click="onRespondApproval(request.id, 'decline')">Decline</button>
-                <button type="button" class="request-button" @click="onRespondApproval(request.id, 'cancel')">Cancel</button>
-              </section>
-
-              <section v-else-if="request.method === 'item/fileChange/requestApproval'" class="request-actions">
-                <button type="button" class="request-button request-button-primary" @click="onRespondApproval(request.id, 'accept')">Accept</button>
-                <button type="button" class="request-button" @click="onRespondApproval(request.id, 'acceptForSession')">Accept for Session</button>
-                <button type="button" class="request-button" @click="onRespondApproval(request.id, 'decline')">Decline</button>
-                <button type="button" class="request-button" @click="onRespondApproval(request.id, 'cancel')">Cancel</button>
-              </section>
-
-              <section v-else-if="request.method === 'item/tool/call'" class="request-actions">
-                <button type="button" class="request-button request-button-primary" @click="onRespondToolCallFailure(request.id)">Fail Tool Call</button>
-                <button type="button" class="request-button" @click="onRespondToolCallSuccess(request.id)">Success (Empty)</button>
-              </section>
-
-              <section v-else class="request-actions">
-                <button type="button" class="request-button request-button-primary" @click="onRespondEmptyResult(request.id)">Return Empty Result</button>
-                <button type="button" class="request-button" @click="onRejectUnknownRequest(request.id)">Reject Request</button>
-              </section>
-            </article>
-          </div>
         </div>
       </li>
 
@@ -316,7 +275,7 @@
           </div>
         </div>
       </li>
-      <li v-if="liveOverlay && userInputRequests.length === 0" class="conversation-item conversation-item-overlay" data-role="assistant">
+      <li v-if="liveOverlay && pendingRequests.length === 0" class="conversation-item conversation-item-overlay" data-role="assistant">
         <div class="message-row" data-role="assistant">
           <div class="message-stack" data-role="assistant">
             <article class="live-overlay-inline" aria-live="polite">
@@ -345,7 +304,54 @@
           </div>
         </div>
       </li>
-      <li v-for="request in userInputRequests" :key="`question:${request.threadId}:${request.id}`" class="conversation-item conversation-item-request">
+      <li
+        v-for="request in otherPendingRequests"
+        :key="`server-request:${request.id}`"
+        class="conversation-item conversation-item-request"
+        :class="{ 'conversation-item-request-first': request.id === otherPendingRequests[0]?.id }"
+      >
+        <div class="message-row">
+          <div class="message-stack">
+            <article class="request-card" :aria-label="requestTitle(request)" :aria-busy="request.replyState === 'sending'">
+              <p class="request-title">{{ requestTitle(request) }}</p>
+              <p class="request-meta">{{ request.replyState === 'sending' ? 'Sending your decision…' : 'Waiting for your decision' }} · {{ formatIsoTime(request.receivedAtIso) }}</p>
+              <pre v-if="requestCommand(request)" class="request-command"><code>{{ requestCommand(request) }}</code></pre>
+              <p v-if="requestPath(request)" class="request-meta">{{ requestPath(request) }}</p>
+
+              <p v-if="readRequestReason(request)" class="request-reason">{{ readRequestReason(request) }}</p>
+              <p v-if="request.replyError" class="request-reason" role="alert">{{ request.replyError }}</p>
+              <fieldset class="request-decisions" :disabled="request.replyState === 'sending'">
+
+              <section v-if="request.method === 'item/commandExecution/requestApproval'" class="request-actions">
+                <button type="button" class="request-button request-button-primary" v-if="requestAllowsDecision(request, 'accept')" @click="onRespondApproval(request.id, 'accept')">Accept</button>
+                <button type="button" class="request-button" v-if="requestAllowsDecision(request, 'acceptForSession')" @click="onRespondApproval(request.id, 'acceptForSession')">Accept for Session</button>
+                <button type="button" class="request-button" v-if="requestAllowsDecision(request, 'decline')" @click="onRespondApproval(request.id, 'decline')">Decline</button>
+                <button type="button" class="request-button" v-if="requestAllowsDecision(request, 'cancel')" @click="onRespondApproval(request.id, 'cancel')">Cancel</button>
+              </section>
+
+              <section v-else-if="request.method === 'item/fileChange/requestApproval'" class="request-actions">
+                <button type="button" class="request-button request-button-primary" v-if="requestAllowsDecision(request, 'accept')" @click="onRespondApproval(request.id, 'accept')">Accept</button>
+                <button type="button" class="request-button" v-if="requestAllowsDecision(request, 'acceptForSession')" @click="onRespondApproval(request.id, 'acceptForSession')">Accept for Session</button>
+                <button type="button" class="request-button" v-if="requestAllowsDecision(request, 'decline')" @click="onRespondApproval(request.id, 'decline')">Decline</button>
+                <button type="button" class="request-button" v-if="requestAllowsDecision(request, 'cancel')" @click="onRespondApproval(request.id, 'cancel')">Cancel</button>
+              </section>
+
+              <section v-else-if="request.method === 'item/tool/call'" class="request-actions">
+                <button type="button" class="request-button request-button-primary" @click="onRespondToolCallFailure(request.id)">Fail Tool Call</button>
+                <button type="button" class="request-button" @click="onRespondToolCallSuccess(request.id)">Success (Empty)</button>
+              </section>
+
+              <section v-else class="request-actions">
+                <button type="button" class="request-button request-button-primary" @click="onRespondEmptyResult(request.id)">Return Empty Result</button>
+                <button type="button" class="request-button" @click="onRejectUnknownRequest(request.id)">Reject Request</button>
+              </section>
+              </fieldset>
+            </article>
+          </div>
+        </div>
+      </li>
+      <li v-for="request in userInputRequests" :key="`question:${request.threadId}:${request.id}`" class="conversation-item conversation-item-request"
+        :class="{ 'conversation-item-request-first': otherPendingRequests.length === 0 && request.id === userInputRequests[0]?.id }">
         <div class="message-row"><div class="message-stack">
           <RequestUserInputCard :request="request" :draft="questionDraftFor(request)" @respond="emit('respondServerRequest', $event)" />
         </div></div>
@@ -1597,6 +1603,33 @@ function readRequestReason(request: UiServerRequest): string {
   return typeof reason === 'string' ? reason.trim() : ''
 }
 
+function requestAllowsDecision(request: UiServerRequest, decision: string): boolean {
+  const available = asRecord(request.params)?.availableDecisions
+  // Older servers do not advertise this list. Structured policy amendments need
+  // their own review UI; never turn them into a broader session approval.
+  return !Array.isArray(available) || available.includes(decision)
+}
+
+function requestTitle(request: UiServerRequest): string {
+  if (request.method === 'item/commandExecution/requestApproval') return 'Permission to run a command'
+  if (request.method === 'item/fileChange/requestApproval') return 'Permission to edit files'
+  if (request.method === 'item/tool/call') return 'Tool response needed'
+  return request.method
+}
+
+function requestCommand(request: UiServerRequest): string {
+  if (request.method !== 'item/commandExecution/requestApproval') return ''
+  const params = asRecord(request.params)
+  if (typeof params?.command === 'string') return params.command
+  return props.messages.find((message) => message.id === request.itemId)?.commandExecution?.command ?? ''
+}
+
+function requestPath(request: UiServerRequest): string {
+  const params = asRecord(request.params)
+  if (request.method === 'item/fileChange/requestApproval' && typeof params?.grantRoot === 'string') return `Requested write access: ${params.grantRoot}`
+  return typeof params?.cwd === 'string' ? `Folder: ${params.cwd}` : ''
+}
+
 function onRespondApproval(requestId: number, decision: 'accept' | 'acceptForSession' | 'decline' | 'cancel'): void {
   emit('respondServerRequest', {
     id: requestId,
@@ -1927,7 +1960,7 @@ watch(
 watch(
   () => props.pendingRequests,
   async () => {
-    if (props.isLoading) return
+    if (props.isLoading && props.pendingRequests.length === 0) return
     await scheduleContentScrollUpdate()
   },
 )
@@ -2011,7 +2044,7 @@ function readScrollMetrics(container: HTMLElement): ConversationScrollMetrics {
 
 function onConversationScroll(): void {
   const container = conversationListRef.value
-  if (!container || props.isLoading) return
+  if (!container || (props.isLoading && props.pendingRequests.length === 0)) return
   const nextScrollTop = container.scrollTop
   if (didScrollAwayFromConversationBottom(lastScrollMetrics, readScrollMetrics(container))) {
     userHasScrolledAwayFromBottom.value = true
@@ -2149,6 +2182,10 @@ onBeforeUnmount(() => {
   @apply justify-center;
 }
 
+.conversation-item-request-first {
+  margin-top: auto;
+}
+
 .conversation-item-overlay {
   @apply justify-start;
 }
@@ -2194,20 +2231,38 @@ onBeforeUnmount(() => {
 }
 
 .request-card {
-  @apply w-full rounded-xl border border-amber-300 bg-amber-50 px-3 sm:px-4 py-2 sm:py-3 flex flex-col gap-2;
+  @apply min-w-0 w-full rounded-xl border px-3 sm:px-4 py-3 flex flex-col gap-2;
+  border-color: color-mix(in srgb, var(--border-strong) 60%, #d97706);
+  background: var(--surface-elevated);
   max-width: var(--conversation-readable-width);
 }
 
 .request-title {
-  @apply m-0 text-sm leading-5 font-semibold text-amber-900;
+  @apply m-0 text-sm leading-5 font-semibold;
+  color: var(--text-primary);
 }
 
 .request-meta {
-  @apply m-0 text-xs leading-4 text-amber-700;
+  @apply m-0 text-xs leading-4;
+  color: var(--text-secondary);
+  overflow-wrap: anywhere;
 }
 
 .request-reason {
-  @apply m-0 text-sm leading-5 text-amber-900 whitespace-pre-wrap;
+  @apply m-0 text-sm leading-5 whitespace-pre-wrap;
+  color: var(--text-primary);
+  overflow-wrap: anywhere;
+}
+
+.request-command {
+  @apply m-0 max-h-48 overflow-auto rounded-lg p-3 text-xs leading-5 whitespace-pre-wrap;
+  color: var(--text-primary);
+  background: var(--surface-muted);
+  overflow-wrap: anywhere;
+}
+
+.request-decisions {
+  @apply m-0 min-w-0 border-0 p-0;
 }
 
 .request-actions {
@@ -2215,11 +2270,20 @@ onBeforeUnmount(() => {
 }
 
 .request-button {
-  @apply rounded-md border border-amber-300 bg-white px-3 py-1.5 text-xs text-amber-900 hover:bg-amber-100 transition;
+  @apply min-h-9 rounded-md border px-3 py-1.5 text-xs transition disabled:opacity-60;
+  border-color: var(--border-strong);
+  background: var(--surface-elevated);
+  color: var(--text-primary);
 }
 
 .request-button-primary {
-  @apply border-amber-500 bg-amber-500 text-white hover:bg-amber-600;
+  border-color: var(--text-primary);
+  background: var(--text-primary);
+  color: var(--surface-elevated);
+}
+
+@media (max-width: 640px), (pointer: coarse) {
+  .request-button { min-height: 44px; }
 }
 
 

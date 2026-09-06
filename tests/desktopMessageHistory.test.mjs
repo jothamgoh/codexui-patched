@@ -358,3 +358,22 @@ test('streaming bursts update live content without replaying history, then compl
   assert.equal(f.reads.length, 2, 'Turn completion cancels the redundant item-completion fallback')
   assert.equal(f.answers()[0].text, 'Done')
 })
+
+test('pending approvals and questions replace generic thinking without ending the active turn', async (t) => {
+  const f = fixture(t)
+  const loading = await f.read()
+  f.emit('server/request', { id: 10, method: 'item/commandExecution/requestApproval', params: { threadId: 'chat-1', turnId: 'turn-1', command: 'check' } })
+  assert.equal(f.state.isLoadingMessages.value, true)
+  assert.equal(f.state.selectedLiveOverlay.value.activityLabel, 'Waiting for approval')
+  loading.response.resolve(page([message('Check requested')]))
+  await loading.pending
+  assert.equal(f.state.selectedThreadActiveTurnId.value, 'turn-1')
+  assert.equal(f.state.selectedLiveOverlay.value.activityLabel, 'Waiting for approval')
+  f.emit('server/request/resolved', { id: 10 })
+  assert.equal(f.state.selectedLiveOverlay.value.activityLabel, 'Thinking')
+  f.emit('server/request', { id: 11, method: 'item/tool/requestUserInput', params: { threadId: 'chat-1', turnId: 'turn-1', questions: [] } })
+  assert.equal(f.state.selectedLiveOverlay.value.activityLabel, 'Waiting for your answer')
+  f.emit('server/request/resolved', { id: 11 })
+  f.emit('turn/completed', { turn: { id: 'turn-1', status: 'completed' } })
+  assert.equal(f.state.selectedLiveOverlay.value, null)
+})

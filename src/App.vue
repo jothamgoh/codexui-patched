@@ -183,6 +183,7 @@
                 <Button v-else type="button" variant="ghost" @click="openChatProjectBoard">Open project board</Button>
                 <Button v-if="selectedChatFeature" type="button" variant="ghost" @click="chatBoardMenuOpen = false; openLinkedFeature()">Open feature</Button>
                 <Button v-else-if="!selectedChatBoard" type="button" variant="ghost" @click="openTrackFeature">Track on board</Button>
+                <Button v-if="selectedChatBoard && (selectedChatFeature?.sourceThreadId || selectedChatBoard.sourceThreadId)" type="button" variant="ghost" @click="chatBoardMenuOpen = false; onSelectThread(selectedChatFeature?.sourceThreadId || selectedChatBoard.sourceThreadId)">Original chat</Button>
               </PopoverContent>
             </Popover>
             <WorkspaceSummaryButton
@@ -302,9 +303,10 @@
                 </div>
                 <p v-if="projectBoardError" role="alert">{{ projectBoardError }} <button type="button" @click="clearProjectBoardError">Dismiss</button></p>
                 <p v-if="selectedChatQuestion"><button type="button" @click="openProjectBoardQuestion({ boardId: selectedChatBoard.id, featureId: selectedChatFeature!.id, questionId: selectedChatQuestion.id })">Answer needed: {{ selectedChatQuestion.prompt }}</button></p>
-                <p v-else-if="selectedChatNativeQuestion">Answer the request in this chat to continue.</p>
+                <p v-else-if="selectedChatNativeQuestion">The Lead is waiting for your decision below.</p>
                 <p v-else-if="selectedChatRun?.error">{{ selectedChatRun.error }}</p>
-                <details v-if="selectedChatFeature && !selectedChatIsRunning" ref="boardChatOptionsRef" class="board-chat-options"><summary>{{ selectedChatFeature.status === 'done' ? 'Reopen to continue' : boardReplyMode === 'plan' ? 'Plan only' : 'Continue work' }}<span v-if="boardChatSendDisabled && !selectedChatQuestion && !selectedChatNativeQuestion"> · choose access</span></summary><div class="board-chat-reply-controls">
+                <p v-else-if="selectedChatStatus === 'Needs review'">Review the result below. Open the feature for its plan and checks.</p>
+                <details v-if="selectedChatFeature && !selectedChatIsRunning" ref="boardChatOptionsRef" class="board-chat-options"><summary>{{ selectedChatFeature.status === 'done' ? 'Reopen to continue' : selectedChatFeature.status === 'review' ? 'Request changes' : boardReplyMode === 'plan' ? 'Plan only' : 'Continue work' }}<span v-if="boardChatSendDisabled && !selectedChatQuestion && !selectedChatNativeQuestion"> · choose access</span></summary><div class="board-chat-reply-controls">
                   <label v-if="canPlanChatFeature"><span>Next message</span><select v-model="boardReplyMode" aria-label="Lead reply mode"><option value="plan">Plan only</option><option value="execute">Continue work</option></select></label>
                   <span v-else>Continue this feature</span>
                   <label v-if="selectedChatFeature.status === 'done'"><input v-model="boardReplyReopen" type="checkbox" />Reopen feature</label>
@@ -312,7 +314,7 @@
                   <button type="button" @click="openLinkedFeature">Lead settings</button>
                   <button v-if="selectedChatFeature.sourceThreadId || selectedChatBoard.sourceThreadId" type="button" @click="onSelectThread(selectedChatFeature.sourceThreadId || selectedChatBoard.sourceThreadId)">Original chat</button>
                 </div></details>
-                <p v-if="(selectedChatIsRunning || !selectedChatFeature) && (selectedChatFeature?.sourceThreadId || selectedChatBoard.sourceThreadId)" class="board-chat-source"><button type="button" @click="onSelectThread(selectedChatFeature?.sourceThreadId || selectedChatBoard.sourceThreadId)">Original chat</button></p>
+                <p v-if="(!isMobile || !selectedChatNativeQuestion) && (selectedChatIsRunning || !selectedChatFeature) && (selectedChatFeature?.sourceThreadId || selectedChatBoard.sourceThreadId)" class="board-chat-source"><button type="button" @click="onSelectThread(selectedChatFeature?.sourceThreadId || selectedChatBoard.sourceThreadId)">Original chat</button></p>
               </section>
               <section v-else-if="sourceChatBoard" class="board-chat-context source-board-context" aria-label="Linked board">
                 <div class="source-board-heading">
@@ -629,15 +631,30 @@ const sourceChatBoardProgress = computed(() => {
     const card = snapshot.cards.find((entry) => entry.id === question.cardId)
     return card?.parentCardId || card?.id
   }))
-  const needsYou = features.filter((card) => ['blocked', 'needs_input', 'review'].includes(card.status)
-    || boardPendingThreadIds.value.has(card.threadId) || questionFeatures.has(card.id)).length
-  return `${features.filter((card) => card.status === 'done').length}/${features.length} done${needsYou ? ` · ${needsYou} need you` : ''}`
+  const statuses = features.map((card) => boardPendingThreadIds.value.has(card.threadId) || questionFeatures.has(card.id)
+    ? 'needs_input' : boardActivity.value.find((item) => item.featureId === card.id)?.status || card.status)
+  const needsYou = statuses.filter((status) => ['blocked', 'needs_input', 'review'].includes(status)).length
+  return `${statuses.filter((status) => status === 'done').length}/${features.length} done${needsYou ? ` · ${needsYou} need you` : ''}`
 })
-const selectedChatRun = computed(() => projectBoardSnapshot.value.runs.find((run) => run.threadId === selectedThreadId.value && selectedThreadId.value))
+const selectedChatRun = computed(() => {
+  const runs = projectBoardSnapshot.value.runs.filter((run) => run.threadId === selectedThreadId.value && selectedThreadId.value)
+    .sort((a, b) => b.startedAtIso.localeCompare(a.startedAtIso))
+  return runs.find((run) => ['running', 'queued'].includes(run.status)) || runs[0]
+})
 const selectedChatIsRunning = computed(() => Boolean(selectedChatRun.value && ['running', 'queued'].includes(selectedChatRun.value.status)))
 const selectedChatQuestion = computed(() => projectBoardSnapshot.value.questions.find((question) => question.status === 'open' && Boolean(selectedChatFeature.value) && (question.cardId === selectedChatFeature.value?.id || projectBoardSnapshot.value.cards.some((card) => card.id === question.cardId && card.parentCardId === selectedChatFeature.value?.id))))
 const selectedChatNativeQuestion = computed(() => selectedThreadServerRequests.value.length > 0)
-const selectedChatStatus = computed(() => selectedChatQuestion.value || selectedChatNativeQuestion.value ? 'Needs you' : selectedChatIsRunning.value ? 'Working' : selectedChatFeature.value?.status === 'done' ? 'Done' : selectedChatFeature.value?.planStatus === 'ready' || (selectedChatRun.value?.kind === 'board_plan' && selectedChatRun.value.status === 'succeeded') ? 'Plan ready' : 'Paused')
+const selectedChatStatus = computed(() => {
+  if (selectedChatNativeQuestion.value) return selectedThreadServerRequests.value.some((request) => request.method.includes('requestApproval')) ? 'Approval needed' : 'Answer needed'
+  if (selectedChatQuestion.value) return 'Answer needed'
+  if (selectedChatIsRunning.value) return 'Working'
+  if (selectedChatFeature.value?.status === 'review') return 'Needs review'
+  if (selectedChatFeature.value?.status === 'done') return 'Done'
+  if (selectedChatFeature.value?.status === 'blocked') return 'Blocked'
+  if ((selectedChatFeature.value?.status === 'backlog' && selectedChatFeature.value.planStatus === 'ready' && canPlanChatFeature.value)
+    || (selectedChatRun.value?.kind === 'board_plan' && selectedChatRun.value.status === 'succeeded')) return 'Plan ready'
+  return 'Paused'
+})
 const canPlanChatFeature = computed(() => !projectBoardSnapshot.value.cards.some((card) => card.parentCardId === selectedChatFeature.value?.id && card.status !== 'backlog'))
 const chatLeadNeedsWrite = computed(() => {
   const board = selectedChatBoard.value

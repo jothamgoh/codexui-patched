@@ -4,9 +4,10 @@ import { fileURLToPath } from 'node:url'
 import { createServer } from 'vite'
 import vue from '@vitejs/plugin-vue'
 import tailwind from '@tailwindcss/vite'
-import { chromium } from 'playwright'
+import { chromium, webkit } from 'playwright'
 const root = fileURLToPath(new URL('..', import.meta.url))
-const output = `${root}/output/chat-reliability`
+const engine=process.env.CODEXUI_CHAT_ENGINE==='webkit'?'webkit':'chromium'
+const output = `${root}/output/chat-reliability${engine==='webkit'?'-webkit':''}`
 await mkdir(output, { recursive: true })
 const fixture = `import {createApp,h,reactive} from 'vue';
 import {createPinia} from 'pinia';
@@ -18,7 +19,7 @@ import {normalizeThreadMessagesV2} from '/src/api/normalizers/v2.ts';
 import '/src/style.css';
 const count=Number(new URLSearchParams(location.search).get('count')||2000);
 const text='A useful result with **formatting**, a [link](https://example.com), and detail.\\n\\n'+Array.from({length:12},(_,i)=>'- Detail '+i+' describes the work, checks and next steps.').join('\\n');
-const state=reactive({messages:Array.from({length:count},(_,i)=>({id:'message-'+i,role:i%3===0?'user':'assistant',text:i%3===0?'Request '+i:'Result '+i+'\\n\\n'+text,turnId:'turn-'+Math.floor(i/3),turnIndex:Math.floor(i/3)})), activeThreadId:'chat-1', submits:0,loading:true});
+const state=reactive({messages:Array.from({length:count},(_,i)=>({id:'message-'+i,role:i%3===0?'user':'assistant',text:i%3===0?'Request '+i:'Result '+i+'\\n\\n'+text,turnId:'turn-'+Math.floor(i/3),turnIndex:Math.floor(i/3)})), activeThreadId:'chat-1', submits:0,loading:true,pending:[],overlay:null,replies:[]});
 setTimeout(()=>{state.loading=false},75);
 window.fixture=state;
 window.loadActivityHistory=(items)=>{state.live=false;state.activeThreadId='chat-1';state.messages=normalizeThreadMessagesV2({thread:{cwd:'/project',turns:[{id:'activity-turn',status:'completed',items}]}})};
@@ -26,13 +27,13 @@ window.startActivityStream=async()=>{const {useDesktopState}=await import('/src/
 const pinia=createPinia();
 const router=createRouter({history:createMemoryHistory(),routes:[{path:'/',component:{render:()=>null}},{path:'/thread/:threadId',name:'thread',component:{render:()=>null}}]});
 window.fixtureRouter=router;
-const App={setup(){const store=useComposerDraftStore();window.drafts=store;return()=>h('div',{style:'height:100dvh;display:flex;flex-direction:column'},[h('div',{style:'min-height:0;flex:1;display:flex;flex-direction:column'},[h(Conversation,{messages:state.live?desktop.messages.value:state.messages,pendingRequests:[],liveOverlay:null,isLoading:state.loading,activeThreadId:state.activeThreadId,scrollState:null,automationProposals:[],automationTasks:[],onAddResponseAnnotation:(a)=>store.draftFor(state.activeThreadId).responseTextAnnotations.push(a)})]), h(Composer,{activeThreadId:state.activeThreadId,models:['gpt-6-astra'],selectedModel:'gpt-6-astra',selectedReasoningEffort:'low',disabled:false,isTurnInProgress:false,installedSkills:[],onSubmit:()=>state.submits++})])}};
+const App={setup(){const store=useComposerDraftStore();window.drafts=store;return()=>h('div',{style:'height:100dvh;display:flex;flex-direction:column'},[h('div',{style:'min-height:0;flex:1;display:flex;flex-direction:column'},[h(Conversation,{messages:state.live?desktop.messages.value:state.messages,pendingRequests:state.pending,liveOverlay:state.overlay,isLoading:state.loading,activeThreadId:state.activeThreadId,scrollState:null,automationProposals:[],automationTasks:[],onRespondServerRequest:(reply)=>{state.replies.push(reply);state.pending.find(request=>request.id===reply.id).replyState='sending'},onAddResponseAnnotation:(a)=>store.draftFor(state.activeThreadId).responseTextAnnotations.push(a)})]), h(Composer,{activeThreadId:state.activeThreadId,models:['gpt-6-astra'],selectedModel:'gpt-6-astra',selectedReasoningEffort:'low',disabled:false,isTurnInProgress:false,installedSkills:[],onSubmit:()=>state.submits++})])}};
 createApp(App).use(pinia).use(router).mount('#app');
 `
 await writeFile(`${output}/fixture.js`, fixture)
-await writeFile(`${output}/index.html`, '<html><head><meta name="viewport" content="width=device-width, initial-scale=1"></head><body style="margin:0"><div id="app"></div><script type="module" src="/output/chat-reliability/fixture.js"></script></body></html>')
+await writeFile(`${output}/index.html`, `<html><head><meta name="viewport" content="width=device-width, initial-scale=1"></head><body style="margin:0"><div id="app"></div><script type="module" src="${output.slice(root.length)}/fixture.js"></script></body></html>`)
 const server=await createServer({root,configFile:false,plugins:[vue(),tailwind()],resolve:{alias:{'@':`${root}/src`}},optimizeDeps:{include:['vue','pinia','vue-router']},server:{host:'127.0.0.1',port:4191,strictPort:true,watch:null}})
-await server.listen();const browser=await chromium.launch({headless:true,args:['--js-flags=--expose-gc']});
+await server.listen();const browser=await (engine==='webkit'?webkit:chromium).launch({headless:true,...(engine==='chromium'?{args:['--js-flags=--expose-gc']}: {})});
 const results = {};
 try {
  const page=await browser.newPage({viewport:{width:1100,height:850}});
@@ -63,7 +64,7 @@ try {
      stop(){this.state='inactive';setTimeout(()=>{this.ondataavailable?.({data:new Blob(['audio'],{type:'audio/webm'})});this.onstop?.()},0)}
    };
  });
- const start=Date.now();await page.goto('http://127.0.0.1:4191/output/chat-reliability/index.html?count=2000');
+ const start=Date.now();await page.goto('http://127.0.0.1:4191'+output.slice(root.length)+'/index.html?count=2000');
  await page.locator('.conversation-item').last().waitFor();await page.waitForTimeout(1000);
  const metrics=await page.evaluate(()=>{window.gc?.();return {dom:document.querySelectorAll('*').length,rendered:document.querySelectorAll('.message-body').length,shells:document.querySelectorAll('[data-virtualized]').length,heap:performance.memory?.usedJSHeapSize}});
  results.longChat={...metrics,loadMs:Date.now()-start};assert.ok(metrics.rendered<100);
@@ -114,6 +115,55 @@ try {
  await assertLatestVisible();
  assert.match(await page.locator('[data-response-message-id="message-1999"]').innerText(),/Detail 11/);
  results.reload.batchedVisibility=true;
+ // An approval must stay actionable while slow history loading replaces the
+ // transcript, and remain at the tail after virtualized history settles.
+ await page.setViewportSize({width:390,height:844});
+ await page.evaluate(()=>{
+   window.approvalHistory=fixture.messages;
+   fixture.pending=[{id:812,method:'item/commandExecution/requestApproval',threadId:'chat-1',turnId:'approval-turn',itemId:'approval-command',receivedAtIso:new Date().toISOString(),params:{availableDecisions:['accept',{acceptWithExecpolicyAmendment:{execpolicy_amendment:['npm','test']}},'cancel'],command:'npm test -- --runInBand --testPathPattern=tests/meaningful-combined-feature-regression.test.ts',cwd:'/fixture/project/long-directory-for-the-combined-feature-check',reason:'Run the combined feature checks before marking this work ready.'}}];
+   fixture.overlay={activityLabel:'Thinking',activityDetails:[],reasoningText:'',errorText:''};
+ });
+ const approval=page.locator('.request-card');
+ const assertApprovalAtTail=async()=>{
+   await page.waitForFunction(()=>{
+     const list=document.querySelector('.conversation-list'),card=list?.querySelector('.request-card');
+     if(!card) return false;
+     const a=card.getBoundingClientRect(),b=list.getBoundingClientRect();
+     return a.top>=b.top && a.bottom<=b.bottom && list.scrollHeight-list.scrollTop-list.clientHeight<24;
+   });
+   assert.equal(await page.locator('.live-overlay-inline').count(),0);
+   assert.equal(await approval.getByRole('button',{name:'Accept',exact:true}).isVisible(),true);
+ };
+ await assertApprovalAtTail();
+ await page.evaluate(()=>{fixture.loading=true;fixture.messages=[]});
+ await assertApprovalAtTail();
+ assert.equal(await page.locator('.conversation-loading').count(),0,'History loading must not replace the pending approval');
+ assert.equal(await approval.getByRole('button',{name:'Accept for Session',exact:true}).count(),0);
+ assert.equal(await approval.getByRole('button',{name:'Decline',exact:true}).count(),0);
+ assert.equal(await approval.getByRole('button',{name:'Cancel',exact:true}).count(),1);
+ assert.match(await approval.locator('pre').innerText(),/meaningful-combined-feature-regression/);
+ assert.match(await approval.innerText(),/Folder:.*long-directory/);
+ assert.ok(await approval.getByRole('button',{name:'Accept',exact:true}).evaluate(button=>button.getBoundingClientRect().height>=44));
+ await page.screenshot({path:`${output}/approval-loading-mobile.png`});
+ await page.evaluate(()=>{fixture.messages=[...window.approvalHistory];fixture.loading=false});
+ await assertApprovalAtTail();
+ await page.locator('.conversation-list').evaluate(list=>list.scrollTop=0);
+ await page.getByRole('button',{name:'Scroll to bottom',exact:true}).click();
+ await assertApprovalAtTail();
+ await page.locator('[data-response-message-id="message-1999"]').waitFor();
+ assert.ok(await approval.evaluate(card=>card.scrollWidth<=card.clientWidth),'Long command and folder stay within the phone card');
+ await page.screenshot({path:`${output}/approval-tail-mobile.png`});
+ await approval.getByRole('button',{name:'Accept',exact:true}).click();
+ assert.deepEqual(await page.evaluate(()=>fixture.replies),[{id:812,result:{decision:'accept'}}]);
+ assert.equal(await approval.getByRole('button',{name:'Accept',exact:true}).isDisabled(),true);
+ await page.evaluate(()=>{fixture.pending[0].replyState='failed';fixture.pending[0].replyError='Could not send your decision. Try again.'});
+ await approval.getByRole('alert').waitFor();
+ assert.equal(await approval.getByRole('button',{name:'Accept',exact:true}).isEnabled(),true);
+ assert.equal(await page.evaluate(()=>fixture.replies.length),1,'Rendering or retry readiness must not send another decision');
+ await page.evaluate(()=>{fixture.pending=[];fixture.overlay=null});
+ await page.setViewportSize({width:1100,height:850});
+ await assertLatestVisible();
+ results.approval={visibleDuringLoading:true,visibleAfterHydration:true,tailNavigation:true,mobileActions:true,explicitDecision:true,retry:true};
  for(const width of [390,1100]) {
    await page.setViewportSize({width,height:844});
    for(let i=0;i<3;i++) {

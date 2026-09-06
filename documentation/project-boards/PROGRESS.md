@@ -12,6 +12,16 @@ user’s request; its saved rendering work has now been reviewed in the follow-u
 
 ## Current follow-up
 
+- Approval visibility: pending native requests now stay mounted at the chat tail
+  while history loads, with a waiting label instead of Thinking. Command, folder,
+  reason, retry state, and phone-sized buttons remain reachable after hydration
+  and scrolling. Only decisions advertised by the request are offered; legacy
+  payloads retain their existing choices. No automatic approval is introduced.
+  The existing long-chat browser journey covers empty/loading/full history,
+  exact replies and retries. The real pending Lead approval was also observed
+  after mobile Chromium reloads without answering it. Full tests/build passed;
+  local WebKit crashes on app navigation, so iPhone Safari remains unverified.
+
 - Active-run queue entry: the remaining cards no longer offer an invalid start
   while the board/project already has work running. The board and open dialog
   name the active feature and link to its Lead. Selection/consent stay intact;

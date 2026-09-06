@@ -70,6 +70,28 @@ test('board activity shows an unlisted Lead and planning run once, preserving ex
   assert.equal(stopped[0].summary, 'The server restarted')
 })
 
+test('follow-up conversations stay visible without replacing the completed feature result', () => {
+  const snapshot = {
+    boards: [{ id: 'board', name: 'Product fixes' }],
+    cards: [{ id: 'feature', boardId: 'board', type: 'feature', title: 'Finished feature', status: 'done', threadId: 'lead', lastRunId: 'build-run', summary: 'The implementation and checks passed.', updatedAtIso: '2026-09-07T01:00:00Z' }],
+    runs: [
+      { id: 'conversation', boardId: 'board', cardId: 'feature', kind: 'follow_up', status: 'running', threadId: 'lead', startedAtIso: '2026-09-07T02:00:00Z' },
+      { id: 'build-run', boardId: 'board', cardId: 'feature', kind: 'execute', status: 'succeeded', threadId: 'lead' },
+    ],
+  }
+  const active = collectProjectBoardActivity(snapshot)[0]
+  assert.equal(active.status, 'running', 'Conversation remains visible in Activity')
+  assert.equal(active.runKind, 'follow_up')
+  assert.equal(active.featureStatus, 'done', 'Completion counters use the saved result')
+  assert.equal(active.threadId, 'lead')
+  assert.equal(active.updatedAtIso, '2026-09-07T02:00:00Z')
+  snapshot.runs[0].status = 'failed'
+  snapshot.runs[0].error = 'The conversation was interrupted.'
+  const finished = collectProjectBoardActivity(snapshot)[0]
+  assert.equal(finished.status, 'done')
+  assert.equal(finished.summary, 'The implementation and checks passed.')
+})
+
 const attention = {
   boardId: 'board / one',
   featureId: 'feature-1',

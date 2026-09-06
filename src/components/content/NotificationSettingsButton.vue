@@ -1001,6 +1001,7 @@ function boardNameFor(boardId: string): string {
 }
 
 function boardWorkStatusLabel(item: ProjectBoardActivity): string {
+  if (item.status === 'running' && item.runKind === 'follow_up') return 'Conversation'
   return ({ running: 'Working', paused: 'Paused', blocked: 'Blocked', review: 'Needs review', needs_input: 'Waiting for you', done: 'Complete', backlog: 'Not started' })[item.status]
 }
 

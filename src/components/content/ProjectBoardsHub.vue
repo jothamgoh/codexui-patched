@@ -142,6 +142,7 @@
                 <div class="board-card-kicker">
                   <span>{{ card.type === 'qa_batch' ? 'QA batch' : priorityLabel(card.priority) }}</span>
                   <span v-if="openQuestionFor(card) || requestForCard(card)" class="needs-you-pill">{{ requestForCard(card) ? nativeRequestLabel(card) : 'Needs you' }}</span>
+                  <span v-else-if="cardHasActiveConversation(card)">Conversation</span>
                 </div>
                 <strong>{{ card.title }}</strong>
                 <p v-if="card.progressNote || card.description">{{ card.progressNote || card.description }}</p>
@@ -217,7 +218,7 @@
             <p v-if="!selectedRunIsActive && selectedRuns[0]?.error" class="detail-muted" role="status">{{ selectedRuns[0].error }}</p>
             <p v-if="dependencyLabel(selectedCard)" class="dependency-note">{{ dependencyLabel(selectedCard) }}</p>
             <section v-if="selectedHasResult" class="detail-section feature-result" aria-label="Feature result">
-              <h3>{{ selectedRunIsActive ? 'Previous result · work is continuing' : selectedCard.status === 'review' ? 'Ready for review' : selectedCard.status === 'done' ? 'Result' : 'Previous result' }}</h3>
+              <h3>{{ selectedWorkIsActive ? 'Previous result · work is continuing' : selectedCard.status === 'review' ? 'Ready for review' : selectedCard.status === 'done' ? 'Result' : 'Previous result' }}</h3>
               <p class="detail-prewrap">{{ selectedCard.summary || (selectedCard.status === 'review' ? 'The work is ready for its final check. Review the Lead chat and verification tasks below.' : 'This feature is complete. Review the Lead chat for its final response.') }}</p>
               <p v-if="selectedTasks.some(task => task.taskPurpose === 'verification')" class="detail-muted">{{ selectedTasks.filter(task => task.taskPurpose === 'verification' && task.status === 'done').length }}/{{ selectedTasks.filter(task => task.taskPurpose === 'verification').length }} verification tasks completed. Check their findings below.</p>
               <p v-if="selectedCard.threadId" class="detail-muted">For code changes, open Summary → Changes in the chat.</p>
@@ -283,7 +284,7 @@
               <ul v-else class="run-list">
                 <li v-for="run in selectedRuns" :key="run.id">
                   <span class="run-dot" :data-status="run.status" />
-                  <div><strong>{{ agentFor(run.agentId)?.name ?? 'Agent' }} · {{ runStatusLabel(run.status) }}</strong><p>{{ run.error || run.summary || formatTime(run.startedAtIso) }}</p><small v-if="run.requestedModel !== undefined || run.requestedReasoningEffort">Requested: {{ run.requestedModel || 'App default model' }}<template v-if="run.requestedReasoningEffort"> · {{ run.requestedReasoningEffort }} reasoning</template></small></div>
+                  <div><strong>{{ agentFor(run.agentId)?.name ?? 'Agent' }} · {{ run.kind === 'follow_up' ? 'Conversation · ' : '' }}{{ run.kind === 'follow_up' && run.status === 'running' ? 'Active' : runStatusLabel(run.status) }}</strong><p>{{ run.error || run.summary || formatTime(run.startedAtIso) }}</p><small v-if="run.requestedModel !== undefined || run.requestedReasoningEffort">Requested: {{ run.requestedModel || 'App default model' }}<template v-if="run.requestedReasoningEffort"> · {{ run.requestedReasoningEffort }} reasoning</template></small></div>
                 </li>
               </ul>
             </section>
@@ -668,7 +669,7 @@ const boardComplete = computed(() => featureCards.value.length > 0 && completedF
 const dependencyCandidates = computed(() => featureCards.value.filter((card) => card.type === 'feature' && card.id !== editingCardId.value))
 const activeQueue = computed(() => props.snapshot.queues?.find((queue) => queue.boardId === activeBoard.value?.id))
 const activeBoardRun = computed(() => activeBoard.value && props.snapshot.runs.find((run) =>
-  (run.status === 'running' || run.status === 'queued') && run.boardId === activeBoard.value?.id,
+  run.kind !== 'follow_up' && (run.status === 'running' || run.status === 'queued') && run.boardId === activeBoard.value?.id,
 ))
 const activeBoardCard = computed(() => props.snapshot.cards.find((card) => card.id === activeBoardRun.value?.cardId))
 const activeBoardThreadId = computed(() => activeBoardRun.value?.threadId || activeBoardCard.value?.threadId || '')
@@ -687,6 +688,7 @@ const selectedArtifacts = computed(() => props.snapshot.artifacts.filter((artifa
 const selectedRuns = computed(() => props.snapshot.runs.filter((run) => run.cardId === selectedCard.value?.id).sort((a, b) => b.startedAtIso.localeCompare(a.startedAtIso)))
 const selectedComments = computed(() => props.snapshot.comments.filter((comment) => comment.cardId === selectedCard.value?.id || selectedTaskIds.value.has(comment.cardId)).sort((a, b) => a.createdAtIso.localeCompare(b.createdAtIso)))
 const selectedRunIsActive = computed(() => selectedRuns.value.some((run) => run.status === 'running' || run.status === 'queued'))
+const selectedWorkIsActive = computed(() => selectedRuns.value.some((run) => run.kind !== 'follow_up' && (run.status === 'running' || run.status === 'queued')))
 const selectedHasResult = computed(() => Boolean(selectedCard.value && (selectedCard.value.summary || ['review', 'done'].includes(selectedCard.value.status))))
 const canStartSelectedCard = computed(() => selectedCard.value?.type === 'feature' && selectedCard.value.status !== 'done' && selectedCard.value.status !== 'review')
 
@@ -956,8 +958,12 @@ function requestForCard(card: ProjectBoardCard): UiServerRequest | undefined {
   return card.threadId ? props.pendingRequests?.find((request) => request.threadId === card.threadId) : undefined
 }
 function cardDisplayStatus(card: ProjectBoardCard): ProjectBoardStatus {
+  if (card.status === 'done' && cardHasActiveConversation(card)) return 'done'
   if (requestForCard(card) || openQuestionFor(card)) return 'needs_input'
-  return props.snapshot.runs.some((run) => run.cardId === card.id && ['running', 'queued'].includes(run.status)) ? 'working' : card.status
+  return props.snapshot.runs.some((run) => run.cardId === card.id && run.kind !== 'follow_up' && ['running', 'queued'].includes(run.status)) ? 'working' : card.status
+}
+function cardHasActiveConversation(card: ProjectBoardCard): boolean {
+  return props.snapshot.runs.some((run) => run.cardId === card.id && run.kind === 'follow_up' && ['running', 'queued'].includes(run.status))
 }
 function nativeRequestLabel(card: ProjectBoardCard): string {
   return requestForCard(card)?.method.includes('requestUserInput') ? 'Answer needed' : 'Approval needed'

@@ -1,4 +1,4 @@
-import type { ProjectBoardSnapshot } from '../types/projectBoards'
+import type { ProjectBoardRunKind, ProjectBoardSnapshot, ProjectBoardStatus } from '../types/projectBoards'
 
 export type ProjectBoardActivity = {
   boardId: string
@@ -7,6 +7,8 @@ export type ProjectBoardActivity = {
   title: string
   boardName: string
   status: 'running' | 'needs_input' | 'review' | 'blocked' | 'paused' | 'done' | 'backlog'
+  runKind?: ProjectBoardRunKind
+  featureStatus?: ProjectBoardStatus
   updatedAtIso: string
   summary: string
 }
@@ -27,8 +29,10 @@ export function collectProjectBoardActivity(snapshot: ProjectBoardSnapshot): Pro
       title: card.title,
       boardName: boards.get(card.boardId)!.name,
       status: card.status === 'needs_input' ? 'needs_input' : activeRun ? 'running' : card.status === 'working' ? 'paused' : card.status,
-      updatedAtIso: card.updatedAtIso,
-      summary: latestRun?.error || card.progressNote || card.summary || '',
+      runKind: activeRun?.kind || latestRun?.kind,
+      featureStatus: card.status,
+      updatedAtIso: activeRun?.startedAtIso || card.updatedAtIso,
+      summary: activeRun?.kind === 'follow_up' ? 'Discussing the completed result.' : card.status === 'done' ? card.summary || card.progressNote || '' : latestRun?.error || card.progressNote || card.summary || '',
     })
   }
   for (const board of snapshot.boards) {
@@ -43,6 +47,7 @@ export function collectProjectBoardActivity(snapshot: ProjectBoardSnapshot): Pro
       title: `Plan ${board.name}`,
       boardName: board.name,
       status: activeRun ? 'running' : latestRun.status === 'succeeded' ? 'review' : 'blocked',
+      runKind: latestRun.kind,
       updatedAtIso: latestRun.finishedAtIso || latestRun.startedAtIso || board.updatedAtIso,
       summary: latestRun.error || latestRun.summary || '',
     })

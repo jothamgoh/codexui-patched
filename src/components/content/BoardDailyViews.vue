@@ -102,10 +102,11 @@ function openQuestion(question: ProjectBoardQuestion): void {
   if (feature) emit('open-feature', feature, question.id)
 }
 function openRunFeature(run: ProjectBoardRun): void { const feature = featureFor(run.cardId); if (feature) emit('open-feature', feature) }
-function runKind(run: ProjectBoardRun): string { return run.kind === 'board_plan' ? 'Project planning' : run.kind === 'plan' ? 'Feature planning' : 'Feature work' }
+function runKind(run: ProjectBoardRun): string { return run.kind === 'follow_up' ? 'Conversation' : run.kind === 'board_plan' ? 'Project planning' : run.kind === 'plan' ? 'Feature planning' : 'Feature work' }
 function runStatus(run: ProjectBoardRun): string {
   const request = ['queued', 'running'].includes(run.status) && props.pendingRequests?.find((entry) => entry.threadId === run.threadId)
   if (request) return request.method.includes('requestUserInput') ? 'Answer needed' : 'Approval needed'
+  if (run.kind === 'follow_up' && run.status === 'running') return 'Active'
   return ({ queued: 'Queued', running: 'Working', succeeded: 'Completed', failed: 'Failed', interrupted: 'Interrupted' })[run.status]
 }
 function formatTime(value: string): string {

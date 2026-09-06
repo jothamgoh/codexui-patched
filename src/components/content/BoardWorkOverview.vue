@@ -35,7 +35,7 @@ const rows = computed(() => props.activity.map((activity) => {
   const status = request || question ? 'needs_input' : activity.status
   const label = request ? request.method.includes('requestApproval') ? 'Approval needed' : 'Answer needed'
     : question || status === 'needs_input' ? 'Answer needed'
-    : status === 'running' ? run?.kind === 'execute' ? 'Working' : 'Planning'
+    : status === 'running' ? run?.kind === 'follow_up' ? 'Conversation' : run?.kind === 'execute' ? 'Working' : 'Planning'
     : status === 'review' ? activity.featureId ? 'Needs review' : 'Plan ready'
     : status === 'blocked' ? 'Blocked' : status === 'paused' ? 'Paused' : status === 'done' ? 'Done' : 'Ready'
   return { ...activity, status, label, agentName, questionId: question?.id || '',
@@ -47,6 +47,7 @@ const rows = computed(() => props.activity.map((activity) => {
 const needsYou = computed(() => rows.value.filter((row) => ['needs_input', 'review', 'blocked', 'paused'].includes(row.status)))
 const currentLeads = computed(() => rows.value.filter((row) => row.status === 'running'))
 const results = computed(() => rows.value.filter((row) => row.status === 'done'))
+const completedFeatures = computed(() => props.snapshot.cards.filter((card) => card.type === 'feature' && card.status === 'done').length)
 const sections = computed(() => [
   { id: 'needs-you', title: 'Needs you', items: needsYou.value },
   { id: 'working', title: 'Current Leads', items: currentLeads.value },
@@ -54,7 +55,7 @@ const sections = computed(() => [
 ].filter((section) => section.items.length))
 const boards = computed(() => props.snapshot.boards.map((board) => {
   const features = rows.value.filter((row) => row.boardId === board.id && props.snapshot.cards.some((card) => card.id === row.featureId && card.type === 'feature'))
-  const done = features.filter((row) => row.status === 'done').length
+  const done = features.filter((row) => row.featureStatus === 'done').length
   const working = currentLeads.value.filter((row) => row.boardId === board.id).length
   const attention = needsYou.value.filter((row) => row.boardId === board.id).length
   return { ...board, total: features.length, done, working, attention }
@@ -77,8 +78,8 @@ function openRow(row: (typeof rows.value)[number]): void {
     <template v-else>
       <div v-if="boards.length" class="overview-counts" aria-label="Work summary">
         <span><strong>{{ needsYou.length }}</strong> need you</span>
-        <span><strong>{{ currentLeads.length }}</strong> working</span>
-        <span><strong>{{ results.length }}</strong> done</span>
+        <span><strong>{{ currentLeads.length }}</strong> active</span>
+        <span><strong>{{ completedFeatures }}</strong> done</span>
       </div>
       <section v-for="section in sections" :key="section.id" class="overview-section" :aria-label="section.title" :data-overview-section="section.id">
         <h3>{{ section.title }}<span>{{ section.items.length }}</span></h3>
@@ -100,7 +101,7 @@ function openRow(row: (typeof rows.value)[number]): void {
           <article v-for="board in boards" :key="board.id" class="overview-board">
             <p class="board-project"><FolderKanban aria-hidden="true" />{{ board.projectName }}</p>
             <h4>{{ board.name }}</h4>
-            <p>{{ board.total ? `${board.done} of ${board.total} features done` : 'Ready for your first feature' }}<span v-if="board.attention"> · {{ board.attention }} need you</span><span v-else-if="board.working"> · {{ board.working }} working</span></p>
+            <p>{{ board.total ? `${board.done} of ${board.total} features done` : 'Ready for your first feature' }}<span v-if="board.attention"> · {{ board.attention }} need you</span><span v-else-if="board.working"> · {{ board.working }} active</span></p>
             <progress v-if="board.total" :value="board.done" :max="board.total" :aria-label="`${board.name} feature progress`" />
             <Button type="button" variant="outline" @click="$emit('select-board', board.id)">Open board<ArrowUpRight aria-hidden="true" /></Button>
           </article>

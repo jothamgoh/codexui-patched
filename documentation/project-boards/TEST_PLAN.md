@@ -99,8 +99,18 @@ notification storage too. Retain explicit defense in every bridge fixture:
 - Committed outcomes enter existing history once, suppress generic Lead alerts,
   and recover interruptions without replaying old history or leaking fixtures.
 - Brief-only titles, source/Lead separation, active exact-turn steering, idle
-  same-chat tracked replies, atomic explicit reopening, and direct-RPC bypass
+  same-chat tracked replies, atomic repair reopening, and direct-RPC bypass
   rejection. Preserve inputs and drafts through failures and navigation.
+- Completed replies preserve Done and its saved result through discussion,
+  plan updates, Stop, failure, and restart. Check same-chat/model inheritance,
+  full/project access, simultaneous execution, native questions, queue isolation,
+  and repair promotion before/after persistence racing Stop or process exit.
+  A stale promotion must not retain a lock or release a replacement's lock.
+- Existing desktop/touch-mobile journeys cover completed-chat Send without a
+  reopening checkbox, Conversation activity with Done progress, lazy-screen
+  loading/failure/refresh recovery, and compact main-composer dictation controls.
+  Reloading saved starters refreshes all five instructions without altering
+  custom profiles, board rosters, or cards.
 - Stop covers delayed starts, native interruption failure, replay and replacement,
   owned descendants, and exact request cleanup even if a completion event is
   missing. Deleting stopped or waiting work must preserve code

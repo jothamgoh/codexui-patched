@@ -66,9 +66,12 @@ Use chat for the conversation and the board for the project overview.
   The Lead chat and feature details show **This run** (or **Last run**) settings.
   **Confirmed by Codex** means the native runtime reported them after launch;
   **Requested** is shown when that read-back is unavailable.
-- Reply in the Lead chat to steer active work. When idle, choose **Continue work**
-  using the board's work permissions; completed features require explicit reopening. Lead
-  settings remain editable on the card. Failed sends retain the draft.
+- Reply in the Lead chat to steer active work or continue an idle feature.
+  After completion, ask for links, explanations, or tests in the same chat.
+  It shows **Conversation** while the card stays **Done** and another feature
+  can run. If you request changes, the Lead reopens the affected work through
+  the board tool before implementing, with existing dependency and access checks.
+  Lead settings remain editable on the card. Failed sends retain the draft.
 - **Stop run** ends the active attempt; completed code stays on disk. Stop before
   deleting a feature. Deletion removes its board records, keeping the code and
   Lead chat. Native approval requests are visible instead of looking like work.
@@ -82,6 +85,9 @@ Use chat for the conversation and the board for the project overview.
   a completed selected batch produces one summary alert. The board stays open
   for future work. Waiting Lead approvals also use your configured notification
   channels and disappear from Needs You when answered or cancelled.
+- **All work** shows loading feedback and a refresh action if its screen cannot
+  load. Maintained Lead, Product, Design, Engineer, and QA prompts update for
+  existing boards too; custom profiles keep their own saved instructions.
 
 ## Continuing development
 

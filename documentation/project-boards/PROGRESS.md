@@ -12,6 +12,29 @@ user’s request; its saved rendering work has now been reviewed in the follow-u
 
 ## Current follow-up
 
+- Completed Lead chats accept ordinary follow-up messages. A tracked
+  Conversation uses the same chat/model while preserving Done, the original
+  result, and the board execution slot for other work. Requested changes reopen
+  through the Lead's board tool with dependency/access checks. Stop, failure,
+  plan events and restart leave unpromoted completed results intact. Regression
+  checks cover promotion racing Stop/exit and replacement lock ownership.
+- All work now has loading feedback and a refresh action on screen-load failure.
+  Aborting the production lazy chunk reproduced the reported blank screen;
+  a fresh real-board navigation also succeeded. The main composer hides routine
+  recording prose while retaining accessible state, Stop/Cancel, errors and Retry.
+- All five maintained agent profiles now apply the researched product, UX,
+  engineering, QA and orchestration principles proportionally. Use each project's
+  established stack; coordinate overlapping files/shared state while permitting
+  independent work. Existing board rosters reuse these maintained profiles on
+  reload; custom profiles remain unchanged. No separate migration framework.
+- Current release checks: all 262 unit tests, production frontend/CLI build,
+  and Gitleaks pass. Full desktop/touch-mobile board, board/chat, and long-chat
+  dictation journeys passed, with screenshots inspected. An independent review
+  reproduced and then verified the repaired promotion race. Model/audio browser
+  responses are synthetic; physical iPhone Safari remains unverified.
+  Backend restart is explicitly authorized after publication and CI; deployment
+  verification is pending. Current production boards have no active runs.
+
 - Independent boards now apply globally: any folder can hold multiple boards
   running alongside one another. Each board still permits one active feature
   or dedicated planning run. Service reservations, atomic store guards, queue
@@ -27,8 +50,7 @@ user’s request; its saved rendering work has now been reviewed in the follow-u
   All 257 unit tests and the production build pass. Full desktop/touch-mobile
   board and chat journeys pass, including independent queue controls and exact
   Lead-created board navigation. Physical iPhone Safari remains unverified.
-  Server deployment needs a restart after current user work settles. Do not
-  interrupt the active real Lead or other chats merely to refresh the frontend.
+  This backend change is included in the authorized release described above.
 
 - Board controls follow-up: mobile option actions use two columns and grow to
   fit wrapped labels. Feature details expose Model & reasoning directly, opening
@@ -184,7 +206,8 @@ planning remains in chat unless the user explicitly requests a board.
 - Individual starts open the Lead; selected batches stay on the board. Sidebar,
   header, card, and Activity links retain feature identity and title.
 - Managed replies steer the exact active turn or start a guarded tracked run
-  in the same chat. Explicit reopening preserves prior work. Failed or delayed
+  in the same chat. Discussion preserves Done; requested repair reopening
+  preserves prior work. Failed or delayed
   sends retain drafts and cannot affect another chat's composer.
 - Activity exposes working Leads and native approvals, even before ordinary chat
   listing catches up. Feature results open their Lead. Selected queue outcomes

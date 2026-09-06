@@ -140,11 +140,16 @@ isolation, and cross-board dependencies are not inferred or enforced.
 
 Lead chat replies use the board service. During an active run they steer the
 exact current turn; a stale turn cannot silently become a new run. Idle replies
-create a new tracked run in the same chat using current profile, dependency,
-board-lock, and work-permission checks. Planning chats remain read-only. A done
-feature requires explicit reopening, retaining prior handoffs and respecting
-its dependents. Ordinary turn/start and goal continuation cannot bypass this
-lifecycle. Submission errors retain the full composer draft. Stop revokes pending
+create a new tracked run in the same chat using current profile and work
+permissions. Planning chats remain read-only. Replies to Done features start
+a conversation without changing the saved result or taking a board execution
+slot. Questions and explanations need no manual reopening. For requested
+implementation changes, the Lead explicitly promotes the conversation through
+the board tool, atomically reopening affected work while retaining handoffs and
+checking dependencies, board availability, and write access. Discussion progress,
+failure, Stop, and restart do not erase the completed result. Ordinary turn/start
+and goal continuation cannot bypass this lifecycle. Submission errors retain
+the full composer draft. Stop revokes pending
 continuation/queue consent and targets the current run; a stale Stop cannot
 cancel a newer attempt. Cancellation is confirmed for the Lead and its owned
 native subagents before releasing the board lock; uncertainty keeps the run

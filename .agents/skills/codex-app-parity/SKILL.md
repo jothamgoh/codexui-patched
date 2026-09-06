@@ -5,6 +5,26 @@ description: "Use when implementing or changing user-visible behavior/UI in this
 
 # Codex App Parity Skill
 
+## Findings: Screen recovery and completed Lead conversations (2026-09-06)
+
+- Rechecked integrated projects-index-page-580ee50ba839.js before the screen fix:
+  native projects distinguish loading, empty, error, and partial results. A failed
+  production BoardWorkOverview lazy chunk reproduced a blank content pane.
+  Give lazy screens explicit loading and error components with a user-controlled
+  refresh. Vue's wrapper attributes can overwrite a shared error prop; use a
+  separate failed flag and do not inherit wrapper attributes into the state view.
+- Native chats accept replies after a turn finishes. Done is a board result,
+  not a reason to disable that chat's composer. A Conversation activity label
+  distinguishes a live follow-up from reopened implementation; keep the saved
+  result and board execution slot intact until a requested repair is promoted.
+  This durable card distinction is an intentional board extension.
+- The main composer keeps recording, transcription, Stop, and Cancel controls
+  visible while routine helper prose is accessible to screen readers. Actual
+  errors and Retry remain visible; stopping transcription never sends the draft.
+- Desktop and Chromium touch fixtures cover screen failure/recovery, completed
+  replies, activity/progress, and dictation. They do not establish physical
+  iPhone Safari behavior.
+
 ## Findings: Board control discoverability and mobile wrapping (2026-09-06)
 
 - Native buttons generally keep labels on one line and use minimum target heights;

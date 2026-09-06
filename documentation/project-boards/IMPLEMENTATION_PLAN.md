@@ -85,6 +85,22 @@ threads can ignore thread/resume changes. Plan turns explicitly restore read-onl
 An active turn is allowed to finish. Starter profiles are app-maintained text;
 customized copies retain their own identity and saved instructions.
 
+Completed-feature replies use a tracked follow_up run in the same native chat.
+The run keeps its own activity and request controls while the card retains Done,
+its result, and its original lastRunId. It neither owns the board execution slot
+nor advances a queue. A requested repair promotes it atomically to execute:
+new schema-3 Leads use reopen_feature; existing schema-2 Leads use reopen_task
+with a reason. Native resume does not retrofit dynamic tools. Promotion checks
+dependencies and write access, owns its reservation explicitly, and rechecks
+cancellation before persistence and after awaiting it. Stop and process exit
+clean up the persisted kind without releasing another run's reservation.
+
+Maintained starter prompts emphasize observed user problems, small complete
+outcomes, useful evidence, and coordination of overlapping work. Existing state
+normalization refreshes all five built-in profiles while retaining custom
+profiles, board rosters, cards, and explicit execution settings. No migration
+or additional prompt-management layer is needed.
+
 ## Development and verification
 
 Work on coherent groups and agree API contracts before parallel implementation.

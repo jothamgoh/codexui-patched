@@ -5,6 +5,18 @@ description: "Use when implementing or changing user-visible behavior/UI in this
 
 # Codex App Parity Skill
 
+## Findings: Batched visibility records and blank chat tails (2026-09-06)
+
+- Native local-conversation-thread-7fad29d31eb2.js processes the latest entry
+  in an IntersectionObserver batch. A busy browser can report leaving and then
+  re-entering the viewport together. Processing only the first record leaves
+  visible web conversation rows as fixed-height empty placeholders.
+- The existing long-chat browser fixture now delays delivery of real observer
+  records while scrolling away and back, then delivers each observer's batch.
+  The old handler left the entire bottom viewport blank for over five seconds;
+  selecting the latest entry restores the actual final text. Keep real geometry,
+  bounded mounted bodies, history reading, and mobile resize checks together.
+
 ## Findings: Long-chat reload and layout settling (2026-09-06)
 
 - Rechecked native local-conversation-thread-7fad29d31eb2.js: virtualized

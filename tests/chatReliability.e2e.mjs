@@ -38,6 +38,20 @@ try {
  const page=await browser.newPage({viewport:{width:1100,height:850}});
  const errors=[];page.on('pageerror',e=>errors.push(String(e)));
  await page.addInitScript(() => {
+   // Real geometry with delayed observer delivery reproduces the records a busy
+   // browser can batch while moving away from, then back to, the latest reply.
+   const NativeIntersectionObserver=window.IntersectionObserver;
+   window.pendingIntersections=[];
+   window.IntersectionObserver=class extends NativeIntersectionObserver {
+     constructor(callback, options) {
+       const pending=[];
+       super((entries, observer)=>{
+         if(window.holdIntersections) pending.push(...entries);
+         else callback(entries, observer);
+       }, options);
+       window.pendingIntersections.push(()=>{if(pending.length) callback(pending.splice(0),this)});
+     }
+   };
    window.EventSource=class {constructor(){window.activityStream=this} close(){}};
    Object.defineProperty(navigator, 'mediaDevices', {value:{getUserMedia:async()=>{
      if(window.deferMicrophonePermission) await new Promise(resolve=>window.resolveMicrophonePermission=resolve);
@@ -91,6 +105,15 @@ try {
    assert.ok((await page.locator('.message-body').count())<100);
  }
  results.reload={attempts:3,fullFinalText:true,formatting:true,boundedBodies:true};
+ await page.evaluate(()=>window.holdIntersections=true);
+ await page.locator('.conversation-list').evaluate(el=>el.scrollTop=0);
+ await page.waitForTimeout(150);
+ await page.locator('.conversation-list').evaluate(el=>el.scrollTop=el.scrollHeight);
+ await page.waitForTimeout(150);
+ await page.evaluate(()=>{window.holdIntersections=false;window.pendingIntersections.forEach(flush=>flush())});
+ await assertLatestVisible();
+ assert.match(await page.locator('[data-response-message-id="message-1999"]').innerText(),/Detail 11/);
+ results.reload.batchedVisibility=true;
  for(const width of [390,1100]) {
    await page.setViewportSize({width,height:844});
    for(let i=0;i<3;i++) {

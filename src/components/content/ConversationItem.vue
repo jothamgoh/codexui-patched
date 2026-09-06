@@ -18,7 +18,10 @@ let resize: ResizeObserver | null = null
 
 onMounted(() => {
   const target = element.value!
-  intersection = new IntersectionObserver(([entry]) => {
+  intersection = new IntersectionObserver((entries) => {
+    // A busy browser can batch leaving and re-entering the viewport. Applying
+    // the older record leaves a visible reply as an empty height placeholder.
+    const entry = entries.at(-1)
     if (!entry) return
     // Keep focus and an in-progress text selection intact while scrolling.
     const selection = window.getSelection()

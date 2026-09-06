@@ -20,10 +20,12 @@ Use chat for the conversation and the board for the project overview.
   feature at a time, following its dependencies; another board in that folder
   can run alongside it. Create a new board for a separate initiative and extend
   the existing board for related work. Boards share the folder's files.
-- **Work overview** collects current Leads, things needing you, recent results,
-  and progress across boards. Open a named board for its feature cards or open
-  a Lead for the conversation. Activity separates **Board work** from **Chats
-  running**, with questions and approvals first.
+- **Work overview** shows your boards first, with progress and attention counts.
+  The Project selector immediately filters boards and work details; **All projects**
+  restores the full list. Multiple boards in one folder remain separate. Open a
+  board for its feature cards; current Leads and recent results sit below the
+  board list. **New plan** uses the selected project. Activity separates **Board
+  work** from **Chats running**, with questions and approvals first.
 
 - Boards are optional. Say **“Make a plan in the board”** in any existing chat
   to have it save a project brief and feature cards for review. Ordinary tasks

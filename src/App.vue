@@ -220,7 +220,7 @@
               :snapshot="projectBoardSnapshot" :activity="boardActivity" :pending-requests="pendingServerRequests"
               :projects="projectBoardProjectOptions" :is-loading="isLoadingProjectBoards" :error="projectBoardError"
               @select-board="openProjectBoard" @select-feature="setProjectBoardFeature" @select-thread="onSelectThread"
-              @select-project="openProjectBoardProject" @plan-project="openBoardPlanner('')"
+              @select-project="openProjectBoardProject" @plan-project="openBoardPlanner('', $event)"
             />
             <ProjectBoardsHub
               v-else
@@ -1251,12 +1251,12 @@ function openChatBoardPlan(): void {
   boardPlanDialogOpen.value = true
 }
 
-function openBoardPlanner(boardId: string): void {
+function openBoardPlanner(boardId: string, projectPath = ''): void {
   clearProjectBoardError()
   const board = projectBoardSnapshot.value.boards.find((entry) => entry.id === boardId)
   boardPlanTargetId.value = boardId
   boardPlanSourceThreadId.value = board?.sourceThreadId || ''
-  boardPlanProjectPath.value = board?.projectPath || ''
+  boardPlanProjectPath.value = board?.projectPath || projectPath
   boardPlanInitialText.value = projectBoardSnapshot.value.cards.some((card) => card.boardId === boardId && card.type === 'feature') ? '' : board?.plan || ''
   boardPlanDialogOpen.value = true
 }

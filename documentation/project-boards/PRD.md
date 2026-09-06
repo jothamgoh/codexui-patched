@@ -168,6 +168,14 @@ unexpected interruptions notify promptly; explicit user stops stay in history
 without another device alert. A board is an
 ongoing container, not a single completable job.
 
+Work overview leads with named board cards and progress. Its Project selector
+immediately filters boards, attention, active work and results, with All projects
+as the default. Include saved boards' projects even without recent chats. Empty
+projects have an explicit empty state and board setup action; New plan uses the
+selected folder. Individual Lead/result details follow the board list. An old
+successful planning run no longer counts as awaiting review after all its feature
+cards are Done, while actual open questions/requests remain visible.
+
 Activity counts user-facing Leads and ordinary chats, grouping native helper
 descendants in a collapsed list beneath the owning chat. Resolve ownership from
 native source/parent IDs, never titles or folders. Separate feature Leads remain

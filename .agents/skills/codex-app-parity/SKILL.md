@@ -1293,3 +1293,18 @@ After each feature implementation session that uses this skill:
   replace newer catalog unread/results. Pending native requests retain their exact
   child destination; async assistant question forms are a separate chat mechanism,
   not blocking server requests or a new notification channel.
+
+## Findings: Board-first work overview and project scope (2026-09-06)
+
+- Rechecked `projects-index-page-580ee50ba839.js` and
+  `composer-project-selector-ef24ce373ef7.js` in integrated renderer
+  `26.901.31953`. The native project catalog emphasizes named projects, derives
+  visible rows from selection/search state, and distinguishes loading, error and
+  empty lists. Its project selector changes scope through a selection callback.
+- Boards remain a CodexUI extension. Follow the catalog pattern: board cards
+  first, immediate project filtering with All projects, an explicit empty state,
+  and exact Open board navigation. Keep folder selection separate from creating
+  or starting work; aggregate only the currently visible boards.
+- Include saved-board folders alongside recent chat folders. The new-plan target
+  and cached draft identity must both include the explicitly selected project,
+  preventing an earlier draft from silently retaining another folder.

@@ -19,11 +19,30 @@ const emit = defineEmits<{
   'select-feature': [featureId: string, boardId: string, questionId?: string]
   'select-thread': [threadId: string]
   'select-project': [projectPath: string]
-  'plan-project': []
+  'plan-project': [projectPath: string]
 }>()
 const selectedProject = ref('')
-const projectPath = computed(() => selectedProject.value || props.projects[0]?.path || '')
-const rows = computed(() => props.activity.map((activity) => {
+const projectOptions = computed(() => {
+  const projects = new Map(props.projects.map((project) => [project.path, project]))
+  for (const board of props.snapshot.boards) {
+    if (!projects.has(board.projectPath)) projects.set(board.projectPath, { path: board.projectPath, name: board.projectName })
+  }
+  return [...projects.values()].filter((project) => project.path)
+})
+const projectName = computed(() => projectOptions.value.find((project) => project.path === selectedProject.value)?.name || selectedProject.value)
+const projectBoards = computed(() => props.snapshot.boards.filter((board) => !selectedProject.value || board.projectPath === selectedProject.value))
+const visibleBoardIds = computed(() => new Set(projectBoards.value.map((board) => board.id)))
+const rows = computed(() => props.activity.filter((activity) => {
+  if (!visibleBoardIds.value.has(activity.boardId)) return false
+  // A historical planning result is no longer awaiting review after its features finish.
+  if (activity.runKind === 'board_plan' && activity.status === 'review'
+    && !props.pendingRequests.some((request) => request.threadId === activity.threadId)
+    && !props.snapshot.questions.some((question) => question.boardId === activity.boardId && question.status === 'open')) {
+    const features = props.snapshot.cards.filter((card) => card.boardId === activity.boardId && card.type === 'feature')
+    if (features.length && features.every((card) => card.status === 'done')) return false
+  }
+  return true
+}).map((activity) => {
   const card = props.snapshot.cards.find((entry) => entry.id === activity.featureId)
   const request = props.pendingRequests.find((entry) => entry.threadId === activity.threadId)
   const question = props.snapshot.questions.find((entry) => activity.featureId && entry.status === 'open' && entry.boardId === activity.boardId
@@ -47,15 +66,15 @@ const rows = computed(() => props.activity.map((activity) => {
 const needsYou = computed(() => rows.value.filter((row) => ['needs_input', 'review', 'blocked', 'paused'].includes(row.status)))
 const currentLeads = computed(() => rows.value.filter((row) => row.status === 'running'))
 const results = computed(() => rows.value.filter((row) => row.status === 'done'))
-const completedFeatures = computed(() => props.snapshot.cards.filter((card) => card.type === 'feature' && card.status === 'done').length)
+const completedFeatures = computed(() => props.snapshot.cards.filter((card) => visibleBoardIds.value.has(card.boardId) && card.type === 'feature' && card.status === 'done').length)
 const sections = computed(() => [
   { id: 'needs-you', title: 'Needs you', items: needsYou.value },
   { id: 'working', title: 'Current Leads', items: currentLeads.value },
   { id: 'results', title: 'Recent results', items: results.value.slice(0, 6) },
 ].filter((section) => section.items.length))
-const boards = computed(() => props.snapshot.boards.map((board) => {
-  const features = rows.value.filter((row) => row.boardId === board.id && props.snapshot.cards.some((card) => card.id === row.featureId && card.type === 'feature'))
-  const done = features.filter((row) => row.featureStatus === 'done').length
+const boards = computed(() => projectBoards.value.map((board) => {
+  const features = props.snapshot.cards.filter((card) => card.boardId === board.id && card.type === 'feature')
+  const done = features.filter((card) => card.status === 'done').length
   const working = currentLeads.value.filter((row) => row.boardId === board.id).length
   const attention = needsYou.value.filter((row) => row.boardId === board.id).length
   return { ...board, total: features.length, done, working, attention }
@@ -70,17 +89,47 @@ function openRow(row: (typeof rows.value)[number]): void {
 <template>
   <div class="work-overview" data-testid="board-work-overview">
     <header class="overview-heading">
-      <div><h2>All work</h2><p>Requests, Leads and results across your boards.</p></div>
-      <Button type="button" variant="outline" @click="$emit('plan-project')"><Plus aria-hidden="true" /> New plan</Button>
+      <div><h2>All work</h2><p>Your boards, progress and anything that needs you.</p></div>
+      <Button type="button" variant="outline" @click="$emit('plan-project', selectedProject)"><Plus aria-hidden="true" /> New plan</Button>
     </header>
+    <div class="overview-project-picker">
+      <label><span>Project</span><select v-model="selectedProject" aria-label="Filter boards by project">
+        <option value="">All projects</option>
+        <option v-for="project in projectOptions" :key="project.path" :value="project.path" :title="project.path">{{ project.name }}</option>
+      </select></label>
+    </div>
     <p v-if="error" class="overview-error" role="alert">{{ error }}</p>
-    <p v-if="isLoading && !boards.length" role="status">Loading your boards…</p>
+    <p v-if="isLoading && !snapshot.boards.length" role="status">Loading your boards…</p>
     <template v-else>
       <div v-if="boards.length" class="overview-counts" aria-label="Work summary">
+        <span><strong>{{ boards.length }}</strong> {{ boards.length === 1 ? 'board' : 'boards' }}</span>
         <span><strong>{{ needsYou.length }}</strong> need you</span>
         <span><strong>{{ currentLeads.length }}</strong> active</span>
         <span><strong>{{ completedFeatures }}</strong> done</span>
       </div>
+      <section class="overview-section" aria-label="Your boards">
+        <h3>Your boards<span>{{ boards.length }}</span></h3>
+        <div v-if="boards.length" class="overview-boards">
+          <article v-for="board in boards" :key="board.id" class="overview-board">
+            <h4>{{ board.name }}</h4>
+            <p class="board-project"><FolderKanban aria-hidden="true" />{{ board.projectName }}</p>
+            <p>{{ board.total ? `${board.done} of ${board.total} features done` : 'Ready for your first feature' }}</p>
+            <div v-if="board.attention || board.working" class="board-statuses">
+              <span v-if="board.attention" class="work-status" data-status="needs_input">{{ board.attention }} need you</span>
+              <span v-if="board.working" class="work-status" data-status="running">{{ board.working }} active</span>
+            </div>
+            <progress v-if="board.total" :value="board.done" :max="board.total" :aria-label="`${board.name} feature progress`" />
+            <Button type="button" variant="outline" @click="$emit('select-board', board.id)">Open board<ArrowUpRight aria-hidden="true" /></Button>
+          </article>
+        </div>
+        <div v-else class="overview-empty" role="status">
+          <p>{{ selectedProject ? `No boards in ${projectName} yet.` : 'No boards yet.' }} Create a plan to review and track its features.</p>
+          <div class="overview-empty-actions">
+            <Button v-if="selectedProject" type="button" variant="outline" @click="$emit('select-project', selectedProject)">Set up a board</Button>
+            <Button v-if="selectedProject" type="button" variant="ghost" @click="selectedProject = ''">Show all boards</Button>
+          </div>
+        </div>
+      </section>
       <section v-for="section in sections" :key="section.id" class="overview-section" :aria-label="section.title" :data-overview-section="section.id">
         <h3>{{ section.title }}<span>{{ section.items.length }}</span></h3>
         <div class="overview-rows">
@@ -94,23 +143,6 @@ function openRow(row: (typeof rows.value)[number]): void {
             <Button type="button" variant="outline" @click="openRow(row)">{{ row.actionLabel }}<ArrowUpRight aria-hidden="true" /></Button>
           </article>
         </div>
-      </section>
-      <section class="overview-section" aria-label="Your boards">
-        <h3>Your boards<span>{{ boards.length }}</span></h3>
-        <div v-if="boards.length" class="overview-boards">
-          <article v-for="board in boards" :key="board.id" class="overview-board">
-            <p class="board-project"><FolderKanban aria-hidden="true" />{{ board.projectName }}</p>
-            <h4>{{ board.name }}</h4>
-            <p>{{ board.total ? `${board.done} of ${board.total} features done` : 'Ready for your first feature' }}<span v-if="board.attention"> · {{ board.attention }} need you</span><span v-else-if="board.working"> · {{ board.working }} active</span></p>
-            <progress v-if="board.total" :value="board.done" :max="board.total" :aria-label="`${board.name} feature progress`" />
-            <Button type="button" variant="outline" @click="$emit('select-board', board.id)">Open board<ArrowUpRight aria-hidden="true" /></Button>
-          </article>
-        </div>
-        <p v-else class="overview-empty">Use a board when you want to review a larger plan and track its features. Start in a project or create a new plan.</p>
-        <form v-if="projects.length" class="overview-project-picker" @submit.prevent="projectPath && $emit('select-project', projectPath)">
-          <label><span>Open a project board</span><select :value="projectPath" aria-label="Project for board" @change="selectedProject = ($event.target as HTMLSelectElement).value"><option v-for="project in projects" :key="project.path" :value="project.path">{{ project.name }}</option></select></label>
-          <Button type="submit" variant="outline" :disabled="!projectPath">Open project</Button>
-        </form>
       </section>
     </template>
   </div>
@@ -144,12 +176,15 @@ h4 { @apply m-0 text-sm font-medium leading-6 break-words; overflow-wrap: anywhe
 .work-row > button { @apply shrink-0; }
 .overview-boards { @apply grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-3; }
 .overview-board { @apply flex min-w-0 flex-col gap-2 rounded-xl border border-border p-4; }
+.overview-board h4 { @apply text-base font-semibold; }
+.board-statuses { @apply flex flex-wrap gap-x-3 gap-y-1 text-xs; }
 .board-project { @apply m-0 flex items-center gap-2 text-xs text-muted-foreground; overflow-wrap: anywhere; }
 .overview-board > p:not(.board-project) { @apply text-xs leading-5 text-muted-foreground; }
 progress { @apply h-1.5 w-full overflow-hidden rounded-full; accent-color: var(--foreground); }
 .overview-board > button { @apply mt-auto w-full; }
-.overview-project-picker { @apply mt-5 flex items-end gap-3; }
+.overview-project-picker { @apply mx-auto mt-5 flex max-w-5xl items-end gap-3; }
 .overview-project-picker label { @apply flex min-w-0 max-w-sm flex-1 flex-col gap-2 text-xs text-muted-foreground; }
+.overview-empty-actions { @apply mt-3 flex flex-wrap gap-2; }
 select { @apply h-10 w-full min-w-0 rounded-md border border-input bg-background px-3 text-sm text-foreground; }
 .overview-error { @apply mx-auto mt-4 max-w-5xl text-sm text-destructive; }
 svg { @apply size-4 shrink-0; }

@@ -12,6 +12,21 @@ user’s request; its saved rendering work has now been reviewed in the follow-u
 
 ## Current follow-up
 
+- Work overview now shows named board cards before individual Leads/results.
+  Project selection immediately filters boards, work rows and all summary counts;
+  All projects restores the full view. Saved-board folders remain selectable even
+  without recent chats. Empty projects show a named empty state and setup action;
+  New plan retains the selected folder without reusing another folder's draft.
+  Historical planning results stop inflating attention after all features finish,
+  while real questions/requests remain visible. Existing board-detail project
+  switching still navigates directly to that project's board or empty setup view.
+  All 267 unit tests, production build, Gitleaks, and full desktop/touch board
+  and linked-chat browser journeys pass. Checks cover multiple boards per folder,
+  immediate counts, empty/saved-board-only projects, no writes during filtering,
+  exact board links, and first-viewport cards/44px targets at 320/390px. Screenshots
+  inspected in both themes. Physical iPhone Safari remains unverified. Refresh
+  the browser for this frontend change; no service restart or board interruption.
+
 - Activity now groups native helpers under their feature Lead or ordinary parent
   chat, with collapsed progress and an Open Lead/parent return link. Separate
   feature Leads remain separate jobs. Known helpers no longer add independent

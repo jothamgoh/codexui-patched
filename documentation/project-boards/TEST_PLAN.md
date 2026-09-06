@@ -46,6 +46,12 @@ notification storage too. Retain explicit defense in every bridge fixture:
 
 ## Meaningful scenarios
 
+- Work overview: board cards precede Lead/result rows and fit the first mobile
+  viewport. Project selection immediately scopes every board, row and summary
+  count without writes. Cover two boards in one folder, a board-only project,
+  an empty project, All projects restoration, exact board navigation and a new
+  plan retaining the selected folder. Finished features must not leave a stale
+  planning-review count; real pending requests remain actionable.
 - Activity: two same-folder Leads retain separate groups; direct/nested native
   helpers collapse under their owner and do not add running/unread/completion
   entries. A same-named ordinary chat stays independent. Default catalog excludes

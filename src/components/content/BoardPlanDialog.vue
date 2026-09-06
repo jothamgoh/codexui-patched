@@ -56,7 +56,7 @@ const suggestedName = computed(() => projectBoardTitleFromBrief(draft.plan))
 const coordinator = computed(() => props.agents.find((agent) => agent.id === draft.coordinatorAgentId))
 function initializeDraft(): void {
   localError.value = ''
-  const key = `${props.boardId ?? ''}:${props.sourceThreadId ?? ''}`
+  const key = `${props.boardId ?? ''}:${props.sourceThreadId ?? ''}:${props.initialProjectPath ?? ''}`
   if (initializedFor.value === key && draft.plan) return
   initializedFor.value = key
   draft.name = ''

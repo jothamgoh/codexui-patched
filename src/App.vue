@@ -177,10 +177,10 @@
               <PopoverTrigger as-child><Button type="button" variant="ghost" size="icon-sm" title="Project board" aria-label="Project board actions"><SquareKanban /></Button></PopoverTrigger>
               <PopoverContent class="chat-board-menu" align="end" aria-label="Project board actions" @close-auto-focus="trackFeatureOpen && $event.preventDefault()">
                 <p>Project board</p>
-                <template v-if="!selectedChatBoard && sourceChatBoards.length">
+                <template v-if="sourceChatBoards.length">
                   <Button v-for="board in sourceChatBoards" :key="board.id" type="button" variant="ghost" @click="chatBoardMenuOpen = false; openProjectBoard(board.id)">Review {{ board.name }}</Button>
                 </template>
-                <Button v-else type="button" variant="ghost" @click="openChatProjectBoard">Open project board</Button>
+                <Button v-if="selectedChatBoard || !sourceChatBoards.length" type="button" variant="ghost" @click="openChatProjectBoard">Open project board</Button>
                 <Button v-if="selectedChatFeature" type="button" variant="ghost" @click="chatBoardMenuOpen = false; openLinkedFeature()">Open feature</Button>
                 <Button v-else-if="!selectedChatBoard" type="button" variant="ghost" @click="openTrackFeature">Track on board</Button>
                 <Button v-if="selectedChatBoard && (selectedChatFeature?.sourceThreadId || selectedChatBoard.sourceThreadId)" type="button" variant="ghost" @click="chatBoardMenuOpen = false; onSelectThread(selectedChatFeature?.sourceThreadId || selectedChatBoard.sourceThreadId)">Original chat</Button>
@@ -334,7 +334,7 @@
                   <button v-else-if="!selectedChatFeature" type="button" @click="onStartNewThreadFromToolbar">New chat</button>
                 </div>
               </section>
-              <section v-else-if="sourceChatBoard" class="board-chat-context source-board-context" aria-label="Linked board">
+              <section v-if="sourceChatBoard" class="board-chat-context source-board-context" aria-label="Linked board">
                 <div class="source-board-heading">
                   <SquareKanban aria-hidden="true" />
                   <label v-if="sourceChatBoards.length > 1"><span class="sr-only">Linked board</span><select v-model="sourceChatBoardId" aria-label="Linked board"><option v-for="board in sourceChatBoards" :key="board.id" :value="board.id">{{ board.name }}</option></select></label>
@@ -642,7 +642,7 @@ const selectedChatFeature = computed(() => projectBoardSnapshot.value.cards.find
 const selectedChatBoard = computed(() => projectBoardSnapshot.value.boards.find((board) => selectedChatFeature.value
   ? board.id === selectedChatFeature.value.boardId : Boolean(board.planningThreadId) && board.planningThreadId === selectedThreadId.value))
 const sourceChatBoards = computed(() => selectedThreadId.value
-  ? projectBoardSnapshot.value.boards.filter((board) => board.sourceThreadId === selectedThreadId.value) : [])
+  ? projectBoardSnapshot.value.boards.filter((board) => board.sourceThreadId === selectedThreadId.value && board.id !== selectedChatBoard.value?.id) : [])
 const sourceChatBoardId = ref('')
 watch([() => selectedThreadId.value, sourceChatBoards], ([threadId, boards], previous) => {
   if (threadId !== previous?.[0] || !boards.some((board) => board.id === sourceChatBoardId.value)) sourceChatBoardId.value = boards[0]?.id || ''

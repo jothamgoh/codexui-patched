@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict'
+import { randomUUID } from 'node:crypto'
 import { mkdir, mkdtemp, readFile, realpath, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
@@ -273,6 +274,38 @@ try {
       await tracked.getByText('Planning is read-only. Finish or stop this run to switch to work.', { exact: true }).waitFor()
       assert.equal(await tracked.getByLabel('Lead reply mode', { exact: true }).count(), 0, 'A running plan does not pretend its active turn can change mode')
       await page.screenshot({ path: join(output, `active-chat-${label}.png`), fullPage: true })
+
+      // A managed Lead may plan another board without losing its current run
+      // controls. The new review destination appears alongside tracked work.
+      const leadPlannedBoardId = randomUUID()
+      await store.saveDraftPlan({ boardId: leadPlannedBoardId, projectPath: project, sourceThreadId: leadId, expectedVersion: (await store.read()).version,
+        name: 'Lead follow-up plan', summary: 'Review this separate initiative before starting it.',
+        features: [{ id: randomUUID(), title: 'Follow-up feature', description: 'A separate increment.', acceptanceCriteria: 'Its result is reviewable.', agentId: 'builtin-lead', verificationPolicy: 'self', dependsOn: [] }] })
+      const leadPlanSnapshot = await readSnapshot()
+      await notify('codexui/projectBoards/updated', { ...leadPlanSnapshot,
+        boards: leadPlanSnapshot.boards.map((entry) => entry.id === board.id ? { ...entry, sourceThreadId: leadId } : entry) })
+      const leadLinked = page.getByRole('region', { name: 'Linked board', exact: true })
+      await leadLinked.getByText('Lead follow-up plan', { exact: true }).waitFor()
+      assert.equal(await leadLinked.getByRole('combobox', { name: 'Linked board', exact: true }).count(), 0, 'The managed board is excluded even when it refers to this chat as its source')
+      assert.equal(await tracked.count(), 1, 'A linked plan must retain the existing managed Lead context')
+      assert.equal(await page.getByRole('button', { name: 'Stop', exact: true }).isEnabled(), true)
+      assert.equal(await leadLinked.evaluate((element) => element.scrollWidth <= element.clientWidth), true)
+      await page.screenshot({ path: join(output, `lead-linked-board-${label}.png`), fullPage: true })
+      const mutationsBeforeLeadReview = mutations.length
+      await leadLinked.getByRole('button', { name: 'Review board', exact: true }).click()
+      await page.waitForURL(`**/#/board/${leadPlannedBoardId}`)
+      await page.getByTestId('project-board').getByText('Follow-up feature', { exact: true }).waitFor()
+      await page.goBack()
+      await tracked.getByRole('button', { name: 'View board', exact: true }).waitFor()
+      assert.equal(await page.getByRole('button', { name: 'Stop', exact: true }).isEnabled(), true)
+      await page.getByRole('button', { name: 'Project board actions', exact: true }).click()
+      await page.getByRole('button', { name: 'Review Lead follow-up plan', exact: true }).waitFor()
+      await page.getByRole('button', { name: 'Open feature', exact: true }).waitFor()
+      await page.keyboard.press('Escape')
+      assert.equal(mutations.length, mutationsBeforeLeadReview, 'Reviewing a Lead-created board does not start or stop either board')
+      await store.deleteBoard(leadPlannedBoardId)
+      await publish()
+      await leadLinked.waitFor({ state: 'detached' })
       await openOriginal()
       await page.waitForURL(`**/#/thread/${sourceId}`)
       const ordinaryRunning = otherThreads[0]

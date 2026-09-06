@@ -190,6 +190,10 @@
 
           <div class="board-detail-body">
             <BoardRunSettings :run="selectedRuns[0]" />
+            <section v-if="selectedCard.type === 'feature'" class="feature-model-control" aria-label="Feature model settings">
+              <Button type="button" variant="outline" :disabled="cardIsLocked(selectedCard) || isMutating" @click="openFeatureModelSettings">Model &amp; reasoning</Button>
+              <p>{{ selectedRunIsActive ? 'Stop the run before changing model or reasoning. Continue uses your saved settings in the same Lead chat.' : selectedOpenQuestion ? 'Answer the open question before changing settings.' : 'Uses chat defaults unless you choose an override. Changes apply on the next start or Continue.' }}</p>
+            </section>
             <p v-if="error" class="boards-alert" role="alert">{{ error }}</p>
             <div v-if="canStartSelectedCard || selectedRunIsActive || (!selectedHasResult && selectedCard.threadId)" class="board-detail-actions">
               <Button
@@ -322,6 +326,7 @@
           <header><div><DialogTitle>{{ editingCardId ? 'Edit feature' : 'New feature' }}</DialogTitle><p>Give the Lead a clear brief. It will make the task plan.</p></div><Button type="button" variant="ghost" size="icon-sm" aria-label="Close" @click="featureDialogOpen = false"><X /></Button></header>
           <form class="board-form" data-testid="new-feature-form" @submit.prevent="createFeature">
             <p v-if="error" class="boards-alert" role="alert">{{ error }}</p>
+            <BoardExecutionSettings v-if="featureModelSettingsFirst" v-model:model="featureDraft.model" v-model:reasoning-effort="featureDraft.reasoningEffort" :source-thread-id="snapshot.cards.find(card => card.id === editingCardId)?.sourceThreadId || activeBoard?.sourceThreadId" :inherited-model="agentFor(featureDraft.assignedAgentId)?.model" :inherited-effort="agentFor(featureDraft.assignedAgentId)?.reasoningEffort" />
             <label><span>Brief</span><DictationField v-model="featureDraft.description" label="Brief" v-bind="voiceField('feature-brief')" multiline rows="4" maxlength="20000" placeholder="What should be built, and why?" /></label>
             <label><span>{{ editingCardId ? 'Title' : 'Title (optional)' }}</span><DictationField v-model="featureDraft.title" label="Title" v-bind="voiceField('feature-title')" :required="!!editingCardId" maxlength="240" :placeholder="suggestedFeatureTitle || 'From your brief'" /></label>
             <p v-if="!editingCardId && !featureDraft.title.trim()" class="detail-muted break-words" data-testid="feature-title-preview">{{ suggestedFeatureTitle ? `Title from your brief: ${suggestedFeatureTitle}` : 'Leave the title blank to use a short title from your brief.' }}</p>
@@ -331,7 +336,7 @@
               <label><span>Verification</span><select v-model="featureDraft.verificationPolicy"><option value="none">None</option><option value="self">Self-check</option><option value="independent">Independent verification</option><option value="batch">Review later</option></select></label>
               <label><span>Lead for this feature</span><select v-model="featureDraft.assignedAgentId" aria-label="Lead for this feature"><option v-if="draftLeadUnavailable" :value="featureDraft.assignedAgentId" disabled>{{ agentFor(featureDraft.assignedAgentId)?.name ?? 'Assigned agent' }} · not on this board</option><option v-for="agent in boardAgents" :key="agent.id" :value="agent.id">{{ agent.name }}</option></select></label>
             </div>
-            <BoardExecutionSettings v-model:model="featureDraft.model" v-model:reasoning-effort="featureDraft.reasoningEffort" :source-thread-id="snapshot.cards.find(card => card.id === editingCardId)?.sourceThreadId || activeBoard?.sourceThreadId" :inherited-model="agentFor(featureDraft.assignedAgentId)?.model" :inherited-effort="agentFor(featureDraft.assignedAgentId)?.reasoningEffort" />
+            <BoardExecutionSettings v-if="!featureModelSettingsFirst" v-model:model="featureDraft.model" v-model:reasoning-effort="featureDraft.reasoningEffort" :source-thread-id="snapshot.cards.find(card => card.id === editingCardId)?.sourceThreadId || activeBoard?.sourceThreadId" :inherited-model="agentFor(featureDraft.assignedAgentId)?.model" :inherited-effort="agentFor(featureDraft.assignedAgentId)?.reasoningEffort" />
             <fieldset v-if="dependencyCandidates.length" class="dependency-picker"><legend>Depends on</legend><p class="detail-muted">Shared groundwork belongs in one feature. Select anything this feature needs first.</p><label v-for="feature in dependencyCandidates" :key="feature.id" class="checkbox-row"><input v-model="featureDraft.dependencyIds" type="checkbox" :value="feature.id" /><span>{{ feature.title }} · {{ statusLabel(feature.status) }}</span></label></fieldset>
             <p v-if="draftLeadUnavailable" class="boards-alert">Choose another Lead or enable the assigned agent in the Agent library.</p>
             <p class="verification-help">{{ verificationHelp[featureDraft.verificationPolicy] }}</p>
@@ -729,7 +734,15 @@ function createBoard(): void {
   void submitMutation(() => props.actions.createBoard({ projectPath: project.path, projectName: project.name, name: boardName.value.trim(), isDefault: boardIsDefault.value }), () => { boardDialogOpen.value = false })
 }
 
+const featureModelSettingsFirst = ref(false)
+function openFeatureModelSettings(): void {
+  if (!selectedCard.value || cardIsLocked(selectedCard.value)) return
+  openEditSelectedCard()
+  featureModelSettingsFirst.value = true
+}
+
 function openFeatureEditor(): void {
+  featureModelSettingsFirst.value = false
   editingCardId.value = ''
   featureDraft.title = ''
   featureDraft.description = ''
@@ -745,6 +758,7 @@ function openFeatureEditor(): void {
 
 function openEditSelectedCard(): void {
   if (!selectedCard.value) return
+  featureModelSettingsFirst.value = false
   editingCardId.value = selectedCard.value.id
   featureDraft.title = selectedCard.value.title
   featureDraft.description = selectedCard.value.description
@@ -1068,6 +1082,8 @@ function formatTime(value: string): string { const date = new Date(value); retur
 .board-detail-header svg, .board-dialog header svg { @apply h-4 w-4; }
 .board-detail-body { @apply min-h-0 overscroll-contain flex-1 space-y-5 overflow-y-auto px-5 py-4; }
 .board-detail-actions { @apply flex flex-wrap items-end gap-2; }
+.feature-model-control { @apply flex flex-wrap items-center gap-2; }
+.feature-model-control p { @apply m-0 min-w-0 flex-1 text-xs leading-5; color: var(--text-secondary); }
 .detail-status-select { @apply ml-auto flex flex-col gap-1; }
 .detail-status-select select { @apply h-9; }
 .needs-you-card { @apply rounded-xl border p-4; color: var(--text-primary); border-color: color-mix(in srgb, var(--border-strong) 60%, #d97706); background: color-mix(in srgb, var(--surface-elevated) 92%, #d97706); }

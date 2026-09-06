@@ -5,6 +5,27 @@ description: "Use when implementing or changing user-visible behavior/UI in this
 
 # Codex App Parity Skill
 
+## Findings: Board control discoverability and mobile wrapping (2026-09-06)
+
+- Native buttons generally keep labels on one line and use minimum target heights;
+  a mobile extension allowing wrapped labels must also remove fixed heights. Four
+  flexing board-option actions squeezed text into narrow columns while retaining
+  a fixed button height. Use two columns and content-sized rows inside options,
+  with at least 44px touch targets. Check text height as well as horizontal overflow.
+- Feature model/reasoning controls already exist in the shared execution picker.
+  A direct action near the recorded run settings can open that picker first in
+  the existing editor. Preserve source inheritance and exact-run Stop/Continue;
+  running work and open questions remain locked against workflow edits.
+- Board deletion has an existing metadata API. Expose it under Board options with
+  the named destination and feature count, require explicit confirmation, and
+  disable confirmation during active work/delivery. Files, native chats and agent
+  profiles remain; return to Work overview after success.
+- The web UI has no ordinary-chat native Plan toggle. Its managed Lead has a
+  next-message Plan only/Continue work selector, and a dedicated board-planning
+  chat always plans cards. Show the selector outside rare settings, explain active
+  planning, and expose Review cards/Back to original chat for dedicated planners.
+  Changing a selector must neither send a message nor clear the composer draft.
+
 ## Findings: Structured asynchronous question messages (2026-09-06)
 
 - Native app-initial-caa927532ffb.js maps agentMessage delivery=async and

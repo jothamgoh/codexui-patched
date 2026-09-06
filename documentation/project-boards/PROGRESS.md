@@ -12,6 +12,21 @@ user’s request; its saved rendering work has now been reviewed in the follow-u
 
 ## Current follow-up
 
+- Board controls follow-up: mobile option actions use two columns and grow to
+  fit wrapped labels. Feature details expose Model & reasoning directly, opening
+  the existing model picker first while retaining source inheritance and active
+  run/question edit guards. Board options now includes confirmed deletion of
+  board metadata; project files, native chats and agent profiles remain.
+  Lead Plan only/Continue work controls are visible and reversible for the next
+  message, and dedicated planning chats explain their purpose and link back to
+  the original chat. Frontend-only changes require a browser refresh, not another
+  interruption of running Leads. All 253 unit tests, production build, secret scan,
+  and the full desktop/touch-mobile board and chat journeys pass. Checks cover
+  button text bounds at 320/390/640px, saved model overrides/reset, active-work
+  guards, isolated board deletion, and reversible reply modes without sending or
+  losing drafts. The live board's mobile options and deletion guard were also
+  inspected without changing its work. Physical iPhone Safari remains unverified.
+
 - Model and question follow-up implemented and validated: omitted model/reasoning fields independently inherit source-chat
   metadata, explicit card/profile settings survive, and blank specialists inherit
   their Lead. Both planning paths accept explicit overrides. Native questions

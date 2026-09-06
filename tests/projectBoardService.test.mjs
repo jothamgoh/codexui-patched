@@ -23,7 +23,10 @@ const storeModuleUrl = await compileTypeScriptModule(storeSourceUrl, [["from '..
 const { ProjectBoardStore } = await import(storeModuleUrl)
 const serviceSourceUrl = new URL('../src/server/projectBoardService.ts', import.meta.url)
 const notificationModuleUrl = await compileTypeScriptModule(new URL('../src/utils/projectBoardNotifications.ts', import.meta.url))
+const runtimeModuleUrl = await compileTypeScriptModule(new URL('../src/server/runtimeConfig.ts', import.meta.url))
+const modelsModuleUrl = await compileTypeScriptModule(new URL('../src/server/projectBoardModels.ts', import.meta.url), [["from './runtimeConfig'", `from '${runtimeModuleUrl}'`]])
 const serviceModuleUrl = await compileTypeScriptModule(serviceSourceUrl, [
+  ["from './projectBoardModels'", `from '${modelsModuleUrl}'`],
   ["from '../utils/projectBoardNotifications'", `from '${notificationModuleUrl}'`],
   ["from './projectBoardStore'", `from '${storeModuleUrl}'`],
 ])
@@ -47,6 +50,7 @@ function createFakeAppServer() {
   let nextTurn = 1
   let nextThread = 1
   const latestTurns = new Map()
+  const settingsByThread = new Map()
   return {
     calls,
     notifications,
@@ -57,12 +61,14 @@ function createFakeAppServer() {
       if (method === 'turn/start') {
         const turn = { id: `lead-turn-${String(nextTurn++)}`, status: 'inProgress' }
         latestTurns.set(params.threadId, turn)
+        settingsByThread.set(params.threadId, { model: params.model, reasoningEffort: params.effort })
         return { turn }
       }
       if (method === 'turn/interrupt') {
         const turn = latestTurns.get(params.threadId)
         if (turn?.id === params.turnId) turn.status = 'interrupted'
       }
+      if (method === 'thread/read') return { thread: { id: params.threadId, ...settingsByThread.get(params.threadId) } }
       if (method === 'thread/list') return { data: [], nextCursor: null }
       if (method === 'thread/turns/list') return { data: latestTurns.has(params.threadId) ? [latestTurns.get(params.threadId)] : [] }
       return {}
@@ -199,6 +205,9 @@ test('feature and planner runs inherit source settings while card and custom-pro
     const turn = await waitFor(() => appServer.calls.filter((call) => call.method === 'turn/start')[count], 'No inherited feature turn')
     assert.deepEqual(requested.at(-1), { ...overrides, sourceThreadId: 'board-source' })
     assert.deepEqual([turn.params.model, turn.params.effort], expected)
+    await waitFor(() => appServer.notifications.some((event) => event.params.runs?.some((run) => run.id === started.runs[0].id && run.observedModel)), 'No native settings confirmation')
+    const confirmed = (await store.read()).runs.find((run) => run.id === started.runs[0].id)
+    assert.deepEqual([confirmed.observedModel, confirmed.observedReasoningEffort], expected)
     assert.deepEqual([started.runs[0].requestedModel, started.runs[0].requestedReasoningEffort], expected)
     const context = JSON.parse((await service.handleDynamicToolCall(toolCall(turn.params.threadId, 'read_context'))).contentItems[0].text)
     assert.deepEqual(context.executionSettings, { model: expected[0], reasoningEffort: expected[1] })
@@ -220,6 +229,19 @@ test('feature and planner runs inherit source settings while card and custom-pro
   assert.deepEqual(requested.at(-1), { model: '', reasoningEffort: '', sourceThreadId: 'card-source' })
   assert.deepEqual([started.runs[0].requestedModel, started.runs[0].requestedReasoningEffort], ['card-source-model', 'xhigh'])
   await service.stopFeature(linked.id, { expectedRunId: started.runs[0].id })
+})
+
+test('run confirmation reads native settings separately from the requested defaults', async (t) => {
+  const { appServer, feature, service, store } = await createHarness(t, 'full-access')
+  const rpc = appServer.rpc.bind(appServer)
+  appServer.rpc = async (method, params) => method === 'thread/read'
+    ? { thread: { id: params.threadId, model: 'gpt-6-astra', reasoningEffort: 'xhigh' } } : rpc(method, params)
+  const started = await service.startFeature(feature.id)
+  await waitFor(() => appServer.notifications.some((event) => event.params.runs?.some((run) => run.id === started.runs[0].id && run.observedModel)), 'No confirmed native settings')
+  const run = (await store.read()).runs.find((entry) => entry.id === started.runs[0].id)
+  assert.equal(run.requestedModel, '')
+  assert.deepEqual([run.observedModel, run.observedReasoningEffort], ['gpt-6-astra', 'xhigh'])
+  await service.stopFeature(feature.id, { expectedRunId: run.id })
 })
 
 test('Stop interrupts only the current run, preserves handoffs, and permits deleting its unanswered questions', async (t) => {

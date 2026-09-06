@@ -353,6 +353,8 @@ function normalizeRun(value: unknown): ProjectBoardRun | null {
     threadId: readString(record.threadId, 200),
     requestedModel: record.requestedModel === undefined ? undefined : readString(record.requestedModel, 200),
     requestedReasoningEffort: REASONING_EFFORTS.has(requestedReasoningEffort) ? requestedReasoningEffort : undefined,
+    observedModel: record.observedModel === undefined ? undefined : readString(record.observedModel, 200),
+    observedReasoningEffort: REASONING_EFFORTS.has(record.observedReasoningEffort as ReasoningEffort) ? record.observedReasoningEffort as ReasoningEffort : undefined,
     startedAtIso: readString(record.startedAtIso, 100),
     finishedAtIso: readString(record.finishedAtIso, 100),
     summary: readString(record.summary),
@@ -1371,6 +1373,12 @@ export class ProjectBoardStore {
         cards: current.cards.map((card) => card.id === featureId ? cardWithStatus({ ...card, planStatus: ready ? 'ready' : 'none' }, ready ? 'backlog' : 'blocked', this.now(), ready ? 'Plan ready. Review the tasks, then Start work.' : 'No task plan was saved. Continue planning.') : card),
       }
     })
+  }
+
+  confirmRunSettings(runId: string, threadId: string, settings: { model: string; reasoningEffort: ReasoningEffort }): Promise<ProjectBoardSnapshot> {
+    return this.mutate((current) => ({ ...current, runs: current.runs.map((run) =>
+      run.id === runId && run.threadId === threadId && run.status === 'running'
+        ? { ...run, observedModel: settings.model, observedReasoningEffort: settings.reasoningEffort } : run) }))
   }
 
   setRunThread(runId: string, threadId: string, toolSchemaVersion?: number): Promise<ProjectBoardSnapshot> {

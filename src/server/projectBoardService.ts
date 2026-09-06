@@ -14,6 +14,7 @@ import type {
 } from '../types/projectBoards'
 import type { ReasoningEffort } from '../types/codex'
 import { ProjectBoardStore, projectBoardFeatureFingerprint, readProjectBoardExecutionAccess } from './projectBoardStore'
+import { readProjectBoardThreadSettings } from './projectBoardModels'
 
 type RpcClient = {
   rpc: (method: string, params: unknown) => Promise<unknown>
@@ -1134,6 +1135,14 @@ export class ProjectBoardService {
       if (!turnId || (context.turnId && context.turnId !== turnId)) throw new Error('Codex did not return the expected Lead turn.')
       context.turnId = turnId
       context.resolveTurnReady?.()
+      try {
+        const observed = await readProjectBoardThreadSettings((method, params) => this.appServer.rpc(method, params), threadId)
+        if (observed.model && observed.reasoningEffort && this.activeRunsById.get(run.id) === context && !context.finishing && !context.stopping) {
+          this.publish(await this.store.confirmRunSettings(run.id, threadId, { model: observed.model, reasoningEffort: observed.reasoningEffort }))
+        }
+      } catch {
+        // Older runtimes may omit metadata. Keep the launch request visible without claiming confirmation.
+      }
     } catch (error) {
       context.resolveTurnReady?.()
       if (this.activeRunsById.get(context.runId) !== context || context.finishing) return

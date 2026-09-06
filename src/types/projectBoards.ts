@@ -126,6 +126,9 @@ export type ProjectBoardRun = {
   // Launch request settings, not independently observed runtime telemetry. Absent on legacy runs.
   requestedModel?: string
   requestedReasoningEffort?: ReasoningEffort
+  // Read back from native thread metadata after this turn starts.
+  observedModel?: string
+  observedReasoningEffort?: ReasoningEffort
   startedAtIso: string
   finishedAtIso: string
   summary: string

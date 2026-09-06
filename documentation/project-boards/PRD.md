@@ -168,6 +168,14 @@ unexpected interruptions notify promptly; explicit user stops stay in history
 without another device alert. A board is an
 ongoing container, not a single completable job.
 
+Activity counts user-facing Leads and ordinary chats, grouping native helper
+descendants in a collapsed list beneath the owning chat. Resolve ownership from
+native source/parent IDs, never titles or folders. Separate feature Leads remain
+separate even in one folder. A waiting Lead keeps its helper disclosure in Needs
+you; a helper's blocking request opens that exact chat. Routine helper completions
+do not create independent unread activity. Helper chats identify their owner and
+offer a return link for coordination. This changes presentation, not orchestration.
+
 Native subagents share the Lead thread sandbox. Persona labels are guidance,
 not separate security boundaries. Boards default to Full access for execution:
 files, commands, and network access without Codex approval prompts. This is a

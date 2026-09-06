@@ -46,6 +46,14 @@ notification storage too. Retain explicit defense in every bridge fixture:
 
 ## Meaningful scenarios
 
+- Activity: two same-folder Leads retain separate groups; direct/nested native
+  helpers collapse under their owner and do not add running/unread/completion
+  entries. A same-named ordinary chat stays independent. Default catalog excludes
+  helpers; lazy summary lookup and direct-child reload recover ancestry. Newer
+  live status wins over a delayed list, and supplemental parents never replace
+  fresh catalog unread/results. Failed lookup preserves activity and offers Retry.
+  Pending Lead/helper requests remain actionable with the exact answer delivery;
+  verify expanded groups, labels, return links, and 44px targets on desktop/touch.
 - Omitted model/reasoning fields independently inherit source-chat metadata;
   explicit card/profile choices survive. Metadata reads exclude turns, wrong
   source IDs fail, and unsupported reasoning stays visible. Starter profiles

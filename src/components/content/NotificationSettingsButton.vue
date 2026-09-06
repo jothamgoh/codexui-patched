@@ -96,15 +96,19 @@
       </div>
 
       <div v-if="activeView === 'activity'" class="notification-activity" role="tabpanel">
+        <p v-if="helpersLoading" class="px-3 py-2 text-xs text-muted-foreground" role="status">Loading helper activity…</p>
+        <div v-else-if="helpersError" class="flex items-center gap-2 px-3 text-xs" role="status">
+          <span class="min-w-0 flex-1">{{ helpersError }}</span>
+          <button type="button" class="min-h-11 px-2 underline" @click="emit('refreshHelpers')">Retry</button>
+        </div>
         <div v-if="hasVisibleActivity" class="notification-sections">
           <section v-if="needsYouCount > 0" class="notification-section">
             <div class="notification-section-header">
               <span>Needs you</span>
               <span class="notification-section-count">{{ needsYouCount }}</span>
             </div>
+            <div v-for="item in boardAttention" :key="`board:${item.questionId}`">
             <button
-              v-for="item in boardAttention"
-              :key="`board:${item.questionId}`"
               class="notification-row"
               type="button"
               @click="openBoardQuestion(item)"
@@ -122,9 +126,10 @@
                 <span v-if="item.prompt" class="notification-row-preview">{{ item.prompt }}</span>
               </span>
             </button>
+            <ThreadHelpers :helpers="threadHelpers.helpersByOwnerId[boardActivity?.find((work) => work.boardId === item.boardId && work.featureId === item.featureId)?.threadId || ''] || []" :waiting-thread-ids="waitingThreadIds" @select-thread="openThread" />
+            </div>
+            <div v-for="item in requestAttention" :key="`request:${item.threadId}`">
             <button
-              v-for="item in requestAttention"
-              :key="`request:${item.threadId}`"
               class="notification-row"
               type="button"
               @click="openThread(item.threadId)"
@@ -142,6 +147,8 @@
                 <span class="notification-row-preview">Open the chat to {{ item.label === 'Approval needed' ? 'review and approve or decline.' : 'answer and continue.' }}</span>
               </span>
             </button>
+            <ThreadHelpers :helpers="threadHelpers.helpersByOwnerId[item.threadId] || []" :waiting-thread-ids="waitingThreadIds" @select-thread="openThread" />
+            </div>
           </section>
 
           <template v-if="activityFilter === 'all'">
@@ -151,7 +158,8 @@
                 <span>Board work</span>
                 <span class="notification-section-count">{{ boardWorkActivity.length }}</span>
               </div>
-              <div v-for="item in boardWorkActivity" :key="`board-work:${item.boardId}:${item.featureId}`" class="notification-board-work-row">
+              <div v-for="item in boardWorkActivity" :key="`board-work:${item.boardId}:${item.featureId}`">
+                <div class="notification-board-work-row">
                 <button
                   class="notification-row notification-board-main"
                   type="button"
@@ -175,6 +183,8 @@
                 <button class="notification-board-open" type="button" :aria-label="`View board for ${item.title}`" @click="openActivityBoard(item)">
                   <SquareKanban /><span>Board</span>
                 </button>
+                </div>
+                <ThreadHelpers :helpers="threadHelpers.helpersByOwnerId[item.threadId] || []" :waiting-thread-ids="waitingThreadIds" @select-thread="openThread" />
               </div>
             </section>
 
@@ -183,9 +193,8 @@
                 <span>Chats running</span>
                 <span class="notification-section-count">{{ runningThreads.length }}</span>
               </div>
+              <div v-for="thread in runningThreads" :key="`running:${thread.id}`">
               <button
-                v-for="thread in runningThreads"
-                :key="`running:${thread.id}`"
                 class="notification-row"
                 type="button"
                 @click="openThread(thread.id)"
@@ -205,6 +214,8 @@
                   </span>
                 </span>
               </button>
+              <ThreadHelpers :helpers="threadHelpers.helpersByOwnerId[thread.id] || []" :waiting-thread-ids="waitingThreadIds" @select-thread="openThread" />
+              </div>
             </section>
 
             <section v-if="unreadThreads.length > 0" class="notification-section">
@@ -499,6 +510,8 @@ import { compactNotificationText } from '../../utils/notificationText'
 import { formatCompactRelativeTime } from '../../utils/relativeTime'
 import { openProjectBoardDeepLink, projectBoardNotificationDeepLink, type ProjectBoardNotification } from '../../utils/projectBoardNotifications'
 import type { ProjectBoardActivity } from '../../utils/projectBoardActivity'
+import { collectThreadHelpers, type ThreadSourceMap } from '../../utils/threadHelpers'
+import ThreadHelpers from './ThreadHelpers.vue'
 
 type RunningActivityItem = {
   id: string
@@ -537,6 +550,9 @@ const props = defineProps<{
   boardThreadIds?: string[]
   boardActivityTitles?: Record<string, string>
   boardActivity?: ProjectBoardActivity[]
+  threadSources?: ThreadSourceMap
+  helpersLoading?: boolean
+  helpersError?: string
   pendingRequests?: UiServerRequest[]
   boardAttention: Array<{
     questionId: string
@@ -550,6 +566,7 @@ const props = defineProps<{
 
 const emit = defineEmits<{
   (event: 'selectThread', threadId: string): void
+  (event: 'refreshHelpers'): void
   (event: 'selectBoardQuestion', payload: { boardId: string; featureId: string; questionId: string }): void
 }>()
 
@@ -589,9 +606,10 @@ const {
   testWebPushNotification,
 } = useWebPushNotifications()
 
+const threadHelpers = computed(() => collectThreadHelpers(props.threads, props.threadSources ?? {}, props.boardThreadIds ?? []))
 const activityThreads = computed(() => {
   const excluded = new Set([...(props.boardThreadIds ?? []), ...(props.boardActivity ?? []).map((item) => item.threadId).filter(Boolean)])
-  return props.threads.filter((thread) => !excluded.has(thread.id))
+  return props.threads.filter((thread) => !excluded.has(thread.id) && !threadHelpers.value.childIds.has(thread.id))
 })
 const requestAttention = computed(() => {
   const seen = new Set<string>()
@@ -602,11 +620,11 @@ const requestAttention = computed(() => {
     seen.add(request.threadId)
     return true
   }).map((request) => {
-    const board = props.boardActivity?.find((item) => item.threadId === request.threadId)
+    const board = props.boardActivity?.find((item) => item.threadId === request.threadId || item.threadId === threadHelpers.value.ownerByChildId[request.threadId])
     const thread = props.threads.find((item) => item.id === request.threadId)
     return {
       threadId: request.threadId,
-      title: board?.title || (thread ? threadTitle(thread) : 'Chat needs your input'),
+      title: threadHelpers.value.childIds.has(request.threadId) ? (thread ? threadTitle(thread) : 'Helper needs your input') : board?.title || (thread ? threadTitle(thread) : 'Chat needs your input'),
       label: request.method.endsWith('/requestApproval') ? 'Approval needed' : 'Answer needed',
       receivedAtIso: request.receivedAtIso,
       board,
@@ -614,15 +632,16 @@ const requestAttention = computed(() => {
   })
 })
 const waitingThreadIds = computed(() => new Set(requestAttention.value.map((item) => item.threadId)))
+const hasWorkingHelpers = (threadId: string) => threadHelpers.value.helpersByOwnerId[threadId]?.some((helper) => helper.inProgress && !waitingThreadIds.value.has(helper.id)) ?? false
 const needsYouCount = computed(() => props.boardAttention.length + requestAttention.value.length)
 const boardWorkActivity = computed(() => (props.boardActivity ?? []).filter((item) =>
-  ['running', 'paused', 'blocked', 'review', 'needs_input'].includes(item.status) &&
+  (['running', 'paused', 'blocked', 'review', 'needs_input'].includes(item.status) || hasWorkingHelpers(item.threadId)) &&
   (item.threadId || item.status === 'running') && !waitingThreadIds.value.has(item.threadId) &&
   !props.boardAttention.some((question) => question.boardId === item.boardId && question.featureId === item.featureId),
 ).sort((left, right) => Number(right.status === 'running') - Number(left.status === 'running') || Date.parse(right.updatedAtIso) - Date.parse(left.updatedAtIso)))
-const runningThreads = computed(() => activityThreads.value.filter((thread) => thread.inProgress && !waitingThreadIds.value.has(thread.id)))
+const runningThreads = computed(() => activityThreads.value.filter((thread) => (thread.inProgress || hasWorkingHelpers(thread.id)) && !waitingThreadIds.value.has(thread.id)))
 const runningActivity = computed<RunningActivityItem[]>(() => [
-  ...(props.boardActivity ?? []).filter((item) => item.status === 'running' && !waitingThreadIds.value.has(item.threadId)).map((item) => ({
+  ...(props.boardActivity ?? []).filter((item) => (item.status === 'running' || hasWorkingHelpers(item.threadId)) && !waitingThreadIds.value.has(item.threadId)).map((item) => ({
     id: `board:${item.boardId}:${item.featureId}`,
     threadId: item.threadId,
     title: item.title,
@@ -637,9 +656,10 @@ const runningActivity = computed<RunningActivityItem[]>(() => [
   })),
 ].sort((left, right) => Date.parse(right.updatedAtIso) - Date.parse(left.updatedAtIso)))
 const unreadThreads = computed(() =>
-  activityThreads.value.filter((thread) => isThreadUnread(thread) && !thread.inProgress && !waitingThreadIds.value.has(thread.id)),
+  activityThreads.value.filter((thread) => isThreadUnread(thread) && !thread.inProgress && !hasWorkingHelpers(thread.id) && !waitingThreadIds.value.has(thread.id)),
 )
 const visibleHistory = computed(() => history.value.filter((item) =>
+  !threadHelpers.value.childIds.has(item.threadId) &&
   !(props.boardThreadIds ?? []).includes(item.threadId) &&
   !props.boardAttention.some((attention) => attention.questionId === item.projectBoard?.questionId) &&
   !(item.projectBoard?.kind === 'native_request' && props.pendingRequests?.some((request) => request.id === item.projectBoard?.requestId && request.threadId === item.projectBoard?.threadId)),
@@ -715,7 +735,7 @@ const unreadActivity = computed<RecentActivityItem[]>(() => {
     })
   }
   for (const thread of activityThreads.value) {
-    if (!isThreadUnread(thread) || thread.inProgress || waitingThreadIds.value.has(thread.id)) continue
+    if (!isThreadUnread(thread) || thread.inProgress || hasWorkingHelpers(thread.id) || waitingThreadIds.value.has(thread.id)) continue
     candidates.push({
       id: `thread:${thread.id}`,
       threadId: thread.id,
@@ -837,6 +857,7 @@ const threadActivitySignature = computed(() =>
 
 watch(isOpen, (open) => {
   if (!open) return
+  emit('refreshHelpers')
   activeView.value = 'activity'
   activityFilter.value = 'all'
   recentLimit.value = DEFAULT_RECENT_LIMIT
@@ -1001,6 +1022,7 @@ function boardNameFor(boardId: string): string {
 }
 
 function boardWorkStatusLabel(item: ProjectBoardActivity): string {
+  if (item.status !== 'running' && hasWorkingHelpers(item.threadId)) return 'Helpers working'
   if (item.status === 'running' && item.runKind === 'follow_up') return 'Conversation'
   return ({ running: 'Working', paused: 'Paused', blocked: 'Blocked', review: 'Needs review', needs_input: 'Waiting for you', done: 'Complete', backlog: 'Not started' })[item.status]
 }

@@ -12,6 +12,22 @@ user’s request; its saved rendering work has now been reviewed in the follow-u
 
 ## Current follow-up
 
+- Activity now groups native helpers under their feature Lead or ordinary parent
+  chat, with collapsed progress and an Open Lead/parent return link. Separate
+  feature Leads remain separate jobs. Known helpers no longer add independent
+  running/unread counts or routine completion rows; native blocking requests keep
+  their exact Needs you destination, including a waiting Lead's helper list.
+  Ownership survives sparse hydration, nested direct links and reload. Descendant
+  metadata loads on Activity open without transcripts or new polling; lookup
+  failures retain existing activity and offer Retry. A bounded recent-helper
+  lookup also discovers running children of idle ordinary chats. Async question
+  forms remain in their originating chats, with no new alert channel in this work.
+  All 267 unit tests, production build and Gitleaks pass. The full desktop/touch
+  board journey passes with grouped activity, exact replies, reload, and 320/390px
+  touch targets/overflow; screenshots inspected. Physical iPhone Safari remains
+  unverified. This frontend change needs a browser refresh, not a service restart;
+  existing board runs were left active.
+
 - Completed Lead chats accept ordinary follow-up messages. A tracked
   Conversation uses the same chat/model while preserving Done, the original
   result, and the board execution slot for other work. Requested changes reopen

@@ -202,7 +202,11 @@
               :board-thread-ids="boardManagedThreadIds"
               :board-activity-titles="boardActivityTitles"
               :board-activity="boardActivity"
+              :thread-sources="threadSourceById"
+              :helpers-loading="helperActivity.loading.value"
+              :helpers-error="helperActivity.error.value"
               :pending-requests="pendingServerRequests"
+              @refresh-helpers="refreshHelperActivity"
               @select-thread="onSelectThread"
               @select-board-question="openProjectBoardQuestion"
             />
@@ -303,6 +307,13 @@
           </template>
           <template v-else>
             <div class="content-grid">
+              <section v-if="selectedHelperParentId" class="board-chat-context helper-chat-context" aria-label="Helper chat">
+                <div class="board-chat-links">
+                  <span>{{ selectedHelperBoard ? 'Managed by the Lead' : 'Managed by the parent chat' }}<template v-if="selectedHelperBoard"> · {{ selectedHelperBoard.title }}</template></span>
+                  <button type="button" @click="onSelectThread(selectedHelperParentId)">{{ selectedHelperBoard ? 'Open Lead' : 'Open parent chat' }}</button>
+                </div>
+                <p>Use {{ selectedHelperBoard ? 'the Lead' : 'the parent chat' }} to redirect or stop this work.</p>
+              </section>
               <section v-if="selectedChatBoard" class="board-chat-context" aria-label="Tracked work">
                 <div class="board-chat-links">
                   <SquareKanban aria-hidden="true" />
@@ -436,6 +447,8 @@ import ThreadComposer, { type SubmitPayload } from './components/content/ThreadC
 import TrackFeatureDialog from './components/content/TrackFeatureDialog.vue'
 import { useComposerDraftStore } from './stores/composerDrafts'
 import { collectProjectBoardActivity } from './utils/projectBoardActivity'
+import { collectThreadHelpers } from './utils/threadHelpers'
+import { useThreadHelperActivity } from './composables/useThreadHelperActivity'
 import QueuedMessages from './components/content/QueuedMessages.vue'
 import NewThreadFolderPicker from './components/content/NewThreadFolderPicker.vue'
 import BoardPlanDialog, { type BoardPlanDraft } from './components/content/BoardPlanDialog.vue'
@@ -497,6 +510,7 @@ const worktreeName = import.meta.env.VITE_WORKTREE_NAME ?? 'unknown'
 
 const {
   projectGroups,
+  threadSourceById,
   projectDisplayNameById,
   selectedThread,
   selectedThreadGoal,
@@ -785,7 +799,7 @@ const knownThreadIdSet = computed(() => {
   return ids
 })
 
-const notificationThreads = computed<UiThread[]>(() => {
+const catalogThreads = computed<UiThread[]>(() => {
   const threads: UiThread[] = []
   const seen = new Set<string>()
   for (const group of projectGroups.value) {
@@ -802,6 +816,26 @@ const notificationThreads = computed<UiThread[]>(() => {
       (Number.isFinite(leftTimestamp) ? leftTimestamp : 0)
   })
 })
+
+const helperActivity = useThreadHelperActivity(catalogThreads, threadSourceById, boardManagedThreadIds, selectedThreadId)
+const notificationThreads = helperActivity.threads
+const threadHelpers = computed(() => collectThreadHelpers(notificationThreads.value, threadSourceById.value, boardManagedThreadIds.value))
+function refreshHelperActivity() {
+  const roots = [
+    threadHelpers.value.ownerByChildId[selectedThreadId.value] || (threadHelpers.value.childIds.has(selectedThreadId.value) ? '' : selectedThreadId.value),
+    ...boardActivity.value.filter((item) => ['running', 'paused', 'blocked', 'review', 'needs_input'].includes(item.status)).map((item) => item.threadId),
+    ...notificationThreads.value.filter((thread) => thread.inProgress || pendingServerRequests.value.some((request) => request.threadId === thread.id))
+      .map((thread) => threadHelpers.value.ownerByChildId[thread.id] || (threadHelpers.value.childIds.has(thread.id) ? '' : thread.id)),
+  ]
+  void helperActivity.refresh(roots, pendingServerRequests.value.map((request) => request.threadId))
+}
+const selectedHelperParentId = computed(() => {
+  if (boardManagedThreadIds.value.includes(selectedThreadId.value)) return ''
+  const parentId = threadHelpers.value.ownerByChildId[selectedThreadId.value]
+    || threadSourceById.value[selectedThreadId.value]?.parentThreadId || selectedThread.value?.parentThreadId || ''
+  return parentId === selectedThreadId.value ? '' : parentId
+})
+const selectedHelperBoard = computed(() => boardActivity.value.find((item) => item.threadId === selectedHelperParentId.value))
 
 const shortcutThreadIds = computed(() => {
   if (hasVisibleThreadShortcutOrder.value) {
@@ -2055,6 +2089,9 @@ async function submitFirstMessageForNewThread(
 .chat-board-menu :deep(button) { justify-content: flex-start; min-height: 44px; }
 
 .board-chat-context { flex: 0 0 auto; margin: 0 12px; padding: 8px 10px; border: 1px solid var(--border-soft); border-radius: 10px; color: var(--text-secondary); font-size: 12px; }
+.helper-chat-context .board-chat-links > span { flex: 1; min-width: 0; overflow-wrap: anywhere; }
+.helper-chat-context .board-chat-links > button { flex-shrink: 0; min-height: 44px; }
+.helper-chat-context p { white-space: normal; }
 .source-board-heading { display: flex; align-items: center; gap: 8px; min-width: 0; }
 .source-board-heading > svg { width: 15px; height: 15px; flex-shrink: 0; }
 .source-board-heading > strong, .source-board-heading > label { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }

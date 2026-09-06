@@ -6,6 +6,8 @@ import { createRequire } from 'node:module'
 import { pathToFileURL } from 'node:url'
 import test from 'node:test'
 import ts from 'typescript'
+import { build } from 'esbuild'
+import { ref, effectScope } from 'vue'
 
 const sourceUrl = new URL('../src/utils/projectBoardNotifications.ts', import.meta.url)
 const source = await readFile(sourceUrl, 'utf8')
@@ -37,6 +39,67 @@ async function importModule(path, replacements = []) {
 
 const { collectProjectBoardNotifications, projectBoardThreadIds } = await importModule('../src/server/projectBoardNotificationEvents.ts')
 const { collectProjectBoardActivity } = await importModule('../src/utils/projectBoardActivity.ts')
+const { collectThreadHelpers } = await importModule('../src/utils/threadHelpers.ts')
+
+test('helpers follow native ancestry across nested and unlisted parents without guessing from names or folders', () => {
+  const thread = (id, parentThreadId, extra = {}) => ({ id, title: 'Design', cwd: '/same-folder', ...(parentThreadId ? { parentThreadId, isInternalSubagent: true } : {}), ...extra })
+  const threads = [thread('design', 'lead'), thread('engineer', 'middle'), thread('ordinary', null), thread('other-child', 'other-lead'), thread('unknown', 'missing'), thread('cycle-a', 'cycle-b')]
+  const sources = { middle: { isInternalSubagent: true, parentThreadId: 'lead' }, 'cycle-b': { isInternalSubagent: true, parentThreadId: 'cycle-a' }, orphan: { isInternalSubagent: true } }
+  const grouped = collectThreadHelpers(threads, sources, ['lead', 'other-lead'])
+  assert.deepEqual(grouped.helpersByOwnerId.lead.map((thread) => thread.id), ['design', 'engineer'])
+  assert.deepEqual(grouped.helpersByOwnerId['other-lead'].map((thread) => thread.id), ['other-child'])
+  assert.equal(grouped.ownerByChildId.ordinary, undefined)
+  assert.equal(grouped.ownerByChildId.unknown, undefined)
+  assert.equal(grouped.ownerByChildId['cycle-a'], undefined)
+  assert.equal(grouped.childIds.has('ordinary'), false)
+  assert.equal(grouped.childIds.has('orphan'), true, 'Unknown ownership must not turn a known helper into an independent job')
+  assert.equal(grouped.childIds.has('middle'), true)
+  const promoted = collectThreadHelpers([thread('feature-lead', 'lead')], {}, ['feature-lead'])
+  assert.equal(promoted.childIds.has('feature-lead'), false, 'A durable feature Lead remains a distinct controllable job')
+})
+
+test('helper activity loads summaries on demand, resolves missing parents, and does not overwrite newer live state', async (t) => {
+  const { outputFiles } = await build({ entryPoints: [new URL('../src/composables/useThreadHelperActivity.ts', import.meta.url).pathname], bundle: true, write: false, format: 'esm', platform: 'node', plugins: [{ name: 'helper-activity-fixture', setup(build) {
+    build.onResolve({ filter: /^vue$/ }, () => ({ path: import.meta.resolve('vue'), external: true }))
+    build.onResolve({ filter: /codexGateway$|codexRpcClient$/ }, ({ path }) => ({ path, namespace: 'fixture' }))
+    build.onLoad({ filter: /.*/, namespace: 'fixture' }, () => ({ contents: `export const getThreadSummary=(...args)=>globalThis.__helperActivity.getThreadSummary(...args); export const rpcCall=(...args)=>globalThis.__helperActivity.rpcCall(...args); export const subscribeInPageRpcNotifications=(fn)=>{ globalThis.__helperActivity.notify=fn; return ()=>{}; };` }))
+  } }] })
+  const { useThreadHelperActivity } = await import(`data:text/javascript;base64,${Buffer.from(outputFiles[0].contents).toString('base64')}`)
+  const raw = (id, parent, status = 'active') => ({ id, name: id, preview: id, cwd: '/fixture', createdAt: 1, updatedAt: 2, status: { type: status }, source: parent ? { subAgent: { thread_spawn: { parent_thread_id: parent } } } : 'vscode' })
+  const calls = []
+  let resolvePage
+  globalThis.__helperActivity = {
+    getThreadSummary: async (id) => { calls.push(['summary', id]); return { id, title: id, parentThreadId: id === 'middle' ? 'root' : null, inProgress: false } },
+    rpcCall: (method, params) => { calls.push([method, params]); return params.ancestorThreadId ? new Promise((resolve) => { resolvePage = resolve }) : Promise.resolve({ data: [raw('discovered', 'idle-parent')], nextCursor: null }) },
+  }
+  const scope = effectScope()
+  t.after(() => { scope.stop(); delete globalThis.__helperActivity })
+  const catalog = ref([])
+  const state = scope.run(() => useThreadHelperActivity(catalog, ref({ child: { parentThreadId: 'middle' } }), ref([]), ref('')))
+  assert.equal(calls.length, 0, 'Startup does not list helpers or download their transcripts')
+  const loading = state.refresh(['root'], ['child'])
+  globalThis.__helperActivity.notify({ method: 'thread/status/changed', params: { threadId: 'child', status: { type: 'idle' } } })
+  resolvePage({ data: [raw('child', 'middle')], nextCursor: 'page-two' })
+  for (let n = 0; n < 10; n++) await Promise.resolve()
+  resolvePage({ data: [raw('second', 'root', 'idle')], nextCursor: null })
+  await loading
+  assert.equal(state.threads.value.find((thread) => thread.id === 'child').inProgress, false, 'Completion during the list request wins over the stale response')
+  assert.deepEqual(calls.filter(([kind]) => kind === 'summary').map(([, id]) => id).sort(), ['idle-parent', 'middle', 'root'])
+  assert.deepEqual(calls.filter(([kind, params]) => kind === 'thread/list' && params.ancestorThreadId).map(([, params]) => [params.ancestorThreadId, params.sourceKinds, params.cursor]), [['root', ['subAgentThreadSpawn'], null], ['root', ['subAgentThreadSpawn'], 'page-two']])
+  const grouped = collectThreadHelpers(state.threads.value, { child: { parentThreadId: 'middle' } }, [])
+  assert.equal(grouped.ownerByChildId.child, 'root')
+  assert.equal(grouped.ownerByChildId.discovered, 'idle-parent', 'A recently active helper remains discoverable when its ordinary parent is idle after reload')
+  catalog.value = [{ id: 'root', title: 'New title', preview: 'New result', inProgress: true, unread: true }]
+  assert.deepEqual(state.threads.value.find((thread) => thread.id === 'root'), catalog.value[0], 'A parent summary cannot replace newer ordinary-chat activity or unread state')
+  globalThis.__helperActivity.rpcCall = async () => { throw new Error('offline') }
+  await state.refresh(['root'], [])
+  assert.match(state.error.value, /could not be loaded/u)
+  assert.equal(state.threads.value.some((thread) => thread.id === 'child'), true, 'Failure preserves existing activity for retry')
+  globalThis.__helperActivity.rpcCall = async () => ({ data: [raw('child', 'middle')], nextCursor: null })
+  await state.refresh(['root'], [])
+  assert.equal(state.error.value, '')
+  assert.equal(state.threads.value.find((thread) => thread.id === 'child').inProgress, true, 'A fresh successful read can recover status after disconnection')
+})
 
 test('board activity shows an unlisted Lead and planning run once, preserving exact navigation context', () => {
   const snapshot = {

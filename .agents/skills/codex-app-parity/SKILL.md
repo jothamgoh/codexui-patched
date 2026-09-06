@@ -1275,3 +1275,21 @@ After each feature implementation session that uses this skill:
 - Keep browser smoke evidence in ignored `output/project-boards/`. Pre-seeded browser state and fake service orchestration are complementary checks, not proof of a real Codex Lead/subagent session.
 
 - CodexUI's Vite bridge mounts HTTP/SSE but has no production WebSocket upgrade handler. Use the existing SSE transport in development, start notification listening before chat hydration, and freeze source edits during browser smoke: Vite full reloads intentionally discard component form drafts.
+
+## Findings: Grouped helper activity (2026-09-06)
+
+- The integrated renderer (`26.901.31953`) uses native ancestry in
+  `subagent-activity-chip-group-*` and `subagent-row-*` for grouped agents and
+  compact runtime states. Normal interactive activity excludes child completion
+  noise. A nested disclosure under CodexUI's board Lead is an intentional board
+  extension of that ownership pattern; an idle helper is not proof of task Done.
+- Native `thread/list` defaults exclude subagents. The running app-server accepts
+  `sourceKinds: ['subAgentThreadSpawn']` plus `ancestorThreadId` for descendant
+  summaries. Fetch these on Activity open, with pagination and no turns. A bounded
+  recent-helper discovery page can find running children of idle ordinary parents;
+  resolve missing ancestors with `thread/read` and `includeTurns: false`.
+- Preserve source/parent metadata through sparse history and live events. Never
+  classify by name or shared folder, and never let a supplemental parent summary
+  replace newer catalog unread/results. Pending native requests retain their exact
+  child destination; async assistant question forms are a separate chat mechanism,
+  not blocking server requests or a new notification channel.

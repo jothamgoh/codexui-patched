@@ -23,6 +23,7 @@ Scope revised: 2026-09-06. PROGRESS.md owns release status and actual evidence.
 | components/content/RequestUserInputCard.vue | Native question choices, drafts, manual replies, and retry. |
 | components/content/QuestionSettingControl.vue and composables/useQuestionPreference.ts | Capability/policy-gated browser preference for newly created ordinary chats. |
 | api/subAgentActivity.ts and components/content/SubAgentActivityCard.vue | Shared native activity normalization and child-chat presentation. |
+| composables/useThreadHelperActivity.ts and utils/threadHelpers.ts | Lazy descendant summaries, native ancestry, and grouped Activity without transcript loading. |
 
 All paths are under src/. Reuse Vue/Reka, Express, native threads/turns, existing
 notification history/delivery, and native approvals. There is no second runtime,

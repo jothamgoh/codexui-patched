@@ -177,7 +177,10 @@
               <PopoverTrigger as-child><Button type="button" variant="ghost" size="icon-sm" title="Project board" aria-label="Project board actions"><SquareKanban /></Button></PopoverTrigger>
               <PopoverContent class="chat-board-menu" align="end" aria-label="Project board actions" @close-auto-focus="trackFeatureOpen && $event.preventDefault()">
                 <p>Project board</p>
-                <Button type="button" variant="ghost" @click="openChatProjectBoard">Open project board</Button>
+                <template v-if="!selectedChatBoard && sourceChatBoards.length">
+                  <Button v-for="board in sourceChatBoards" :key="board.id" type="button" variant="ghost" @click="chatBoardMenuOpen = false; openProjectBoard(board.id)">Review {{ board.name }}</Button>
+                </template>
+                <Button v-else type="button" variant="ghost" @click="openChatProjectBoard">Open project board</Button>
                 <Button v-if="selectedChatFeature" type="button" variant="ghost" @click="chatBoardMenuOpen = false; openLinkedFeature()">Open feature</Button>
                 <Button v-else-if="!selectedChatBoard" type="button" variant="ghost" @click="openTrackFeature">Track on board</Button>
               </PopoverContent>
@@ -310,6 +313,15 @@
                   <button v-if="selectedChatFeature.sourceThreadId || selectedChatBoard.sourceThreadId" type="button" @click="onSelectThread(selectedChatFeature.sourceThreadId || selectedChatBoard.sourceThreadId)">Original chat</button>
                 </div></details>
                 <p v-if="(selectedChatIsRunning || !selectedChatFeature) && (selectedChatFeature?.sourceThreadId || selectedChatBoard.sourceThreadId)" class="board-chat-source"><button type="button" @click="onSelectThread(selectedChatFeature?.sourceThreadId || selectedChatBoard.sourceThreadId)">Original chat</button></p>
+              </section>
+              <section v-else-if="sourceChatBoard" class="board-chat-context source-board-context" aria-label="Linked board">
+                <div class="source-board-heading">
+                  <SquareKanban aria-hidden="true" />
+                  <label v-if="sourceChatBoards.length > 1"><span class="sr-only">Linked board</span><select v-model="sourceChatBoardId" aria-label="Linked board"><option v-for="board in sourceChatBoards" :key="board.id" :value="board.id">{{ board.name }}</option></select></label>
+                  <strong v-else>{{ sourceChatBoard.name }}</strong>
+                  <button type="button" @click="openProjectBoard(sourceChatBoard.id)">Review board</button>
+                </div>
+                <p>{{ sourceChatBoardProgress }} · Plan, results, and checks</p>
               </section>
               <div class="content-thread">
                 <ThreadConversation :messages="filteredMessages" :is-loading="isLoadingMessages"
@@ -602,6 +614,24 @@ const sidebarProjectGroups = computed<UiProjectGroup[]>(() => {
 const selectedChatFeature = computed(() => projectBoardSnapshot.value.cards.find((card) => card.type === 'feature' && card.threadId && card.threadId === selectedThreadId.value))
 const selectedChatBoard = computed(() => projectBoardSnapshot.value.boards.find((board) => selectedChatFeature.value
   ? board.id === selectedChatFeature.value.boardId : Boolean(board.planningThreadId) && board.planningThreadId === selectedThreadId.value))
+const sourceChatBoards = computed(() => selectedThreadId.value
+  ? projectBoardSnapshot.value.boards.filter((board) => board.sourceThreadId === selectedThreadId.value) : [])
+const sourceChatBoardId = ref('')
+watch([() => selectedThreadId.value, sourceChatBoards], ([threadId, boards], previous) => {
+  if (threadId !== previous?.[0] || !boards.some((board) => board.id === sourceChatBoardId.value)) sourceChatBoardId.value = boards[0]?.id || ''
+}, { immediate: true })
+const sourceChatBoard = computed(() => sourceChatBoards.value.find((board) => board.id === sourceChatBoardId.value))
+const sourceChatBoardProgress = computed(() => {
+  const snapshot = projectBoardSnapshot.value
+  const features = snapshot.cards.filter((card) => card.boardId === sourceChatBoard.value?.id && card.type === 'feature')
+  const questionFeatures = new Set(snapshot.questions.filter((question) => question.status === 'open').map((question) => {
+    const card = snapshot.cards.find((entry) => entry.id === question.cardId)
+    return card?.parentCardId || card?.id
+  }))
+  const needsYou = features.filter((card) => ['blocked', 'needs_input', 'review'].includes(card.status)
+    || boardPendingThreadIds.value.has(card.threadId) || questionFeatures.has(card.id)).length
+  return `${features.filter((card) => card.status === 'done').length}/${features.length} done${needsYou ? ` · ${needsYou} need you` : ''}`
+})
 const selectedChatRun = computed(() => projectBoardSnapshot.value.runs.find((run) => run.threadId === selectedThreadId.value && selectedThreadId.value))
 const selectedChatIsRunning = computed(() => Boolean(selectedChatRun.value && ['running', 'queued'].includes(selectedChatRun.value.status)))
 const selectedChatQuestion = computed(() => projectBoardSnapshot.value.questions.find((question) => question.status === 'open' && Boolean(selectedChatFeature.value) && (question.cardId === selectedChatFeature.value?.id || projectBoardSnapshot.value.cards.some((card) => card.id === question.cardId && card.parentCardId === selectedChatFeature.value?.id))))
@@ -1087,6 +1117,7 @@ function openTrackFeature(): void {
 function openChatProjectBoard(): void {
   chatBoardMenuOpen.value = false
   if (selectedChatBoard.value) openProjectBoard(selectedChatBoard.value.id)
+  else if (sourceChatBoard.value) openProjectBoard(sourceChatBoard.value.id)
   else openProjectBoardProject(selectedThread.value?.cwd || newThreadCwd.value)
 }
 
@@ -1959,6 +1990,12 @@ async function submitFirstMessageForNewThread(
 .chat-board-menu :deep(button) { justify-content: flex-start; min-height: 44px; }
 
 .board-chat-context { flex: 0 0 auto; margin: 0 12px; padding: 8px 10px; border: 1px solid var(--border-soft); border-radius: 10px; color: var(--text-secondary); font-size: 12px; }
+.source-board-heading { display: flex; align-items: center; gap: 8px; min-width: 0; }
+.source-board-heading > svg { width: 15px; height: 15px; flex-shrink: 0; }
+.source-board-heading > strong, .source-board-heading > label { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.source-board-heading > button { flex-shrink: 0; color: var(--text-primary); }
+.source-board-heading select { width: 100%; min-width: 0; padding: 5px; color: var(--text-primary); background: var(--surface-elevated); border: 1px solid var(--border-soft); border-radius: 5px; }
+.board-chat-context.source-board-context > p { white-space: normal; font-size: 11px; }
 .board-chat-links, .board-chat-reply-controls { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
 .board-chat-links svg { width: 14px; height: 14px; flex-shrink: 0; }
 .board-chat-links .board-chat-feature { flex: 1; min-width: 80px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; text-align: left; font-weight: 600; color: var(--text-primary); }
@@ -1970,7 +2007,7 @@ async function submitFirstMessageForNewThread(
 .board-chat-options summary { cursor: pointer; padding: 5px 0; }
 .board-chat-reply-controls label { display: flex; align-items: center; gap: 6px; }
 .board-chat-reply-controls select { padding: 4px; background: var(--surface-elevated); border: 1px solid var(--border-soft); border-radius: 5px; }
-@media (max-width: 640px) { .board-chat-context { margin: 0 8px; padding: 0 8px; } .board-chat-context button, .board-chat-reply-controls label, .board-chat-options summary { min-height: 44px; }
+@media (max-width: 640px) { .source-board-heading select { min-height: 44px; font-size: 16px; } .board-chat-context.source-board-context { padding-bottom: 6px; } .board-chat-context { margin: 0 8px; padding: 0 8px; } .board-chat-context button, .board-chat-reply-controls label, .board-chat-options summary { min-height: 44px; }
   .board-chat-options summary { display: flex; align-items: center; gap: 4px; } .board-chat-reply-controls select { min-height: 44px; font-size: 16px; } .board-chat-context p { margin: 0; } }
 
 .content-thread {

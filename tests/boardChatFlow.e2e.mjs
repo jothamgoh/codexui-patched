@@ -50,6 +50,12 @@ try {
     const page = await context.newPage()
     page.setDefaultTimeout(12_000)
     page.on('pageerror', (error) => errors.push(`${label}: ${error.message}`))
+    const linkedBoardIds = new Set()
+    const readSnapshot = async () => {
+      const current = await store.read()
+      return { ...current, boards: current.boards.map((entry) => linkedBoardIds.has(entry.id)
+        ? { ...entry, sourceThreadId: sourceId, plan: 'Review the feature briefs, dependencies, and checks before starting work.' } : entry) }
+    }
     const mutations = []
     let featureId = ''
     let runId = ''
@@ -64,7 +70,7 @@ try {
     const notify = (method, params) => page.evaluate(({ method, params }) => {
       for (const stream of window.fixtureStreams) stream.onmessage?.({ data: JSON.stringify({ method, params }) })
     }, { method, params })
-    const publish = async () => { snapshot = await store.read(); await notify('codexui/projectBoards/updated', snapshot) }
+    const publish = async () => { snapshot = await readSnapshot(); await notify('codexui/projectBoards/updated', snapshot) }
     const publishNativeAlert = async (request) => {
       const occurredAt = new Date().toISOString()
       const event = { id: `project-board-native:${request.params.threadId}:${request.params.turnId}:${request.id}`, kind: 'native_request', boardId: board.id, featureId, cardId: featureId, threadId: request.params.threadId, requestId: request.id, requestKind: 'approval', occurredAt }
@@ -95,7 +101,7 @@ try {
       const input = request.method() === 'GET' || !request.headers()['content-type']?.includes('application/json') ? {} : request.postDataJSON() || {}
       const json = (value, status = 200) => route.fulfill({ status, json: value })
       try {
-        if (path === '/codex-api/project-boards') return json({ data: await store.read() })
+        if (path === '/codex-api/project-boards') return json({ data: await readSnapshot() })
         if (path === '/codex-api/project-board-cards' && request.method() === 'POST') {
           mutations.push({ kind: 'create', input })
           snapshot = await store.createCard(input)
@@ -172,6 +178,7 @@ try {
     try {
       await page.goto(`${origin}/#/thread/${sourceId}`, { waitUntil: 'domcontentloaded' })
       await page.getByText('We can fix this as one small feature.', { exact: true }).waitFor()
+      assert.equal(await page.getByRole('region', { name: 'Linked board', exact: true }).count(), 0, 'Ordinary chats do not opt into a board automatically')
       await page.getByRole('button', { name: 'Project board actions', exact: true }).click()
       await page.getByRole('button', { name: 'Open project board', exact: true }).waitFor()
       await page.screenshot({ path: join(output, `board-menu-${label}.png`), fullPage: true })
@@ -392,6 +399,45 @@ try {
       assert.equal(mutations.filter((item) => item.kind === 'delete').length, 1)
       await page.locator('button[aria-label^="Notifications:"]').click()
       assert.equal(await activity.getByText('Approval needed', { exact: true }).count(), 0, 'The stopped turn must not leave a phantom approval notification')
+      await page.locator('button[aria-label^="Notifications:"]').click()
+
+      // A chat-created plan links the ordinary source chat without making it a
+      // managed Lead. Keep two linked boards visible and review the exact result.
+      snapshot = await store.createBoard({ projectPath: project, projectName: 'Chat workflow', name: 'Next release' })
+      const nextBoard = snapshot.boards.find((entry) => entry.id !== board.id)
+      linkedBoardIds.add(board.id)
+      linkedBoardIds.add(nextBoard.id)
+      await publish()
+      await page.goto(`${origin}/#/thread/${sourceId}`, { waitUntil: 'domcontentloaded' })
+      const linked = page.getByRole('region', { name: 'Linked board', exact: true })
+      await linked.getByRole('button', { name: 'Review board', exact: true }).waitFor()
+      await linked.getByRole('combobox', { name: 'Linked board', exact: true }).selectOption(board.id)
+      await linked.getByText('1/1 done · Plan, results, and checks', { exact: true }).waitFor()
+      assert.equal(await tracked.count(), 0, 'A board plan must not change the ordinary chat composer into a managed Lead')
+      assert.equal(await linked.evaluate((element) => element.scrollWidth <= element.clientWidth), true)
+      await page.screenshot({ path: join(output, `linked-boards-${label}.png`), fullPage: true })
+      const mutationsBeforeReview = mutations.length
+      await linked.getByRole('combobox', { name: 'Linked board', exact: true }).selectOption(nextBoard.id)
+      await linked.getByText('0/0 done · Plan, results, and checks', { exact: true }).waitFor()
+      await linked.getByRole('button', { name: 'Review board', exact: true }).click()
+      await page.waitForURL(`**/#/board/${nextBoard.id}`)
+      await page.getByRole('button', { name: 'Planning chat', exact: true }).click()
+      await page.waitForURL(`**/#/thread/${sourceId}`)
+      await page.getByRole('button', { name: 'Project board actions', exact: true }).click()
+      await page.getByRole('button', { name: 'Review Next release', exact: true }).waitFor()
+      await page.getByRole('button', { name: 'Review Product fixes', exact: true }).click()
+      await page.waitForURL(`**/#/board/${board.id}`)
+      await page.locator(`[data-feature-id="${feature.id}"] .board-card-main`).click()
+      const result = detail.getByRole('region', { name: 'Feature result', exact: true })
+      await result.getByText(finalText, { exact: true }).waitFor()
+      assert.equal(await detail.getByRole('heading', { name: 'Plan ready', exact: true }).count(), 0, 'Completed work must not be described as waiting to start')
+      await result.getByText('For code changes, open Summary → Changes in the chat.', { exact: true }).waitFor()
+      assert.equal(await detail.evaluate((element) => element.scrollWidth <= element.clientWidth), true)
+      await page.screenshot({ path: join(output, `review-result-${label}.png`), fullPage: true })
+      await result.getByRole('button', { name: 'Review result in Lead chat', exact: true }).click()
+      await page.waitForURL(`**/#/thread/${leadId}`)
+      await page.getByText(finalText, { exact: true }).waitFor()
+      assert.equal(mutations.length, mutationsBeforeReview, 'Reviewing a plan or result must not start or change work')
     } catch (error) {
       await page.screenshot({ path: join(output, `failure-${label}.png`), fullPage: true })
       console.error(JSON.stringify({ label, url: page.url(), mutations, errors }, null, 2))
@@ -399,5 +445,5 @@ try {
     } finally { await context.close() }
   }
   assert.deepEqual(errors, [])
-  console.log('Board/chat flow passed on desktop and touch mobile: voice/brief-only tracking, read-only Lead start, linked navigation, Activity, native approvals, reply retry, result navigation and stop-before-delete preserving workspace files. Model and audio output are synthetic.')
+  console.log('Board/chat flow passed on desktop and touch mobile: voice/brief-only tracking, read-only Lead start, linked navigation, Activity, native approvals, reply retry, linked source-board selection, result review and stop-before-delete preserving workspace files. Model and audio output are synthetic.')
 } finally { await browser.close(); await server.close(); await rm(temporary, { recursive: true, force: true }) }

@@ -3,7 +3,7 @@
     <header class="boards-header">
       <div class="boards-heading-copy">
         <h2>Project board</h2>
-        <p>Plan the work, choose your agents, and follow each feature to completion.</p>
+        <p>Review the plan, follow progress, and inspect each feature’s results and checks.</p>
       </div>
       <div class="boards-header-actions">
         <Button v-if="activeBoard" type="button" variant="outline" :disabled="boardPlanningActive || isMutating" @click="$emit('plan-board', activeBoard.id)"><Sparkles aria-hidden="true" /> Plan features</Button>
@@ -51,8 +51,8 @@
 
     <section v-if="activeBoard" class="board-workflow" aria-label="Project delivery">
       <div class="workflow-state">
-        <strong>{{ boardPlanningActive ? 'Planning your features…' : activeQueue?.status === 'running' ? 'Delivery is running' : activeQueue?.status === 'paused' ? 'Delivery paused' : 'Ready when you are' }}</strong>
-        <p>{{ activeQueue?.reason || (boardPlanningActive ? 'Your coordinator is reading the plan and preparing cards. No implementation yet.' : 'Plan the project, review its features, then run one feature or a selected queue.') }}</p>
+        <strong>{{ boardPlanningActive ? 'Planning your features…' : activeQueue?.status === 'running' ? 'Delivery is running' : activeQueue?.status === 'paused' ? 'Delivery paused' : boardComplete ? 'All features complete' : 'Ready when you are' }}</strong>
+        <p>{{ activeQueue?.reason || (boardPlanningActive ? 'Your coordinator is reading the plan and preparing cards. No implementation yet.' : boardComplete ? 'Open a finished card to review the result, checks, and Lead chat.' : 'Review and edit the feature cards, then run the ones you approve. Open finished cards to inspect the results.') }}</p>
       </div>
       <div class="boards-header-actions">
         <Button v-if="activeBoard.sourceThreadId" type="button" size="sm" variant="ghost" @click="$emit('select-thread', activeBoard.sourceThreadId)">Planning chat</Button>
@@ -214,7 +214,14 @@
             <section v-if="requestForCard(selectedCard)" class="needs-you-card" aria-label="Lead request"><strong>{{ nativeRequestLabel(selectedCard) }}</strong><p>The Lead is waiting for you. Open its chat to review the request, or stop this run.</p><Button type="button" variant="outline" @click="$emit('select-thread', selectedCard.threadId)">Review in Lead chat</Button></section>
             <p v-if="!selectedRunIsActive && selectedRuns[0]?.error" class="detail-muted" role="status">{{ selectedRuns[0].error }}</p>
             <p v-if="dependencyLabel(selectedCard)" class="dependency-note">{{ dependencyLabel(selectedCard) }}</p>
-            <section v-if="selectedCard.planSummary" class="detail-section"><h3>{{ selectedCard.planStatus === 'ready' ? 'Plan ready' : 'Plan' }}</h3><p class="detail-prewrap">{{ selectedCard.planSummary }}</p><p v-if="selectedCard.planStatus === 'ready'" class="detail-muted">Review the tasks below. Start work when you are ready, or revise the brief and plan again.</p></section>
+            <section v-if="selectedCard.summary || selectedCard.status === 'done'" class="detail-section feature-result" aria-label="Feature result">
+              <h3>{{ selectedCard.status === 'review' ? 'Ready for review' : selectedCard.status === 'done' ? 'Result' : 'Previous result' }}</h3>
+              <p class="detail-prewrap">{{ selectedCard.summary || 'This feature is complete. Review the Lead chat for its final response.' }}</p>
+              <p v-if="selectedTasks.some(task => task.taskPurpose === 'verification')" class="detail-muted">{{ selectedTasks.filter(task => task.taskPurpose === 'verification' && task.status === 'done').length }}/{{ selectedTasks.filter(task => task.taskPurpose === 'verification').length }} verification tasks completed. Check their findings below.</p>
+              <Button v-if="selectedCard.threadId" type="button" size="sm" variant="outline" @click="$emit('select-thread', selectedCard.threadId)"><MessageSquare aria-hidden="true" /> Review result in Lead chat</Button>
+              <p v-if="selectedCard.threadId" class="detail-muted">For code changes, open Summary → Changes in the chat.</p>
+            </section>
+            <section v-if="selectedCard.planSummary" class="detail-section"><h3>{{ selectedPlanNeedsReview ? 'Plan ready' : 'Plan' }}</h3><p class="detail-prewrap">{{ selectedCard.planSummary }}</p><p v-if="selectedPlanNeedsReview" class="detail-muted">Review the tasks below. Start work when you are ready, or revise the brief and plan again.</p></section>
             <p class="detail-muted">Lead settings: {{ selectedCard.model || agentFor(selectedCard.assignedAgentId)?.model || 'App default model' }} · {{ selectedCard.reasoningEffort || agentFor(selectedCard.assignedAgentId)?.reasoningEffort || 'Default' }} reasoning.</p>
 
             <p v-if="selectedCard.type === 'qa_batch'" class="detail-muted">QA batch cards track later verification. Automated batch runs are not available yet.</p>
@@ -611,6 +618,7 @@ const attentionCards = computed(() => featureCards.value.filter((card) => reques
 const attentionCount = computed(() => openBoardQuestions.value.length + attentionCards.value.length)
 const workingFeatureCount = computed(() => featureCards.value.filter((card) => cardDisplayStatus(card) === 'working').length)
 const completedFeatureCount = computed(() => featureCards.value.filter((card) => card.status === 'done').length)
+const boardComplete = computed(() => featureCards.value.length > 0 && completedFeatureCount.value === featureCards.value.length)
 const dependencyCandidates = computed(() => featureCards.value.filter((card) => card.type === 'feature' && card.id !== editingCardId.value))
 const activeQueue = computed(() => props.snapshot.queues?.find((queue) => queue.boardId === activeBoard.value?.id))
 const queueCandidates = computed(() => featureCards.value.filter((card) => card.type === 'feature' && card.status !== 'done' && card.status !== 'review' && !cardIsLocked(card)))
@@ -618,6 +626,7 @@ const latestBoardPlanRun = computed(() => props.snapshot.runs.filter((run) => ru
 const boardPlanningActive = computed(() => latestBoardPlanRun.value?.status === 'running' || latestBoardPlanRun.value?.status === 'queued')
 const selectedCard = computed(() => featureCards.value.find((card) => card.id === props.initialFeatureId) ?? null)
 const selectedTasks = computed(() => props.snapshot.cards.filter((card) => card.parentCardId === selectedCard.value?.id).sort((a, b) => a.createdAtIso.localeCompare(b.createdAtIso)))
+const selectedPlanNeedsReview = computed(() => selectedCard.value?.planStatus === 'ready' && selectedCard.value.status === 'backlog' && !selectedTasks.value.some((task) => task.status === 'working' || task.status === 'done'))
 const selectedTaskIds = computed(() => new Set(selectedTasks.value.map((task) => task.id)))
 const selectedQuestions = computed(() => props.snapshot.questions.filter((question) => question.boardId === activeBoard.value?.id && question.status === 'open' && (question.cardId === selectedCard.value?.id || selectedTaskIds.value.has(question.cardId))))
 const selectedOpenQuestion = computed(() => selectedQuestions.value.find((question) => question.id === props.initialQuestionId) ?? selectedQuestions.value[0] ?? null)
@@ -1024,6 +1033,7 @@ function formatTime(value: string): string { const date = new Date(value); retur
 .detail-section h3 { @apply m-0 text-sm font-semibold; }
 .detail-section-title { @apply flex items-center justify-between; }
 .detail-section-title > span { @apply text-xs; color: var(--text-muted); }
+.feature-result { padding: 14px; border: 1px solid var(--border-soft); border-radius: 10px; background: var(--surface-elevated); }
 .detail-prewrap { @apply mt-2 mb-0 whitespace-pre-wrap text-sm leading-6; color: var(--text-secondary); }
 .detail-muted { background: var(--surface-muted); @apply mt-2 rounded-lg px-3 py-3 text-sm; color: var(--text-muted); }
 .task-list, .artifact-list, .run-list, .comment-list { @apply mt-2 list-none space-y-2 p-0; }

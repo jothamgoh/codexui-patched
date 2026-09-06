@@ -566,6 +566,23 @@ try {
   await publishQueueSnapshot(queueBaseline)
 
   await publishQueueSnapshot({ ...queueBaseline, runs: queueBaseline.runs.map((run) => run.id === queueRun.id ? queueRun : run) })
+  const workingIndicator = page.locator('[data-feature-id="feature-working"] .card-live-status')
+  await workingIndicator.getByText('Working…', { exact: true }).waitFor()
+  await page.setViewportSize({ width: 390, height: 844 })
+  await page.getByLabel('Show features', { exact: true }).waitFor()
+  await page.waitForFunction(() => [...document.querySelectorAll('.board-lane')].find((element) => element.getClientRects().length)?.getAttribute('data-board-status') === 'working')
+  assert.equal(await page.locator('.board-lane:visible').first().getAttribute('data-board-status'), 'working', 'Mobile puts in-progress work above backlog')
+  assert.equal(await page.locator('[data-board-status="backlog"]:visible').count(), 1, 'The board still includes its backlog below active work')
+  await page.emulateMedia({ reducedMotion: 'reduce' })
+  assert.equal(await workingIndicator.locator('span').evaluate((element) => getComputedStyle(element).animationName), 'none', 'Reduced motion disables the working pulse')
+  await page.emulateMedia({ reducedMotion: 'no-preference' })
+  assert.notEqual(await workingIndicator.locator('span').evaluate((element) => getComputedStyle(element).animationName), 'none')
+  await page.setViewportSize({ width: 1600, height: 1000 })
+  const waitingSnapshot = { ...queueBaseline, runs: queueBaseline.runs.map((run) => run.id === queueRun.id ? queueRun : run), questions: [...queueBaseline.questions, { ...queueBaseline.questions[0], id: 'working-decision', cardId: 'feature-working', status: 'open' }] }
+  await publishQueueSnapshot(waitingSnapshot)
+  await workingIndicator.waitFor({ state: 'detached' })
+  await publishQueueSnapshot({ ...queueBaseline, runs: queueBaseline.runs.map((run) => run.id === queueRun.id ? queueRun : run) })
+  await workingIndicator.waitFor()
   const delivery = page.getByRole('region', { name: 'Board delivery' })
   await delivery.getByText(/Project board orchestration.*already running/).waitFor()
   assert.equal(await page.getByRole('button', { name: 'Run selected features', exact: true }).isDisabled(), true)
@@ -595,6 +612,7 @@ try {
   await page.getByText('The saved storage run is ready to inspect.', { exact: true }).waitFor()
   await visitBoard()
   await publishQueueSnapshot(queueBaseline)
+  await workingIndicator.waitFor({ state: 'detached' })
   let queueRequest
   await page.route('**/codex-api/project-boards/board-1/queue', (route) => {
     queueRequest = route.request().postDataJSON()

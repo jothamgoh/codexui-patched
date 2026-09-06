@@ -46,6 +46,9 @@ notification storage too. Retain explicit defense in every bridge fixture:
 
 ## Meaningful scenarios
 
+- Queue entry: active work in the same project names its feature and exact Lead,
+  blocks both button and implicit submission, and preserves an open dialog's
+  choices. An unrelated project does not block; completion never auto-starts.
 - Startup: open the routed chat while sidebar/model/account requests remain
   pending, even if a different chat was previously selected. Load a five-turn
   tail, keep older-page cursors and reconnect catch-up, and retain early model,

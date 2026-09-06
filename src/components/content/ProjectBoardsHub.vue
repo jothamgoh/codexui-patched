@@ -51,14 +51,15 @@
 
     <section v-if="activeBoard" class="board-workflow" aria-label="Project delivery">
       <div class="workflow-state">
-        <strong>{{ boardPlanningActive ? 'Planning your features…' : activeQueue?.status === 'running' ? 'Delivery is running' : activeQueue?.status === 'paused' ? 'Delivery paused' : boardComplete ? 'All features complete' : 'Ready when you are' }}</strong>
-        <p>{{ activeQueue?.reason || (boardPlanningActive ? 'Your coordinator is reading the plan and preparing cards. No implementation yet.' : boardComplete ? 'Open a finished card to review the result, checks, and Lead chat.' : 'Review and edit the feature cards, then run the ones you approve. Open finished cards to inspect the results.') }}</p>
+        <strong>{{ boardPlanningActive ? 'Planning your features…' : activeQueue?.status === 'running' ? 'Delivery is running' : activeProjectRun ? 'Project work is running' : activeQueue?.status === 'paused' ? 'Delivery paused' : boardComplete ? 'All features complete' : 'Ready when you are' }}</strong>
+        <p>{{ activeProjectRun && activeQueue?.status !== 'running' ? queueBusyMessage : activeQueue?.reason || (boardPlanningActive ? 'Your coordinator is reading the plan and preparing cards. No implementation yet.' : boardComplete ? 'Open a finished card to review the result, checks, and Lead chat.' : 'Review and edit the feature cards, then run the ones you approve. Open finished cards to inspect the results.') }}</p>
       </div>
       <div class="boards-header-actions">
         <Button v-if="activeBoard.sourceThreadId" type="button" size="sm" variant="ghost" @click="$emit('select-thread', activeBoard.sourceThreadId)">Planning chat</Button>
         <Button v-if="activeBoard.planningThreadId" type="button" size="sm" variant="ghost" @click="$emit('select-thread', activeBoard.planningThreadId)">Coordinator chat</Button>
+        <Button v-if="activeProjectThreadId && activeQueue?.status !== 'running'" type="button" size="sm" variant="outline" @click="$emit('select-thread', activeProjectThreadId)">Open active Lead chat</Button>
         <Button v-if="activeQueue?.status === 'running'" type="button" size="sm" variant="outline" :disabled="isDictating || isMutating" @click="pauseQueue">Pause delivery</Button>
-        <Button v-else type="button" size="sm" :disabled="queueCandidates.length === 0 || boardPlanningActive || isMutating" @click="openQueue">{{ activeQueue ? 'Resume selected features' : 'Run selected features' }}</Button>
+        <Button v-else type="button" size="sm" :disabled="queueCandidates.length === 0 || Boolean(activeProjectRun) || boardPlanningActive || isMutating" @click="openQueue">{{ activeQueue ? 'Resume selected features' : 'Run selected features' }}</Button>
       </div>
       <details v-if="activeBoard.plan" class="board-plan-summary"><summary>Project plan</summary><p>{{ activeBoard.plan }}</p></details>
       <p v-if="latestBoardPlanRun?.status === 'failed' || latestBoardPlanRun?.status === 'interrupted'" class="boards-alert" role="alert">{{ latestBoardPlanRun.error || 'Planning stopped. Open the coordinator chat or plan again.' }}</p>
@@ -393,10 +394,14 @@
       <header><div><DialogTitle>Run selected features</DialogTitle><p id="queue-description">The coordinator runs these features one at a time, following dependencies and each feature’s model and verification settings.</p></div><Button type="button" variant="ghost" size="icon-sm" aria-label="Close queue" @click="queueDialogOpen = false"><X /></Button></header>
       <form class="board-form" @submit.prevent="runQueue">
         <p v-if="error" class="boards-alert" role="alert">{{ error }}</p>
+        <div v-if="activeProjectRun" class="detail-muted" role="status">
+          <p class="m-0">{{ queueBusyMessage }} Your selection is kept; start it when the project is free.</p>
+          <Button v-if="activeProjectThreadId" type="button" size="sm" variant="outline" class="mt-2" @click="$emit('select-thread', activeProjectThreadId)">Open active Lead chat</Button>
+        </div>
         <div class="queue-list"><label v-for="feature in queueCandidates" :key="feature.id" class="queue-feature"><input v-model="queueFeatureIds" type="checkbox" :value="feature.id" /><span><strong>{{ feature.title }}</strong><small>{{ dependencyLabel(feature) || 'Ready when the project is free' }}</small></span></label></div>
         <p class="detail-muted">Pauses for a question, failure, or review. New features are not added to this selection automatically. After a restart, select the remaining features again.</p>
         <label v-if="boardAgents.some(agent => agent.sandbox === 'workspace-write')" class="checkbox-row"><input v-model="queueAllowEdits" type="checkbox" /><span>Allow project edits for these selected features and their agents.</span></label>
-        <footer><Button type="button" variant="ghost" @click="queueDialogOpen = false">Cancel</Button><Button type="submit" :disabled="isDictating || isMutating || !queueFeatureIds.length || (boardAgents.some(agent => agent.sandbox === 'workspace-write') && !queueAllowEdits)">Start selected features</Button></footer>
+        <footer><Button type="button" variant="ghost" @click="queueDialogOpen = false">Cancel</Button><Button type="submit" :disabled="isDictating || isMutating || Boolean(activeProjectRun) || !queueFeatureIds.length || (boardAgents.some(agent => agent.sandbox === 'workspace-write') && !queueAllowEdits)">Start selected features</Button></footer>
       </form>
     </DialogContent></DialogPortal></DialogRoot>
 
@@ -621,6 +626,13 @@ const completedFeatureCount = computed(() => featureCards.value.filter((card) =>
 const boardComplete = computed(() => featureCards.value.length > 0 && completedFeatureCount.value === featureCards.value.length)
 const dependencyCandidates = computed(() => featureCards.value.filter((card) => card.type === 'feature' && card.id !== editingCardId.value))
 const activeQueue = computed(() => props.snapshot.queues?.find((queue) => queue.boardId === activeBoard.value?.id))
+const activeProjectRun = computed(() => activeBoard.value && props.snapshot.runs.find((run) =>
+  (run.status === 'running' || run.status === 'queued') && (run.boardId === activeBoard.value?.id
+    || props.snapshot.boards.some((board) => board.id === run.boardId && board.projectPath === activeBoard.value?.projectPath)),
+))
+const activeProjectCard = computed(() => props.snapshot.cards.find((card) => card.id === activeProjectRun.value?.cardId))
+const activeProjectThreadId = computed(() => activeProjectRun.value?.threadId || activeProjectCard.value?.threadId || '')
+const queueBusyMessage = computed(() => `${activeProjectCard.value ? `“${activeProjectCard.value.title}”` : 'Project planning'} is already running. Wait for it to finish before starting selected features.`)
 const queueCandidates = computed(() => featureCards.value.filter((card) => card.type === 'feature' && card.status !== 'done' && card.status !== 'review' && !cardIsLocked(card)))
 const latestBoardPlanRun = computed(() => props.snapshot.runs.filter((run) => run.boardId === activeBoard.value?.id && run.kind === 'board_plan').sort((a, b) => b.startedAtIso.localeCompare(a.startedAtIso))[0])
 const boardPlanningActive = computed(() => latestBoardPlanRun.value?.status === 'running' || latestBoardPlanRun.value?.status === 'queued')
@@ -839,12 +851,14 @@ function planSelectedFeature(): void {
   if (cardId) void submitMutation(() => props.actions.startFeature(cardId, false, 'plan'))
 }
 function openQueue(): void {
+  if (activeProjectRun.value) return
   const previous = new Set(activeQueue.value?.featureIds || [])
   queueFeatureIds.value = queueCandidates.value.filter((card) => !previous.size || previous.has(card.id)).map((card) => card.id)
   queueAllowEdits.value = false
   queueDialogOpen.value = true
 }
 function runQueue(): void {
+  if (activeProjectRun.value) return
   const boardId = activeBoard.value?.id
   if (boardId) void submitMutation(() => props.actions.startQueue(boardId, [...queueFeatureIds.value], queueAllowEdits.value), () => { queueDialogOpen.value = false })
 }

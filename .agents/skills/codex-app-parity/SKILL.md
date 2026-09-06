@@ -5,6 +5,18 @@ description: "Use when implementing or changing user-visible behavior/UI in this
 
 # Codex App Parity Skill
 
+## Findings: Queue entry while a feature is active (2026-09-06)
+
+- Queue creation currently rejects an already active board run. Filtering that
+  feature out of the checklist does not make the remaining selection startable.
+  Reflect the project lock beside the action and in an already-open dialog,
+  name the active work, and link to its exact Lead chat. Preserve choices while
+  waiting, but never treat completion as permission to start automatically.
+- Native active/queued identity and direct thread navigation remain the closest
+  parity pattern for this board extension. The browser fixture covers a run
+  arriving after the dialog opens, implicit form submission, same/different
+  projects, retained edit consent, completion, and the phone-sized layout.
+
 ## Findings: Fast startup and streamed history (2026-09-06)
 
 - Current native app-initial uses thread/list with useStateDbOnly and an initial

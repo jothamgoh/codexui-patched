@@ -2,7 +2,7 @@
 
 Updated: 2026-09-06
 
-Status: released through 2cb29f5. Main was published, CI passed, the verified
+Board-planning runtime baseline: released through 2cb29f5. Main was published, CI passed, the verified
 frontend/CLI build was deployed, and one authorized independent-Terminal
 restart completed. Post-restart bridge, boards, models, and pending-request
 endpoints returned healthy responses; no runs or native requests were left
@@ -11,6 +11,14 @@ A real run waiting at an invisible native test approval was stopped at the
 user’s request; its saved rendering work has now been reviewed in the follow-up below.
 
 ## Current follow-up
+
+- Active-run queue entry: the remaining cards no longer offer an invalid start
+  while the board/project already has work running. The board and open dialog
+  name the active feature and link to its Lead. Selection/consent stay intact;
+  finishing the active run does not auto-start another queue. The existing full
+  board browser journey passed same/different-project and late-arriving-run
+  checks, explicit/implicit submission, completion, and mobile layout. This is
+  a frontend correction; it does not alter or restart the user's running work.
 
 - Startup and remaining blank-tail fix: use the native indexed chat catalog
   (same 100 summaries, no message bodies), open the routed chat without waiting

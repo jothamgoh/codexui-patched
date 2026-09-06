@@ -235,6 +235,11 @@ try {
     })
   })
   await page.addInitScript((path) => {
+    const NativeEventSource = window.EventSource
+    window.boardFixtureStreams = []
+    window.EventSource = class extends NativeEventSource {
+      constructor(...args) { super(...args); window.boardFixtureStreams.push(this) }
+    }
     localStorage.setItem('codex-web-local.new-thread-cwd.v1', path)
     localStorage.setItem('codex-web-local.theme.v1', 'light')
     Object.defineProperty(navigator, 'mediaDevices', { value: { getUserMedia: async () => ({ getTracks: () => [{ stop() {} }] }) } })
@@ -452,6 +457,28 @@ try {
 
   await page.getByRole('button', { name: 'Close feature', exact: true }).click()
   await visitBoard()
+  // Synthetic snapshots exercise the existing realtime consumer without starting
+  // a model or modifying the isolated server's run state.
+  const queueBaseline = (await (await fetch(`${origin}/codex-api/project-boards`)).json()).data
+  let queueVersion = queueBaseline.version
+  const queueRun = { ...queueBaseline.runs.find((run) => run.id === 'run-1'), status: 'running', threadId: 'daily-run-thread', finishedAtIso: '', error: '' }
+  const publishQueueSnapshot = async (next) => {
+    await page.evaluate((snapshot) => {
+      if (!window.boardFixtureStreams.length) throw new Error('No fixture notification stream')
+      for (const stream of window.boardFixtureStreams) stream.dispatchEvent(new MessageEvent('message', {
+        data: JSON.stringify({ method: 'codexui/projectBoards/updated', params: snapshot }),
+      }))
+    }, { ...next, version: ++queueVersion })
+  }
+  await publishQueueSnapshot({ ...queueBaseline, runs: queueBaseline.runs.map((run) => run.id === queueRun.id ? queueRun : run) })
+  const delivery = page.getByRole('region', { name: 'Project delivery' })
+  await delivery.getByText(/Project board orchestration.*already running/).waitFor()
+  assert.equal(await delivery.getByRole('button', { name: 'Run selected features', exact: true }).isDisabled(), true)
+  await delivery.getByRole('button', { name: 'Open active Lead chat', exact: true }).click()
+  await page.waitForURL('**#/thread/daily-run-thread')
+  await page.getByText('The saved storage run is ready to inspect.', { exact: true }).waitFor()
+  await visitBoard()
+  await publishQueueSnapshot(queueBaseline)
   let queueRequest
   await page.route('**/codex-api/project-boards/board-1/queue', (route) => {
     queueRequest = route.request().postDataJSON()
@@ -461,6 +488,30 @@ try {
   const queueDialog = page.getByRole('dialog', { name: 'Run selected features', exact: true })
   assert.equal(await queueDialog.getByRole('button', { name: 'Start selected features' }).isDisabled(), true)
   await queueDialog.getByRole('checkbox', { name: 'Allow project edits', exact: false }).check()
+  const selectedQueueIds = () => queueDialog.locator('.queue-list input:checked').evaluateAll((inputs) => inputs.map((input) => input.value))
+  const selectedBeforeRun = await selectedQueueIds()
+  const otherProjectRun = { ...queueRun, id: 'run-elsewhere', boardId: 'board-2', cardId: 'feature-other' }
+  const elsewhere = { ...queueBaseline, runs: [...queueBaseline.runs, otherProjectRun] }
+  await publishQueueSnapshot(elsewhere)
+  assert.equal(await queueDialog.getByRole('button', { name: 'Start selected features' }).isEnabled(), true, 'A different project does not block this queue')
+  const sameProject = { ...elsewhere, boards: elsewhere.boards.map((board) => board.id === 'board-2' ? { ...board, projectPath: fixtureProject } : board) }
+  await publishQueueSnapshot(sameProject)
+  await queueDialog.getByRole('status').getByText(/Other project feature.*already running/).waitFor()
+  assert.equal(await queueDialog.getByRole('button', { name: 'Start selected features' }).isDisabled(), true, 'A run arriving after the dialog opens blocks execution')
+  assert.deepEqual(await selectedQueueIds(), selectedBeforeRun)
+  assert.equal(await queueDialog.getByRole('checkbox', { name: 'Allow project edits', exact: false }).isChecked(), true)
+  await queueDialog.locator('form').evaluate((form) => form.requestSubmit())
+  assert.equal(queueRequest, undefined, 'Implicit submission must not start work while the project is busy')
+  await page.setViewportSize({ width: 390, height: 844 })
+  assert.ok(await queueDialog.evaluate((element) => element.scrollWidth <= element.clientWidth), 'Active-run context must fit a phone')
+  await page.screenshot({ path: join(outputDirectory, 'project-board-queue-busy-mobile.png'), fullPage: true })
+  await page.setViewportSize({ width: 1600, height: 1000 })
+  await page.screenshot({ path: join(outputDirectory, 'project-board-queue-busy.png'), fullPage: true })
+  await publishQueueSnapshot(queueBaseline)
+  await queueDialog.getByRole('status').waitFor({ state: 'detached' })
+  assert.equal(await queueDialog.getByRole('button', { name: 'Start selected features' }).isEnabled(), true)
+  assert.deepEqual(await selectedQueueIds(), selectedBeforeRun)
+  assert.equal(queueRequest, undefined, 'Finishing existing work must not automatically start the preserved selection')
   await page.screenshot({ path: join(outputDirectory, 'project-board-queue.png'), fullPage: true })
   await page.setViewportSize({ width: 390, height: 844 })
   assert.ok(await queueDialog.evaluate((element) => element.scrollWidth <= element.clientWidth), 'Queue consent must fit mobile width')
@@ -472,6 +523,8 @@ try {
   assert.ok(queueRequest.featureIds.includes(savedFeature.id))
   assert.ok(!queueRequest.featureIds.includes('feature-done'))
   await page.keyboard.press('Escape')
+  // Resume the real fixture's version stream after the synthetic busy snapshots.
+  await page.reload({ waitUntil: 'domcontentloaded' })
 
   await visitBoard()
   let planRequest

@@ -46,6 +46,13 @@ notification storage too. Retain explicit defense in every bridge fixture:
 
 ## Meaningful scenarios
 
+- Startup: open the routed chat while sidebar/model/account requests remain
+  pending, even if a different chat was previously selected. Load a five-turn
+  tail, keep older-page cursors and reconnect catch-up, and retain early model,
+  reasoning, and speed choices. Skills belong to the active workspace.
+- Blank chat tails: batch actual browser visibility records after scrolling away
+  and back. The newest visible text must remain mounted inside the viewport;
+  verify repeated reloads, bounded rich bodies, and mobile/composer resizing.
 - Serialized persistence, validation, capacity errors, and interruption recovery.
 - Exact profile/thread/turn ownership, dependencies, question provenance, and
   final verification after the work it certifies. Updated built-ins must not

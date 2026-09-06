@@ -67,6 +67,10 @@ try {
     let releaseReply
     let failStop = true
     let listedLead = false
+    let releaseStartup
+    const startupReady = new Promise((resolve) => { releaseStartup = resolve })
+    let holdStartup = true
+    const historyReads = []
     const notify = (method, params) => page.evaluate(({ method, params }) => {
       for (const stream of window.fixtureStreams) stream.onmessage?.({ data: JSON.stringify({ method, params }) })
     }, { method, params })
@@ -86,6 +90,7 @@ try {
     await page.addInitScript(({ project, sourceId }) => {
       localStorage.setItem('codex-web-local.new-thread-cwd.v1', project)
       localStorage.setItem('codex-web-local.theme.v1', 'dark')
+      localStorage.setItem('codex-web-local.selected-thread-id.v1', 'older-0')
       window.fixtureStreams = []
       window.EventSource = class { constructor() { window.fixtureStreams.push(this) } close() {} }
       Object.defineProperty(navigator, 'mediaDevices', { value: { getUserMedia: async () => ({ getTracks: () => [{ stop() {} }] }) } })
@@ -159,9 +164,11 @@ try {
         if (path === '/codex-api/pinned-threads') return json({ data: { threadIds: [] } })
         if (path === '/codex-api/thread-read-state') return json({ data: { readAtByThreadId: {}, unreadThreadIds: [], version: 1 } })
         if (path === '/codex-api/automations') return json({ data: { tasks: [], runs: [], proposals: [], version: 1 } })
+        if (path === '/codex-api/thread-page') historyReads.push(input)
         if (path === '/codex-api/thread-resume-lite' || path === '/codex-api/thread-page') return json({ result: { thread: threads.get(input.threadId) || sourceThread, model: 'build-model', reasoningEffort: 'high', page: { startTurnIndex: 0, endTurnIndex: 1, totalTurns: 1, hasEarlier: false } } })
         if (path === '/codex-api/rpc') {
           const { method, params = {} } = input
+          if (holdStartup && ['thread/list', 'model/list', 'account/rateLimits/read'].includes(method)) await startupReady
           if (method === 'thread/list') return json({ result: { data: [...otherThreads, sourceThread, ...(listedLead ? [leadThread] : [])], nextCursor: null } })
           if (method === 'thread/read' || method === 'thread/resume') return json({ result: { thread: threads.get(params.threadId) || sourceThread, model: 'build-model', reasoningEffort: 'high', cwd: project } })
           if (method === 'model/list') return json({ result: { data: [{ id: 'build-model', model: 'build-model', isDefault: true, supportedReasoningEfforts: [{ reasoningEffort: 'high', description: 'High' }] }] } })
@@ -178,6 +185,12 @@ try {
     try {
       await page.goto(`${origin}/#/thread/${sourceId}`, { waitUntil: 'domcontentloaded' })
       await page.getByText('We can fix this as one small feature.', { exact: true }).waitFor()
+      assert.ok(historyReads.length > 0)
+      assert.ok(historyReads.every((read) => read.threadId === sourceId), 'Reload reads only the routed chat, even while sidebar/account requests are pending')
+      assert.equal(historyReads[0].limit, 5, 'Open with a small latest-turn page')
+      await page.screenshot({ path: join(output, `startup-chat-${label}.png`), fullPage: true })
+      holdStartup = false
+      releaseStartup()
       assert.equal(await page.getByRole('region', { name: 'Linked board', exact: true }).count(), 0, 'Ordinary chats do not opt into a board automatically')
       await page.getByRole('button', { name: 'Project board actions', exact: true }).click()
       await page.getByRole('button', { name: 'Open project board', exact: true }).waitFor()

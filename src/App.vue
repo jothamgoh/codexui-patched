@@ -403,7 +403,7 @@
 </template>
 
 <script setup lang="ts">
-import { computed, nextTick, onMounted, onUnmounted, ref, watch } from 'vue'
+import { computed, defineAsyncComponent, nextTick, onMounted, onUnmounted, ref, watch } from 'vue'
 import { Blocks, CalendarClock, SquareKanban } from '@lucide/vue'
 import { useRoute, useRouter } from 'vue-router'
 import DesktopLayout from './components/layout/DesktopLayout.vue'
@@ -416,11 +416,6 @@ import { useComposerDraftStore } from './stores/composerDrafts'
 import { collectProjectBoardActivity } from './utils/projectBoardActivity'
 import QueuedMessages from './components/content/QueuedMessages.vue'
 import NewThreadFolderPicker from './components/content/NewThreadFolderPicker.vue'
-import SkillsHub from './components/content/SkillsHub.vue'
-import McpHub from './components/content/McpHub.vue'
-import PluginsHub from './components/content/PluginsHub.vue'
-import ScheduledTasksHub from './components/content/ScheduledTasksHub.vue'
-import ProjectBoardsHub from './components/content/ProjectBoardsHub.vue'
 import BoardPlanDialog, { type BoardPlanDraft } from './components/content/BoardPlanDialog.vue'
 import Button from './components/ui/button/Button.vue'
 import { Popover, PopoverContent, PopoverTrigger } from './components/ui/popover'
@@ -457,6 +452,12 @@ import {
 import type { ReasoningEffort, ResponseTextAnnotation, ThreadScrollState, UiMessage, UiThread, UiProjectGroup } from './types/codex'
 import type { AutomationDraft } from './types/automations'
 import type { ProjectBoardCardCreateInput, ProjectBoardCreateInput, ProjectBoardStatus } from './types/projectBoards'
+
+const SkillsHub = defineAsyncComponent(() => import('./components/content/SkillsHub.vue'))
+const McpHub = defineAsyncComponent(() => import('./components/content/McpHub.vue'))
+const PluginsHub = defineAsyncComponent(() => import('./components/content/PluginsHub.vue'))
+const ScheduledTasksHub = defineAsyncComponent(() => import('./components/content/ScheduledTasksHub.vue'))
+const ProjectBoardsHub = defineAsyncComponent(() => import('./components/content/ProjectBoardsHub.vue'))
 
 const SIDEBAR_COLLAPSED_STORAGE_KEY = 'codex-web-local.sidebar-collapsed.v1'
 const SIDEBAR_TOOLS_OPEN_STORAGE_KEY = 'codex-web-local.sidebar-tools-open.v1'
@@ -968,11 +969,11 @@ function onAppResume(): void {
 }
 
 function onSkillsChanged(): void {
-  void refreshSkills()
+  void refreshSkills(composerCwd.value)
 }
 
 function onPluginsChanged(): void {
-  void refreshSkills()
+  void refreshSkills(composerCwd.value)
 }
 
 function openChatSearch(): void {
@@ -1687,17 +1688,18 @@ function findRecoveredConnectionFailureIds(items: UiMessage[]): Set<string> {
 }
 
 async function initialize(): Promise<void> {
-  // Board updates and approval requests must not wait for chat/account hydration.
+  // Open the requested chat independently of sidebar and account hydration.
+  // A saved selection must never load a different conversation on reload.
   startPolling()
-  await Promise.all([
-    refreshAll(),
-    refreshPinnedThreads(),
-  ])
+  const refresh = refreshAll({ loadSelectedThread: false })
+  void refreshPinnedThreads()
+  await syncThreadSelectionWithRoute(true)
   hasInitialized.value = true
+  await refresh
   await syncThreadSelectionWithRoute()
 }
 
-async function syncThreadSelectionWithRoute(): Promise<void> {
+async function syncThreadSelectionWithRoute(loadInitialMessages = false): Promise<void> {
   if (isRouteSyncInProgress.value) return
   isRouteSyncInProgress.value = true
   const requestedRoute = route.fullPath
@@ -1733,7 +1735,7 @@ async function syncThreadSelectionWithRoute(): Promise<void> {
         return
       }
 
-      if (selectedThreadId.value !== threadId) {
+      if (selectedThreadId.value !== threadId || loadInitialMessages) {
         await selectThread(threadId)
       }
       return
@@ -1744,6 +1746,11 @@ async function syncThreadSelectionWithRoute(): Promise<void> {
     if (route.fullPath !== requestedRoute) void syncThreadSelectionWithRoute()
   }
 }
+
+watch(
+  () => [hasInitialized.value, composerCwd.value] as const,
+  ([initialized, cwd]) => { if (initialized) void refreshSkills(cwd) },
+)
 
 watch(
   () =>

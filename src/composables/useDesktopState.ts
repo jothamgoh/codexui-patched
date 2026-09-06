@@ -104,6 +104,7 @@ const BROWSER_TURN_NOTIFICATION_BODY_MAX_LENGTH = 180
 const MAX_BROWSER_NOTIFIED_TURNS = 200
 const GOAL_CONTINUATION_DELAY_MS = 350
 const THREAD_MESSAGE_PAGE_SIZE = 20
+const THREAD_TAIL_PAGE_SIZE = 5
 const THREAD_AUDIENCE_LOOKUP_TIMEOUT_MS = 4_000
 
 function loadReadStateMap(): Record<string, string> {
@@ -1211,10 +1212,12 @@ export function useDesktopState() {
   const fastModeEnabled = ref(false)
   const isUpdatingFastMode = ref(false)
   const fastModeError = ref('')
+  let pendingModelPreferences: Promise<void> | null = null
   const selectedModelId = ref(persistedNewThreadModelConfig.model)
   const selectedReasoningEffort = ref<ReasoningEffort | ''>(persistedNewThreadModelConfig.reasoningEffort)
   const threadModelConfigById = ref<Record<string, ThreadModelConfig>>(loadThreadModelConfigMap())
   const newThreadModelConfig = ref<ThreadModelConfig>(persistedNewThreadModelConfig)
+  let newThreadPreferenceVersion = 0
   const readStateByThreadId = ref<Record<string, string>>(loadReadStateMap())
   const sharedReadStateVersion = ref(0)
   const scrollStateByThreadId = ref<Record<string, ThreadScrollState>>(loadThreadScrollStateMap())
@@ -1234,6 +1237,7 @@ export function useDesktopState() {
   const loadingEarlierByThreadId = ref<Record<string, boolean>>({})
   const earlierLoadErrorByThreadId = ref<Record<string, string>>({})
   const resumedThreadById = ref<Record<string, boolean>>({})
+  const pendingThreadResumes = new Map<string, Promise<ThreadModelConfig>>()
   const turnSummaryByThreadId = ref<TurnSummaryByThreadId>(loadTurnSummaryMap())
   const turnActivityByThreadId = ref<Record<string, TurnActivityState>>({})
   const turnErrorByThreadId = ref<Record<string, TurnErrorState>>({})
@@ -1245,6 +1249,8 @@ export function useDesktopState() {
   const threadTitleById = ref<Record<string, string>>({})
 
   const installedSkills = ref<SkillInfo[]>([])
+  let pendingSkills: { cwd: string; promise: Promise<void> } | null = null
+  let lastSkillsCwd = ''
 
   const isLoadingThreads = ref(false)
   const isLoadingMessages = ref(false)
@@ -1259,6 +1265,8 @@ export function useDesktopState() {
   let stopNotificationStream: (() => void) | null = null
   let eventSyncTimer: number | null = null
   let pendingThreadsRefresh = false
+  let threadListNotificationVersion = 0
+  let pendingThreadList: { version: number; promise: Promise<void> } | null = null
   const pendingThreadMessageRefresh = new Set<string>()
   let hasHydratedWorkspaceRootsState = false
   let activeReasoningItemId = ''
@@ -1369,6 +1377,7 @@ export function useDesktopState() {
     if (selectedThreadId.value === nextThreadId) return
     const previousThreadId = selectedThreadId.value
     selectedThreadId.value = nextThreadId
+    isLoadingMessages.value = false
     if (previousThreadId) {
       trimInactiveMessageCache(previousThreadId)
       rememberMessageCache(previousThreadId)
@@ -1480,6 +1489,7 @@ export function useDesktopState() {
       }, false)
       return
     }
+    newThreadPreferenceVersion += 1
     newThreadModelConfig.value = {
       model: nextModelId,
       reasoningEffort: selectedReasoningEffort.value || getDefaultModelConfig().reasoningEffort,
@@ -1502,6 +1512,7 @@ export function useDesktopState() {
       }, false)
       return
     }
+    newThreadPreferenceVersion += 1
     newThreadModelConfig.value = {
       model: selectedModelId.value.trim() || getDefaultModelConfig().model,
       reasoningEffort: effort || getDefaultModelConfig().reasoningEffort,
@@ -1546,6 +1557,18 @@ export function useDesktopState() {
   }
 
   async function refreshModelPreferences(): Promise<void> {
+    if (pendingModelPreferences) return pendingModelPreferences
+    const pending = readModelPreferences()
+    pendingModelPreferences = pending
+    try {
+      await pending
+    } finally {
+      if (pendingModelPreferences === pending) pendingModelPreferences = null
+    }
+  }
+
+  async function readModelPreferences(): Promise<void> {
+    const initialPreferenceVersion = newThreadPreferenceVersion
     try {
       const [modelCatalog, currentConfig, runtimeConfig] = await Promise.all([
         getAvailableModelCatalog(),
@@ -1580,7 +1603,7 @@ export function useDesktopState() {
         }
       }
 
-      if (runtimeConfig.defaultReasoningEffort) {
+      if (runtimeConfig.defaultReasoningEffort && newThreadPreferenceVersion === initialPreferenceVersion) {
         newThreadModelConfig.value = {
           model: defaultModelId.value,
           reasoningEffort: runtimeConfig.defaultReasoningEffort,
@@ -2086,12 +2109,23 @@ export function useDesktopState() {
     return true
   }
 
+  async function readThreadTail(threadId: string) {
+    const previousEnd = paginationByThreadId.value[threadId]?.endTurnIndex
+    const page = await getThreadMessagesWithStatus(threadId, { limit: THREAD_TAIL_PAGE_SIZE })
+    // After a longer disconnect, retain the previous 20-turn catch-up window.
+    // Ordinary refreshes need only the recent tail, not another large replay.
+    if (previousEnd !== undefined && page.startTurnIndex > previousEnd) {
+      return getThreadMessagesWithStatus(threadId, { limit: THREAD_MESSAGE_PAGE_SIZE })
+    }
+    return page
+  }
+
   async function reconcileThreadProgressState(threadId: string): Promise<void> {
     if (!threadId) return
     try {
       const readId = ++historyReadSequence
       const [page, nextGoal] = await Promise.all([
-        getThreadMessagesWithStatus(threadId),
+        readThreadTail(threadId),
         getThreadGoal(threadId).catch(() => null),
       ])
       if (!acceptHistoryRead(threadId, readId)) return
@@ -3571,6 +3605,11 @@ export function useDesktopState() {
 
     const completedTurn = readTurnCompletedInfo(notification)
     if (completedTurn) {
+      const reconcileTimer = inProgressReconcileTimerByThreadId.get(completedTurn.threadId)
+      if (reconcileTimer !== undefined) {
+        window.clearTimeout(reconcileTimer)
+        inProgressReconcileTimerByThreadId.delete(completedTurn.threadId)
+      }
       realtimeMessageVersionByThreadId.set(completedTurn.threadId, ++historyReadSequence)
       const startedTurnState = pendingTurnStartsById.get(completedTurn.turnId)
       if (startedTurnState) {
@@ -3771,20 +3810,30 @@ export function useDesktopState() {
   }
 
   function queueEventDrivenSync(notification: RpcNotification): void {
+    const method = notification.method
+    // These events have already updated live state. Re-reading the transcript
+    // for each text/progress chunk turns a stream into constant history replay.
+    if (method === 'thread/tokenUsage/updated' || method === 'thread/goal/updated'
+      || method === 'thread/goal/cleared') return
     const threadId = extractThreadIdFromNotification(notification)
-    if (threadId) {
+    const turnBoundary = method === 'turn/started' || method === 'turn/completed'
+    const refreshThreads = method.startsWith('thread/') || turnBoundary
+    const unhandledItemStarted = method === 'item/started' && threadId === selectedThreadId.value
+      && !readAgentMessageStartedId(notification) && !readReasoningStartedItemId(notification)
+      && !readCommandExecutionStarted(notification) && !readRealtimeToolItemStarted(notification)
+    const refreshHistory = turnBoundary || method === 'item/completed' || unhandledItemStarted
+      || method === 'turn/plan/updated' || method === 'turn/diff/updated' || method === 'error'
+      || (method.startsWith('thread/') && method !== 'thread/name/updated')
+    if (refreshHistory && threadId && threadId === selectedThreadId.value) {
       pendingThreadMessageRefresh.add(threadId)
     }
 
-    const method = notification.method
-    if (
-      method.startsWith('thread/') ||
-      method.startsWith('turn/') ||
-      method.startsWith('item/')
-    ) {
+    if (refreshThreads) {
+      threadListNotificationVersion += 1
       pendingThreadsRefresh = true
     }
 
+    if (!pendingThreadsRefresh && pendingThreadMessageRefresh.size === 0) return
     if (eventSyncTimer !== null || typeof window === 'undefined') return
     eventSyncTimer = window.setTimeout(() => {
       eventSyncTimer = null
@@ -3868,7 +3917,25 @@ export function useDesktopState() {
     }
   }
 
-  async function loadThreads() {
+  async function loadThreads(): Promise<void> {
+    if (pendingThreadList) {
+      const pending = pendingThreadList
+      await pending.promise
+      // A notification received after that request began still needs a fresh
+      // list. Only identical overlapping reads share the response.
+      if (pending.version === threadListNotificationVersion) return
+      return loadThreads()
+    }
+    const pending = { version: threadListNotificationVersion, promise: readThreads() }
+    pendingThreadList = pending
+    try {
+      await pending.promise
+    } finally {
+      if (pendingThreadList === pending) pendingThreadList = null
+    }
+  }
+
+  async function readThreads() {
     if (!hasLoadedThreads.value) {
       isLoadingThreads.value = true
     }
@@ -3943,7 +4010,7 @@ export function useDesktopState() {
 
     try {
       if (resumedThreadById.value[threadId] !== true) {
-        const modelConfig = await resumeThread(threadId)
+        const modelConfig = await resumeThreadOnce(threadId)
         const cachedConfig = threadModelConfigById.value[threadId]
         if (cachedConfig) {
           applyThreadModelConfig(threadId, cachedConfig, threadId === selectedThreadId.value)
@@ -3963,7 +4030,7 @@ export function useDesktopState() {
 
       const readId = ++historyReadSequence
       const [page, nextGoal] = await Promise.all([
-        getThreadMessagesWithStatus(threadId, { limit: THREAD_MESSAGE_PAGE_SIZE }),
+        readThreadTail(threadId),
         getThreadGoal(threadId).catch(() => null),
       ])
       if (!acceptHistoryRead(threadId, readId)) return
@@ -4014,7 +4081,7 @@ export function useDesktopState() {
       maybeAutoClearCompletedThreadGoal(threadId, nextGoal)
       markThreadAsRead(threadId)
     } finally {
-      if (shouldShowLoading) {
+      if (shouldShowLoading && selectedThreadId.value === threadId) {
         isLoadingMessages.value = false
       }
     }
@@ -4057,26 +4124,49 @@ export function useDesktopState() {
     }
   }
 
-  async function refreshSkills(): Promise<void> {
+  async function resumeThreadOnce(threadId: string): Promise<ThreadModelConfig> {
+    const existing = pendingThreadResumes.get(threadId)
+    if (existing) return existing
+    const pending = resumeThread(threadId)
+    pendingThreadResumes.set(threadId, pending)
     try {
-      const cwds = sourceGroups.value.flatMap((g) => g.threads.map((t) => t.cwd)).filter(Boolean)
-      installedSkills.value = await getSkillsList(cwds.length > 0 ? [...new Set(cwds)] : undefined)
-    } catch {
-      // keep previous skills on failure
+      return await pending
+    } finally {
+      if (pendingThreadResumes.get(threadId) === pending) pendingThreadResumes.delete(threadId)
     }
   }
 
-  async function refreshAll() {
+  async function refreshSkills(cwd = selectedThread.value?.cwd ?? lastSkillsCwd): Promise<void> {
+    const targetCwd = cwd.trim()
+    lastSkillsCwd = targetCwd
+    if (pendingSkills?.cwd === targetCwd) return pendingSkills.promise
+    const pending = { cwd: targetCwd, promise: Promise.resolve() }
+    pendingSkills = pending
+    pending.promise = (async () => {
+      try {
+        const skills = await getSkillsList(targetCwd ? [targetCwd] : undefined)
+        if (pendingSkills === pending) installedSkills.value = skills
+      } catch {
+        // Keep previous skills on failure.
+      } finally {
+        if (pendingSkills === pending) pendingSkills = null
+      }
+    })()
+    return pending.promise
+  }
+
+  async function refreshAll(options: { loadSelectedThread?: boolean } = {}) {
     error.value = ''
+    // Sidebar and selected-chat readiness do not depend on optional metadata.
+    void refreshModelPreferences()
+    void refreshAccountRateLimits()
 
     try {
       await loadThreads()
-      await Promise.all([
-        refreshModelPreferences(),
-        refreshSkills(),
-        refreshAccountRateLimits(),
-      ])
-      await loadMessages(selectedThreadId.value)
+      if (options.loadSelectedThread !== false) {
+        void refreshSkills()
+        await loadMessages(selectedThreadId.value)
+      }
     } catch (unknownError) {
       error.value = unknownError instanceof Error ? unknownError.message : 'Unknown application error'
     }
@@ -4165,10 +4255,13 @@ export function useDesktopState() {
   async function createThreadWithGoal(objective: string, cwd: string): Promise<string> {
     const normalizedObjective = objective.trim()
     const targetCwd = cwd.trim()
-    const selectedModel = selectedModelId.value.trim()
+    const requestedModel = selectedModelId.value.trim()
+    const requestedEffort = selectedReasoningEffort.value
     if (!normalizedObjective) return ''
 
     error.value = ''
+    await pendingModelPreferences
+    const selectedModel = requestedModel || getDefaultModelConfig().model
     const startResult = await startThread(
       targetCwd || undefined,
       selectedModel || undefined,
@@ -4179,7 +4272,7 @@ export function useDesktopState() {
 
     applyThreadModelConfig(threadId, {
       model: selectedModel || startResult.modelConfig.model,
-      reasoningEffort: selectedReasoningEffort.value || startResult.modelConfig.reasoningEffort,
+      reasoningEffort: requestedEffort || startResult.modelConfig.reasoningEffort,
     }, false)
     insertOptimisticThread(threadId, targetCwd, normalizedObjective)
     setSelectedThreadId(threadId)
@@ -4326,7 +4419,8 @@ export function useDesktopState() {
   ): Promise<string> {
     const nextText = text.trim()
     const targetCwd = cwd.trim()
-    const selectedModel = selectedModelId.value.trim()
+    const requestedModel = selectedModelId.value.trim()
+    const requestedEffort = selectedReasoningEffort.value
     if (!nextText && imageUrls.length === 0 && fileAttachments.length === 0 && responseTextAnnotations.length === 0) return ''
 
     isSendingMessage.value = true
@@ -4334,6 +4428,8 @@ export function useDesktopState() {
     let threadId = ''
 
     try {
+      await pendingModelPreferences
+      const selectedModel = requestedModel || getDefaultModelConfig().model
       const startResult = await startThread(
         targetCwd || undefined,
         selectedModel || undefined,
@@ -4343,7 +4439,7 @@ export function useDesktopState() {
       if (!threadId) return ''
       applyThreadModelConfig(threadId, {
         model: selectedModel || startResult.modelConfig.model,
-        reasoningEffort: selectedReasoningEffort.value || startResult.modelConfig.reasoningEffort,
+        reasoningEffort: requestedEffort || startResult.modelConfig.reasoningEffort,
       }, false)
 
       insertOptimisticThread(threadId, targetCwd, nextText || (responseTextAnnotations.length > 0 ? '[Selection]' : '[Image]'))
@@ -4417,13 +4513,14 @@ export function useDesktopState() {
     plugins: PluginMentionParam[] = [],
     threads: ThreadMentionParam[] = [],
   ): Promise<void> {
+    await pendingModelPreferences
     const modelConfig = getTurnModelConfig(threadId)
     let modelId = modelConfig.model.trim()
     let reasoningEffort = modelConfig.reasoningEffort
 
     try {
       if (resumedThreadById.value[threadId] !== true) {
-        const resumedConfig = await resumeThread(threadId)
+        const resumedConfig = await resumeThreadOnce(threadId)
         if (!modelId && !reasoningEffort) {
           applyThreadModelConfig(threadId, resumedConfig, threadId === selectedThreadId.value)
           modelId = resumedConfig.model.trim()
@@ -4866,12 +4963,11 @@ export function useDesktopState() {
       if (!activeThreadId) return
 
       const isActiveDirty = threadIdsToRefresh.has(activeThreadId)
-      const isInProgress = inProgressById.value[activeThreadId] === true
       const currentVersion = currentThreadVersion(activeThreadId)
       const loadedVersion = loadedVersionByThreadId.value[activeThreadId] ?? ''
       const hasVersionChange = currentVersion.length > 0 && currentVersion !== loadedVersion
 
-      if (isActiveDirty || isInProgress || hasVersionChange || shouldRefreshThreads) {
+      if (isActiveDirty || hasVersionChange) {
         await loadMessages(activeThreadId, { silent: true })
       }
     } catch {
@@ -4906,13 +5002,15 @@ export function useDesktopState() {
         void (async () => {
           try {
             await loadThreads()
-            await Promise.all([refreshModelPreferences(), refreshSkills(), refreshAccountRateLimits()])
+            void refreshModelPreferences()
+            void refreshSkills()
+            void refreshAccountRateLimits()
 
             const threadId = selectedThreadId.value
             if (threadId) {
               const readId = ++historyReadSequence
               const [page, goal] = await Promise.all([
-                getThreadMessagesWithStatus(threadId),
+                readThreadTail(threadId),
                 getThreadGoal(threadId).catch(() => null),
               ])
               if (!acceptHistoryRead(threadId, readId)) return
@@ -4990,6 +5088,9 @@ export function useDesktopState() {
     }
 
     pendingThreadsRefresh = false
+    threadListNotificationVersion += 1
+    pendingThreadResumes.clear()
+    pendingSkills = null
     pendingThreadMessageRefresh.clear()
     pendingTurnStartsById.clear()
     if (eventSyncTimer !== null && typeof window !== 'undefined') {

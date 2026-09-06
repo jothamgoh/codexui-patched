@@ -12,6 +12,19 @@ user’s request; its saved rendering work has now been reviewed in the follow-u
 
 ## Current follow-up
 
+- Startup and remaining blank-tail fix: use the native indexed chat catalog
+  (same 100 summaries, no message bodies), open the routed chat without waiting
+  for sidebar/account/skills, and load five recent turns with older pages on
+  demand. Workspace skills stay scoped; early sends retain model/reasoning/speed
+  choices. Streaming deltas update memory without repeated history downloads.
+  Optional hub screens load their own code/styles when opened.
+- Reproduced the desktop blank bottom with batched real visibility records: the
+  old handler applied an obsolete off-screen record and left visible replies as
+  empty shells. Applying the latest record fixes that case. This is distinct
+  from the earlier history/scroll races below. All 242 unit tests, production
+  build, desktop/Chromium touch chat workflow, and the existing 2,000-message
+  rendering/voice journey passed. Physical iPhone Safari remains unverified.
+
 - Long-chat rendering: reviewed the saved Lead changes and fixed a confirmed
   overlapping cold-read race that discarded earlier text/summaries/pagination.
   Completed work rows remain until matching history arrives. Browser clamping

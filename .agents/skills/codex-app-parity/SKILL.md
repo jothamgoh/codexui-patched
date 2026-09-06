@@ -5,6 +5,27 @@ description: "Use when implementing or changing user-visible behavior/UI in this
 
 # Codex App Parity Skill
 
+## Findings: Fast startup and streamed history (2026-09-06)
+
+- Current native app-initial uses thread/list with useStateDbOnly and an initial
+  five-turn page. The installed CLI advertises that flag as skipping JSONL
+  scan/repair. A read-only comparison returned the same 100 recent IDs and
+  metadata in 11–54ms versus 13.2s for scanning. Keep the existing metadata limit;
+  full message bodies are for the opened chat, not sidebar rows.
+- Open a URL's exact chat alongside sidebar hydration. Optional model/account
+  metadata and workspace skill discovery must not gate readable history; early
+  sends still preserve their chosen model, reasoning, and speed settings.
+- Stream deltas already update local content. Re-reading history/list on every
+  delta caused a constant request stream after removing the slow catalog call.
+  Reconcile at item/turn milestones, reconnect, and explicit refresh instead.
+  Keep independent history freshness checks; share only list/resume lookups.
+- Fetch five tail turns for ordinary updates, retain 20-turn earlier pages and
+  catch-up fallback. This reduces browser transfer but does not change the
+  bridge's existing full native thread/read before slicing; migrating absolute
+  indices to native cursor paging is separate work.
+- Native tools/routes use split chunks. Vue async route hubs likewise defer
+  their code/styles until opened. Scope Tailwind detection to application source.
+
 ## Findings: Batched visibility records and blank chat tails (2026-09-06)
 
 - Native local-conversation-thread-7fad29d31eb2.js processes the latest entry

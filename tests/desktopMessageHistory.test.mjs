@@ -27,10 +27,11 @@ const flush = async () => { for (let index = 0; index < 12; index++) await Promi
 const message = (text, overrides = {}) => ({ id: 'answer', role: 'assistant', text, messageType: 'agentMessage', turnId: 'turn-1', turnIndex: 50, orderKey: '000050:000002:000000', ...overrides })
 const page = (messages, isInProgress = true) => ({ messages, isInProgress, activeTurnId: isInProgress ? 'turn-1' : '', turnSummaries: [], startTurnIndex: 50, endTurnIndex: 51, totalTurns: 51, hasEarlier: true })
 
-function fixture(t) {
+function fixture(t, gateway = {}) {
   const storage = new Map()
   let timerId = 0
-  globalThis.window = { localStorage: { getItem: (key) => storage.get(key) ?? null, setItem: (key, value) => storage.set(key, value), removeItem: (key) => storage.delete(key) }, setTimeout: () => ++timerId, clearTimeout() {} }
+  const timers = new Map()
+  globalThis.window = { localStorage: { getItem: (key) => storage.get(key) ?? null, setItem: (key, value) => storage.set(key, value), removeItem: (key) => storage.delete(key) }, setTimeout: (callback, delay) => { const id = ++timerId; timers.set(id, { callback, delay }); return id }, clearTimeout: (id) => timers.delete(id) }
   const reads = []
   let stream
   let rollbackResult = []
@@ -45,6 +46,7 @@ function fixture(t) {
     getSharedThreadReadState: async () => null,
     getWorkspaceRootsState: async () => ({ order: [], labels: {}, active: [] }),
     rollbackThread: async () => rollbackResult,
+    ...gateway,
   }, { get: (target, key) => target[key] ?? (async () => null) })
   const state = useDesktopState()
   state.startPolling()
@@ -53,6 +55,7 @@ function fixture(t) {
     state, reads,
     async read() { const pending = state.selectThread('chat-1'); await flush(); assert.ok(reads.length); return { pending, response: reads.at(-1) } },
     emit(method, params) { stream.onNotification({ method, params: { threadId: 'chat-1', turnId: 'turn-1', ...params } }) },
+    async runTimers(delay) { for (const [id, timer] of [...timers]) if (timer.delay === delay) { timers.delete(id); timer.callback() } await flush() },
     setRollback(messages) { rollbackResult = messages },
     answers() { return state.messages.value.filter((item) => item.id === 'answer') },
   }
@@ -207,4 +210,151 @@ test('completed work stays visible through turn completion and delayed history w
   await hydrated.pending
   assertVisible()
   for (const item of work) assert.equal(f.state.messages.value.find((row) => row.id === item.id).turnIndex, 50)
+})
+
+test('selected history loads while startup metadata is pending and overlapping lists share a request', async (t) => {
+  const lists = []
+  const limits = []
+  const starts = []
+  let finishModels
+  const f = fixture(t, {
+    getThreadGroups: () => new Promise((resolve) => lists.push(resolve)),
+    getAvailableModelCatalog: () => new Promise((resolve) => { finishModels = resolve }),
+    getCurrentModelConfig: async () => ({ model: 'fixture-model', reasoningEffort: 'low', fastModeEnabled: true }),
+    getCodexUiRuntimeConfig: async () => ({ defaultReasoningEffort: 'low' }),
+    getAccountRateLimits: () => new Promise((resolve) => limits.push(resolve)),
+    startThread: async (...args) => { starts.push(args); return { threadId: '' } },
+  })
+  const startup = f.state.refreshAll({ loadSelectedThread: false })
+  const overlapping = f.state.refreshAll({ loadSelectedThread: false })
+  const selected = await f.read()
+  assert.equal(lists.length, 1)
+  assert.equal(selected.response.options.limit, 5)
+  selected.response.resolve(page([message('Ready before optional metadata')], false))
+  await selected.pending
+  assert.equal(f.answers()[0].text, 'Ready before optional metadata')
+  f.emit('thread/name/updated', { threadName: 'Updated' })
+  const afterNotification = f.state.refreshAll({ loadSelectedThread: false })
+  lists[0]([])
+  await flush()
+  assert.equal(lists.length, 2, 'A notification newer than the shared list still triggers a fresh read')
+  lists[1]([])
+  await Promise.all([startup, overlapping, afterNotification])
+  assert.equal(f.reads.length, 1, 'Background startup does not also load the saved chat')
+  await f.state.selectThread('')
+  await f.state.setSelectedModelId('fixture-model')
+  await f.state.setSelectedReasoningEffort('high')
+  const send = f.state.sendMessageToNewThread('A new request', '/fixture')
+  await flush()
+  assert.equal(starts.length, 0, 'Sending waits for preferences without delaying readable history')
+  await f.state.setSelectedModelId('another-model')
+  finishModels({ ids: ['fixture-model', 'another-model'], fastServiceTierByModel: { 'fixture-model': 'priority' } })
+  limits.forEach((resolve) => resolve(null))
+  await send
+  assert.equal(starts[0][1], 'fixture-model', 'A pending send retains the model chosen at submission')
+  assert.equal(starts[0][2], 'priority')
+  assert.equal(f.state.selectedReasoningEffort.value, 'high', 'A choice made while metadata loaded is preserved')
+})
+
+test('concurrent cold selection shares resume but keeps independently ordered history reads', async (t) => {
+  let resumeCount = 0
+  let finishResume
+  const f = fixture(t, {
+    resumeThread: () => { resumeCount += 1; return new Promise((resolve) => { finishResume = resolve }) },
+  })
+  const first = f.state.selectThread('chat-1')
+  const second = f.state.selectThread('chat-1')
+  await flush()
+  assert.equal(resumeCount, 1)
+  assert.equal(f.reads.length, 0)
+  finishResume({ model: 'fixture-model', reasoningEffort: 'low' })
+  await flush()
+  assert.equal(f.reads.length, 2)
+  f.reads[1].resolve(page([message('Newest final', { phase: 'final_answer' })], false))
+  await second
+  f.reads[0].resolve(page([message('Older snapshot')]))
+  await first
+  assert.equal(f.answers()[0].text, 'Newest final')
+})
+
+test('skills load only the requested workspace and late results cannot replace the current workspace', async (t) => {
+  const requests = []
+  const f = fixture(t, {
+    getSkillsList: (cwds) => new Promise((resolve) => requests.push({ cwds, resolve })),
+  })
+  const first = f.state.refreshSkills('/first')
+  const same = f.state.refreshSkills('/first')
+  const current = f.state.refreshSkills('/current')
+  assert.deepEqual(requests.map((request) => request.cwds), [['/first'], ['/current']])
+  requests[1].resolve([{ name: 'Current skill', path: '/current/SKILL.md' }])
+  await current
+  requests[0].resolve([{ name: 'Old skill', path: '/first/SKILL.md' }])
+  await Promise.all([first, same])
+  assert.equal(f.state.installedSkills.value[0].name, 'Current skill')
+  const reconnect = f.state.refreshSkills()
+  assert.deepEqual(requests.at(-1).cwds, ['/current'], 'An untargeted refresh keeps the selected new-chat folder')
+  requests.at(-1).resolve([])
+  await reconnect
+})
+
+test('tail refreshes stay small and restore the previous catch-up window after a gap', async (t) => {
+  const f = fixture(t)
+  const first = await f.read()
+  first.response.resolve(page([message('Earlier answer')], false))
+  await first.pending
+  const current = await f.read()
+  assert.equal(current.response.options.limit, 5)
+  current.response.resolve({ ...page([message('Recent answer')], false), startTurnIndex: 51, endTurnIndex: 56, totalTurns: 56 })
+  await current.pending
+  assert.equal(f.reads.length, 2)
+  const afterGap = await f.read()
+  afterGap.response.resolve({ ...page([message('Latest answer')], false), startTurnIndex: 60, endTurnIndex: 65, totalTurns: 65 })
+  await flush()
+  assert.equal(f.reads.at(-1).options.limit, 20)
+  f.reads.at(-1).resolve({
+    ...page([message('Gap answer', { id: 'gap-answer', turnIndex: 57 }), message('Latest answer')], false),
+    startTurnIndex: 45, endTurnIndex: 65, totalTurns: 65,
+  })
+  await afterGap.pending
+  assert.equal(f.state.messages.value.find((item) => item.id === 'gap-answer')?.text, 'Gap answer')
+})
+
+test('streaming bursts update live content without replaying history, then completion reconciles once', async (t) => {
+  let listReads = 0
+  const f = fixture(t, { getThreadGroups: async () => {
+    listReads += 1
+    return [{ projectName: 'fixture', threads: [{ id: 'chat-1', projectName: 'fixture', cwd: '/fixture', title: 'Fixture', runtimeStatus: 'idle' }] }]
+  } })
+  const initial = await f.read()
+  initial.response.resolve(page([message('')]))
+  await initial.pending
+  f.emit('item/started', { item: { id: 'command', type: 'commandExecution', command: 'check' } })
+  f.emit('item/started', { item: { id: 'reasoning', type: 'reasoning' } })
+  f.emit('item/started', { item: { id: 'tool', type: 'mcpToolCall', server: 'fixture', tool: 'check' } })
+  for (let batch = 0; batch < 10; batch++) {
+    for (let index = 0; index < 10; index++) {
+      f.emit('item/agentMessage/delta', { itemId: 'answer', delta: 'x' })
+      f.emit('item/commandExecution/outputDelta', { itemId: 'command', delta: 'log\n' })
+      f.emit('item/reasoning/summaryTextDelta', { itemId: 'reasoning', delta: 'Thinking' })
+      f.emit('item/mcpToolCall/progress', { itemId: 'tool', message: 'Checking' })
+      f.emit('thread/tokenUsage/updated', { tokenUsage: {} })
+      f.emit('account/rateLimits/updated', { rateLimits: {} })
+    }
+    await f.runTimers(220)
+    assert.equal(f.reads.length, 1)
+    assert.equal(listReads, 0)
+  }
+  assert.equal(f.answers()[0].text, 'x'.repeat(100))
+  assert.equal(f.state.messages.value.find((item) => item.id === 'command').commandExecution.aggregatedOutput, 'log\n'.repeat(100))
+  f.emit('item/completed', { item: { id: 'answer', type: 'agentMessage', text: 'Done', phase: 'final_answer' } })
+  f.emit('turn/completed', { turn: { id: 'turn-1', status: 'completed' } })
+  await f.runTimers(220)
+  await flush()
+  assert.equal(listReads, 1)
+  assert.equal(f.reads.length, 2)
+  f.reads[1].resolve(page([message('Done', { phase: 'final_answer' })], false))
+  await flush()
+  await f.runTimers(900)
+  assert.equal(f.reads.length, 2, 'Turn completion cancels the redundant item-completion fallback')
+  assert.equal(f.answers()[0].text, 'Done')
 })

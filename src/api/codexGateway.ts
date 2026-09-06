@@ -529,6 +529,8 @@ async function getThreadGroupsV2(): Promise<UiProjectGroup[]> {
     archived: false,
     limit: 100,
     sortKey: 'updated_at',
+    // The sidebar needs indexed metadata; scanning every rollout delays startup.
+    useStateDbOnly: true,
   })
   return normalizeThreadGroupsV2(payload)
 }

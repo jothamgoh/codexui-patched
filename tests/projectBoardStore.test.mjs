@@ -308,16 +308,21 @@ test('maintained starters migrate to inherited reasoning while custom instructio
     reasoningEffort: 'high',
   })
   const custom = snapshot.agents.find((agent) => agent.name === 'My product lead')
-  const currentLead = snapshot.agents.find((agent) => agent.id === 'builtin-lead')
+  const maintainedAgents = snapshot.agents.filter((agent) => agent.builtIn)
   const saved = JSON.parse(await readFile(fixture.stateFilePath, 'utf8'))
-  saved.agents.find((agent) => agent.id === 'builtin-lead').instructions = 'Outdated starter instructions.'
+  for (const agent of saved.agents.filter((agent) => agent.builtIn)) {
+    agent.instructions = 'Outdated starter instructions.'
+  }
   saved.agents.find((agent) => agent.id === 'builtin-lead').reasoningEffort = 'high'
   await writeFile(fixture.stateFilePath, JSON.stringify(saved))
   const reloaded = await fixture.reopen().read()
-  assert.equal(reloaded.agents.find((agent) => agent.id === 'builtin-lead').instructions, currentLead.instructions)
+  for (const agent of maintainedAgents) {
+    assert.equal(reloaded.agents.find((entry) => entry.id === agent.id).instructions, agent.instructions)
+  }
   assert.equal(reloaded.agents.find((agent) => agent.id === 'builtin-lead').reasoningEffort, '')
   assert.deepEqual(reloaded.agents.find((agent) => agent.id === custom.id), custom)
-  assert.equal(reloaded.cards.length, snapshot.cards.length)
+  assert.deepEqual(reloaded.cards, snapshot.cards)
+  assert.deepEqual(reloaded.boards, snapshot.boards)
   const inherited = await fixture.store.createAgent({ name: 'Inherit the Lead', instructions: 'Perform the delegated task.' })
   const profile = inherited.agents.find((agent) => agent.name === 'Inherit the Lead')
   assert.deepEqual([profile.model, profile.reasoningEffort], ['', ''])

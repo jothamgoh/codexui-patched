@@ -316,16 +316,23 @@
                 <p v-else-if="selectedChatNativeQuestion">The Lead is waiting for your decision below.</p>
                 <p v-else-if="selectedChatRun?.error">{{ selectedChatRun.error }}</p>
                 <p v-else-if="selectedChatStatus === 'Needs review'">Review the result below. Open the feature for its plan and checks.</p>
-                <details v-if="selectedChatFeature && !selectedChatIsRunning" ref="boardChatOptionsRef" class="board-chat-options"><summary>{{ selectedChatFeature.status === 'done' ? 'Reopen to continue' : selectedChatFeature.status === 'review' ? 'Request changes' : boardReplyMode === 'plan' ? 'Plan only' : 'Continue work' }}<span v-if="boardChatSendDisabled && !selectedChatQuestion && !selectedChatNativeQuestion"> · choose access</span></summary><div class="board-chat-reply-controls">
-                  <label v-if="canPlanChatFeature"><span>Next message</span><select v-model="boardReplyMode" aria-label="Lead reply mode"><option value="plan">Plan only</option><option value="execute">Continue work</option></select></label>
-                  <span v-else>Continue this feature</span>
+                <div v-if="selectedChatFeature && !selectedChatIsRunning && canPlanChatFeature" class="board-chat-mode">
+                  <label><span>Next message</span><select v-model="boardReplyMode" aria-label="Lead reply mode"><option value="plan">Plan only</option><option value="execute">Continue work</option></select></label>
+                  <span>{{ boardReplyMode === 'plan' ? 'Read-only. Switch back here at any time.' : 'Work starts when you send.' }}</span>
+                </div>
+                <p v-else-if="selectedChatFeature && selectedChatIsRunning && selectedChatRun?.kind === 'plan'" class="board-chat-mode-help">Planning is read-only. Finish or stop this run to switch to work.</p>
+                <p v-else-if="!selectedChatFeature" class="board-chat-mode-help">This chat plans board cards. Review the cards to start work, or return to a normal chat.</p>
+                <details v-if="selectedChatFeature && !selectedChatIsRunning" ref="boardChatOptionsRef" class="board-chat-options"><summary>{{ selectedChatFeature.status === 'done' ? 'Reopen to continue' : selectedChatFeature.status === 'review' ? 'Request changes' : 'Reply settings' }}<span v-if="boardChatSendDisabled && !selectedChatQuestion && !selectedChatNativeQuestion"> · choose access</span></summary><div class="board-chat-reply-controls">
                   <span v-if="boardReplyMode === 'execute' && chatExecutionAccess === 'full-access'">Full access · no approval prompts</span>
                   <label v-if="selectedChatFeature.status === 'done'"><input v-model="boardReplyReopen" type="checkbox" />Reopen feature</label>
                   <label v-if="boardReplyMode === 'execute' && chatLeadNeedsWrite"><input v-model="boardReplyWrite" type="checkbox" />Allow workspace changes</label>
                   <button type="button" @click="openLinkedFeature">Lead settings</button>
-                  <button v-if="selectedChatFeature.sourceThreadId || selectedChatBoard.sourceThreadId" type="button" @click="onSelectThread(selectedChatFeature.sourceThreadId || selectedChatBoard.sourceThreadId)">Original chat</button>
                 </div></details>
-                <p v-if="(!isMobile || !selectedChatNativeQuestion) && (selectedChatIsRunning || !selectedChatFeature) && (selectedChatFeature?.sourceThreadId || selectedChatBoard.sourceThreadId)" class="board-chat-source"><button type="button" @click="onSelectThread(selectedChatFeature?.sourceThreadId || selectedChatBoard.sourceThreadId)">Original chat</button></p>
+                <div v-if="!selectedChatFeature || selectedChatFeature.sourceThreadId || selectedChatBoard.sourceThreadId" class="board-chat-source">
+                  <button v-if="!selectedChatFeature" type="button" @click="openProjectBoard(selectedChatBoard.id)">Review cards</button>
+                  <button v-if="selectedChatFeature?.sourceThreadId || selectedChatBoard.sourceThreadId" type="button" @click="onSelectThread(selectedChatFeature?.sourceThreadId || selectedChatBoard.sourceThreadId)">{{ selectedChatFeature ? 'Original chat' : 'Back to original chat' }}</button>
+                  <button v-else-if="!selectedChatFeature" type="button" @click="onStartNewThreadFromToolbar">New chat</button>
+                </div>
               </section>
               <section v-else-if="sourceChatBoard" class="board-chat-context source-board-context" aria-label="Linked board">
                 <div class="source-board-heading">
@@ -2056,12 +2063,18 @@ async function submitFirstMessageForNewThread(
 .board-chat-context p[role="alert"] { white-space: normal; overflow-wrap: anywhere; }
 .board-chat-context p { margin: 5px 0 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .board-chat-context p.run-settings { white-space: normal; overflow: visible; }
+.board-chat-mode, .board-chat-source { display: flex; align-items: center; flex-wrap: wrap; gap: 6px 12px; }
+.board-chat-mode { margin-top: 6px; }
+.board-chat-mode label { display: flex; align-items: center; gap: 8px; }
+.board-chat-mode select { min-height: 36px; padding: 4px 8px; color: var(--text-primary); background: var(--surface-elevated); border: 1px solid var(--border-soft); border-radius: 5px; }
+.board-chat-mode > span { color: var(--text-tertiary); }
+.board-chat-context p.board-chat-mode-help { white-space: normal; line-height: 1.5; }
 .board-chat-reply-controls { margin-top: 6px; }
 .board-chat-options summary { cursor: pointer; padding: 5px 0; }
 .board-chat-reply-controls label { display: flex; align-items: center; gap: 6px; }
 .board-chat-reply-controls select { padding: 4px; background: var(--surface-elevated); border: 1px solid var(--border-soft); border-radius: 5px; }
 @media (max-width: 640px) { .source-board-heading select { min-height: 44px; font-size: 16px; } .board-chat-context.source-board-context { padding-bottom: 6px; } .board-chat-context { margin: 0 8px; padding: 0 8px; } .board-chat-context button, .board-chat-reply-controls label, .board-chat-options summary { min-height: 44px; }
-  .board-chat-options summary { display: flex; align-items: center; gap: 4px; } .board-chat-reply-controls select { min-height: 44px; font-size: 16px; } .board-chat-context p { margin: 0; } }
+  .board-chat-options summary { display: flex; align-items: center; gap: 4px; } .board-chat-reply-controls select, .board-chat-mode select { min-height: 44px; font-size: 16px; } .board-chat-context p { margin: 0; } }
 
 .content-thread {
   @apply flex-1 min-h-0;

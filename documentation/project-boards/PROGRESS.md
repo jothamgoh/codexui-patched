@@ -32,8 +32,14 @@ user’s request; its saved rendering work has now been reviewed in the follow-u
   dictation journeys passed, with screenshots inspected. An independent review
   reproduced and then verified the repaired promotion race. Model/audio browser
   responses are synthetic; physical iPhone Safari remains unverified.
-  Backend restart is explicitly authorized after publication and CI; deployment
-  verification is pending. Current production boards have no active runs.
+  Published through 4db70e1; CI 34027220282 passed. The authorized backend restart
+  completed: bridge, boards, models and pending-request endpoints return 200;
+  public UI/API still redirect through the authenticated gateway. All five
+  deployed starter prompts match the revised templates on existing boards.
+  Two user-started boards are now running concurrently. Their actual native
+  turn inputs contain the exact updated Product and Lead profiles, respectively;
+  both runtimes report Astra/xhigh with Full access. No pause or further restart
+  was needed. Leave those runs active.
 
 - Independent boards now apply globally: any folder can hold multiple boards
   running alongside one another. Each board still permits one active feature

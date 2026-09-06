@@ -1,0 +1,4 @@
+interface:
+  display_name: "Plan in board"
+  short_description: "Save feature plans for review before starting work"
+  default_prompt: "Use $codexui-board-planning to put our agreed plan in a board for me to review."

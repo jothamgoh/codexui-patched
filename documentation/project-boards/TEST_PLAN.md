@@ -52,6 +52,13 @@ notification storage too. Retain explicit defense in every bridge fixture:
   overwrite user-customized prompt copies.
 - Read-only Plan first; atomic/idempotent project-card creation; preserved prior
   work; supported model/default resolution; repair with retained handoffs.
+- Optional same-chat board planning: exact native source/project lookup, one
+  atomic draft save, dependent card IDs, stale replay rejection, revision with
+  omitted cards retained, canonical receipt links, and zero execution runs.
+  Exercise the bundled helper against isolated HTTP state; check compact reads,
+  explicit detail/pagination, and unchanged ordinary turn settings. Existing
+  browser fixtures cover multi-board source-chat navigation, ordinary drafts,
+  completed-result review, and desktop/Chromium touch layouts.
 - Selected dependency-ready queue work only. Exercise pause, replacement,
   failure, process exit, changed scope, and turning continuation off while a
   start awaits model metadata. A stale attempt cannot start or block new work.

@@ -381,6 +381,14 @@ export class ProjectBoardService {
     return this.publish(await this.store.createBoard(input))
   }
 
+  async saveDraftPlan(input: unknown): Promise<ProjectBoardSnapshot> {
+    const boardId = readString(asRecord(input)?.boardId).toLowerCase()
+    if (this.queues.get(boardId)?.status === 'running' || this.queuePumping.has(boardId)) {
+      throw new Error('Pause the selected feature queue before revising its plan.')
+    }
+    return this.publish(await this.store.saveDraftPlan(input))
+  }
+
   async updateBoard(id: string, changes: unknown): Promise<ProjectBoardSnapshot> {
     const snapshot = await this.store.updateBoard(id, changes)
     if (asRecord(changes)?.autoDispatch === false) {

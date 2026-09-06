@@ -13,6 +13,21 @@ user’s request; its code edits remain saved.
 
 ## Current follow-up
 
+- Optional same-chat board planning is implemented: ask to put a plan in a board;
+  the current chat saves/revises draft cards through a bundled metadata-only
+  skill. Ordinary planning stays in chat. Review board links show exact source
+  boards, progress, and completed results; the composer stays ordinary. Existing
+  feature/selected-queue controls start implementation after review.
+  Atomic versioned saves preserve omitted/started work, stable IDs avoid retry
+  duplicates, native thread lookup scopes the project, and reads are paged with
+  full detail fetched only when needed. No global skill/config installation.
+  Store/helper checks, isolated bridge create/revise/replay flow, independent
+  helper forward-test, and desktop/Chromium touch result-review journeys passed.
+  A real loaded native chat with a scripted local provider preserved the skill
+  pointer, exact chat/connection, prior context, model, and reasoning; no model
+  service call or tool execution was involved. Full 233 tests/build and Gitleaks
+  passed. Publication/deployment are pending.
+
 - Board-icon correction: Open project board browses existing work; Track on
   board opens the creation form. The brief uses only the unsent draft and
   selected text, including selection comments, or starts blank. Casual replies

@@ -5,6 +5,20 @@ description: "Use when implementing or changing user-visible behavior/UI in this
 
 # Codex App Parity Skill
 
+## Findings: Optional planning from ordinary chats (2026-09-06)
+
+- Dynamic tools remain tied to thread creation. A bundled skill plus a compact
+  per-turn native application context lets existing ordinary chats discover an
+  explicit board-planning workflow without creating another planner thread.
+  Keep the helper metadata-only and preserve caller inputs, settings, and context.
+- sourceThreadId is navigation/reference identity. Only feature threadId and
+  board planningThreadId identify managed execution chats. Linking a board must
+  not switch the original chat's composer into managed-run controls.
+- Native explicit implementation gating remains the closest pattern: draft
+  saving starts no work; existing feature/queue controls authorize execution.
+  Boards are an intentional extension with named review actions. Finished cards
+  must show their result rather than an outdated invitation to Start work.
+
 ## Findings: Explicit board navigation and selected context (2026-09-06)
 
 - Rechecked integrated app `app-primary-37ff25fd4643.js`: sidebar actions are

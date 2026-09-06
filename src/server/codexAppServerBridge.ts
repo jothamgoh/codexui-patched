@@ -18,6 +18,7 @@ import { AutomationStore } from './automationStore'
 import { AUTOMATION_DYNAMIC_TOOL_SPEC, AutomationService } from './automationService'
 import { ProjectBoardStore } from './projectBoardStore'
 import { ProjectBoardService } from './projectBoardService'
+import { boardPlanningContext, withBoardPlanningContext } from './projectBoardPlanning'
 import { projectBoardThreadIds } from './projectBoardNotificationEvents'
 import { readProjectBoardModels, resolveProjectBoardExecutionSettings } from './projectBoardModels'
 import type { ProjectBoardSnapshot } from '../types/projectBoards'
@@ -1732,7 +1733,9 @@ export function createCodexBridgeMiddleware(): CodexBridgeMiddleware {
         const params =
           body.method === 'thread/start'
             ? automationService.augmentThreadStartParams(body.params)
-            : body.params ?? null
+            : body.method === 'turn/start'
+              ? withBoardPlanningContext(body.params, req.socket.localPort)
+              : body.params ?? null
         const result = await appServer.rpc(body.method, params)
         setJson(res, 200, { result })
         return
@@ -1950,6 +1953,31 @@ export function createCodexBridgeMiddleware(): CodexBridgeMiddleware {
       const boardMessageMatch = url.pathname.match(/^\/codex-api\/project-board-threads\/([^/]+)\/messages$/u)
       if (req.method === 'POST' && boardMessageMatch) {
         setJson(res, 202, { data: await projectBoardService.sendChatMessage(decodeURIComponent(boardMessageMatch[1]), await readJsonBody(req)) })
+        return
+      }
+
+      if (url.pathname === '/codex-api/project-board-planning' && (req.method === 'GET' || req.method === 'POST')) {
+        const input = req.method === 'POST' ? asRecord(await readJsonBody(req)) ?? {} : Object.fromEntries(url.searchParams)
+        const sourceThreadId = typeof input.sourceThreadId === 'string' ? input.sourceThreadId.trim() : ''
+        if (!sourceThreadId) throw new Error('The planning chat identity is required.')
+        const result = asRecord(await appServer.rpc('thread/read', { threadId: sourceThreadId, includeTurns: false }))
+        const thread = asRecord(result?.thread)
+        const projectPath = typeof thread?.cwd === 'string' ? thread.cwd : ''
+        if (!projectPath || thread?.id !== sourceThreadId) throw new Error('The planning chat’s project is unavailable.')
+        const boardId = typeof input.boardId === 'string' ? input.boardId.trim().toLowerCase() : ''
+        if (req.method === 'POST') {
+          if (await projectBoardService.isManagedThread(sourceThreadId)) throw new Error('Save this plan from the original planning chat, not a feature Lead chat.')
+          const snapshot = await projectBoardService.saveDraftPlan({ ...input, boardId, sourceThreadId, projectPath, projectName: basename(projectPath) })
+          setJson(res, 200, { data: {
+            version: snapshot.version, boardId, sourceThreadId,
+            featureIds: Array.isArray(input.features) ? input.features.map((feature) => String(asRecord(feature)?.id).trim().toLowerCase()) : [],
+            boardPath: `/#/board/${encodeURIComponent(boardId)}`,
+            message: 'Draft saved. Review the board, then choose Run selected features when ready. No work started.',
+          } })
+        } else {
+          setJson(res, 200, { data: boardPlanningContext(await projectBoardService.read(), projectPath, sourceThreadId, boardId,
+            typeof input.featureId === 'string' ? input.featureId.trim().toLowerCase() : '', { offset: Number(input.offset), fullPlan: input.fullPlan === 'true' }) })
+        }
         return
       }
 

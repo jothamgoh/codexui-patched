@@ -10,6 +10,7 @@ Scope revised: 2026-09-06. PROGRESS.md owns release status and actual evidence.
 | server/projectBoardStore.ts | Serialized validation, transitions, persistence, handoffs. |
 | server/projectBoardService.ts | Native Lead/planner runs, bounded tools, dependency queue, lifecycle. |
 | server/projectBoardModels.ts | Advertised model capabilities and execution validation. |
+| server/projectBoardPlanning.ts | Optional ordinary-turn skill pointer and compact project-scoped planning reads. |
 | server/codexAppServerBridge.ts | HTTP, bounded source-chat context, app-server events. |
 | server/turnNotificationRouter.ts | Board outcomes through existing durable notification sinks. |
 | api/projectBoards.ts and composables/useProjectBoards.ts | Browser requests, snapshots, live updates. |
@@ -25,6 +26,21 @@ Scope revised: 2026-09-06. PROGRESS.md owns release status and actual evidence.
 All paths are under src/. Reuse Vue/Reka, Express, native threads/turns, existing
 notification history/delivery, and native approvals. There is no second runtime,
 database migration, generic policy layer, or LLM polling dispatcher.
+
+The bundled skills/codexui-board-planning directory is copied into dist-cli by
+the CLI build. Ordinary turn/start preserves caller settings and adds a small
+native application-context pointer with the exact chat ID and local bridge
+connection. The model reads the skill only for an explicit board request; there
+is no keyword interception, global skill installation, or automatic card creation.
+Existing chats use their normal tools; no dynamic-tool retrofit is needed.
+
+The helper only reads context or saves a draft through project-board-planning.
+The bridge derives the project from native thread/read. Saves validate a current
+snapshot version and stable UUIDs atomically, preserve omitted cards, reject
+started work/active queues, and publish existing snapshot events. sourceThreadId
+is a link, not managed execution ownership. Context pages 30 feature summaries;
+full cards and long project plans are fetched explicitly. Planning does not
+alter an ordinary chat's sandbox or authorize implementation.
 
 ## Implemented delivery groups
 

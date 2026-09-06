@@ -29,6 +29,23 @@ create a second agent runtime.
 
 ## From a plan to delivery
 
+Board planning is an explicit opt-in. An ordinary existing chat can use the
+bundled board-planning skill when the user asks to put a plan in a board. A
+generic planning request or large task does not create cards automatically.
+The current chat saves a concise project brief and separately useful feature
+cards, including approach, acceptance/check criteria, and dependencies. It can
+revise untouched Backlog cards after user feedback. Omitted cards and execution
+history remain intact; stale updates fail visibly without partial writes.
+
+Saving is metadata only: it creates no native run, execution chat, queue, or
+implementation. The source chat remains an ordinary coordination chat. Its
+Review board control opens the exact linked board, with a selector when several
+boards are linked. The user reviews/edits cards and explicitly starts a feature
+or Run selected features through existing execution controls. Finished cards
+show results above their plan, recorded verification tasks, and a link to the
+Lead discussion and existing changes view. The board supports review before and
+after implementation; it is not required for every chat task.
+
 Chat is the primary working view; the board is the project overview. From a
 normal chat, the board icon separates Open project board from Track on board.
 Tracking creates one linked feature with a brief and optional title. Only an

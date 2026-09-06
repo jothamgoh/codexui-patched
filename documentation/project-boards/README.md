@@ -16,6 +16,16 @@ exhaustive test checklist. Future ideas are options, not release requirements.
 
 Use chat for the conversation and the board for the project overview.
 
+- Boards are optional. Say **“Make a plan in the board”** in your existing chat
+  to have it save a project brief and feature cards for review. Ordinary tasks
+  and ordinary planning stay in chat. No extra coordinator chat is needed.
+- **Review board** appears in the linked chat. Review the brief, dependencies,
+  done conditions, and Lead settings; ask the same chat to revise untouched
+  cards, or edit them with typing/voice. Saving a plan starts no implementation.
+  Choose **Run selected features** when ready; execution uses feature Lead chats.
+- After work finishes, review the card's **Result**, recorded checks, and Lead
+  chat. Use the existing chat's **Summary → Changes** for code changes. Multiple
+  boards linked to a chat remain selectable; the original composer stays normal.
 - The chat’s board icon offers **Open project board** to browse existing work
   and **Track on board** to create a feature. Opening the board creates nothing.
 - Tracking starts from your unsent draft and selected text, or an empty brief;

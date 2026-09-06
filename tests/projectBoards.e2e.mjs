@@ -1,5 +1,7 @@
 import assert from 'node:assert/strict'
-import { spawn } from 'node:child_process'
+import { execFile, spawn } from 'node:child_process'
+import { randomUUID } from 'node:crypto'
+import { promisify } from 'node:util'
 import { mkdtemp, mkdir, readFile, rm, writeFile } from 'node:fs/promises'
 import { join, resolve } from 'node:path'
 import { tmpdir } from 'node:os'
@@ -178,6 +180,46 @@ try {
   const ordinaryTurn = await directTurn('fixture-invalid-unmanaged-thread')
   assert.ok(ordinaryTurn.status >= 400 && ordinaryTurn.status !== 409)
   assert.doesNotMatch((await ordinaryTurn.json()).error, /managed by a project board/u)
+
+  // Real bridge/native chat lookup + bundled planning helper, without a model
+  // turn, coordinator run, project implementation, or notification delivery.
+  const source = await (await fetch(`${origin}/codex-api/rpc`, {
+    method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ method: 'thread/start', params: { cwd: emptyProject, approvalPolicy: 'never', sandbox: 'read-only' } }),
+  })).json()
+  assert.ok(source.result?.thread?.id, JSON.stringify(source))
+  const planningThreadId = source.result.thread.id
+  const helper = async (...args) => JSON.parse((await promisify(execFile)(process.execPath, [
+    join(repositoryRoot, 'skills/codexui-board-planning/scripts/board.mjs'), '--url', origin, '--thread', planningThreadId, ...args,
+  ])).stdout)
+  let planningContext = await helper('context')
+  assert.equal(planningContext.projectPath, emptyProject)
+  const boardId = randomUUID(), firstId = randomUUID(), secondId = randomUUID()
+  const planFile = join(fixtureHome, 'draft-plan.json')
+  const proposal = { boardId, expectedVersion: planningContext.version, name: 'Optional chat plan', summary: 'Build a parser, then expose it in the CLI.',
+    projectPath: secondProject, sourceThreadId: 'ignored-spoof',
+    features: [{ id: firstId, description: 'Add the parser.', acceptanceCriteria: 'Parses valid input and explains invalid input.', dependsOn: [] },
+      { id: secondId, description: 'Expose the parser through the CLI.', acceptanceCriteria: 'One combined CLI check passes.', dependsOn: [firstId] }] }
+  await writeFile(planFile, JSON.stringify(proposal))
+  const receipt = await helper('save', '--file', planFile)
+  assert.equal(receipt.boardId, boardId)
+  assert.equal(receipt.boardPath, `/#/board/${boardId}`)
+  planningContext = await helper('context', '--board', boardId)
+  assert.equal(planningContext.projectPath, emptyProject, 'Project is derived from the native source chat')
+  assert.equal(planningContext.board.sourceThreadId, planningThreadId)
+  assert.deepEqual(planningContext.features.find(feature => feature.id === secondId).dependsOn, [firstId])
+  await assert.rejects(helper('save', '--file', planFile), /board changed/u)
+  proposal.expectedVersion = planningContext.version
+  proposal.features = [{ ...proposal.features[0], description: 'Add the parser and handle empty input.' }]
+  await writeFile(planFile, JSON.stringify(proposal))
+  await helper('save', '--file', planFile)
+  const planningState = (await (await fetch(`${origin}/codex-api/project-boards`)).json()).data
+  const savedBoard = planningState.boards.find(board => board.id === boardId)
+  assert.equal(savedBoard.planningThreadId, '', 'The original chat stays ordinary')
+  assert.equal(planningState.cards.filter(card => card.boardId === boardId).length, 2, 'Omitted cards remain; retries do not duplicate them')
+  assert.equal(planningState.runs.filter(run => run.boardId === boardId).length, 0)
+  assert.ok(planningState.cards.filter(card => card.boardId === boardId).every(card => card.status === 'backlog' && !card.threadId && !card.autoRun))
+  assert.equal((await fetch(`${origin}/codex-api/project-boards/${boardId}`, { method: 'DELETE' })).status, 200)
   browser = await chromium.launch({ headless: true })
   page = await browser.newPage({ viewport: { width: 1600, height: 1000 }, deviceScaleFactor: 1 })
   await page.route('**/codex-api/project-board-models', (route) => route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ data: { defaultModel: 'build-model', defaultReasoningEffort: 'high', models: [

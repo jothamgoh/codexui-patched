@@ -61,6 +61,49 @@ function fixture(t, gateway = {}) {
   }
 }
 
+test('native helper ancestry survives sparse lists and stays scoped to its own thread', async (t) => {
+  const f = fixture(t)
+  await f.state.refreshAll({ loadSelectedThread: false })
+  f.emit('thread/started', { thread: { id: 'chat-1', source: { subAgent: { thread_spawn: { parent_thread_id: 'lead' } } } } })
+  assert.equal(f.state.projectGroups.value[0].threads[0].parentThreadId, 'lead', 'A metadata-only event replaces the equal-looking sidebar row')
+  assert.equal(f.state.projectGroups.value[0].threads[0].isInternalSubagent, true)
+  f.emit('thread/started', { thread: { id: 'unlisted-child', source: { subAgent: { thread_spawn: { parent_thread_id: 'chat-1' } } } } })
+  assert.equal(f.state.threadSourceById.value['unlisted-child'].parentThreadId, 'chat-1')
+  assert.equal(f.state.threadSourceById.value['chat-1'].parentThreadId, 'lead', 'Envelope IDs cannot reassign the actual child')
+  f.emit('thread/started', { thread: { id: 'chat-1' } })
+  await f.state.refreshAll({ loadSelectedThread: false })
+  assert.equal(f.state.projectGroups.value[0].threads[0].parentThreadId, 'lead')
+  assert.equal(f.state.threadSourceById.value['unlisted-child'].isInternalSubagent, true, 'Unlisted ancestry remains available for nested grouping')
+})
+
+test('history restores matching helper ancestry and completion does not mark it unread', async (t) => {
+  let audienceReads = 0
+  let unreadWrites = 0
+  const f = fixture(t, {
+    getThreadAudience: async () => { audienceReads++; return 'internalSubagent' },
+    updateSharedThreadReadState: async (_id, update) => { if (update.unread) unreadWrites++; return null },
+  })
+  await f.state.refreshAll({ loadSelectedThread: false })
+  f.emit('turn/completed', { turn: { id: 'unknown-source-turn', status: 'completed' } })
+  await flush()
+  assert.equal(audienceReads, 1, 'A listed chat with missing source still resolves its audience')
+  assert.equal(unreadWrites, 0)
+  const first = await f.read()
+  first.response.resolve({ ...page([], false), threadSource: { threadId: 'other-thread', isInternalSubagent: true, parentThreadId: 'wrong-parent' } })
+  await first.pending
+  assert.equal(f.state.threadSourceById.value['chat-1'], undefined, 'A mismatched history response must not attach another chat’s parent')
+  const matching = await f.read()
+  matching.response.resolve({ ...page([], false), threadSource: { threadId: 'chat-1', isInternalSubagent: true, parentThreadId: 'lead' } })
+  await matching.pending
+  assert.equal(f.state.selectedThread.value.parentThreadId, 'lead')
+  await f.state.selectThread('')
+  f.emit('turn/completed', { turn: { id: 'helper-turn', status: 'completed' } })
+  await flush()
+  assert.equal(audienceReads, 1, 'Known native source avoids another metadata request')
+  assert.equal(unreadWrites, 0)
+  assert.equal(f.state.projectGroups.value[0].threads[0].unread, false)
+})
+
 test('history hydration retains streamed text, canonical order and a single item through later deltas', async (t) => {
   const f = fixture(t)
   const first = await f.read()

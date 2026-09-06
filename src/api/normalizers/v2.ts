@@ -15,11 +15,13 @@ import type {
   UiMessage,
   UiProjectGroup,
   UiThread,
+  UiThreadSource,
 } from '../../types/codex'
 import { formatMcpToolCallPresentation, readMcpAppResult } from '../toolCallPresentation'
 import { normalizeSubAgentActivity } from '../subAgentActivity'
 import { buildReviewChanges } from '../../utils/reviewDiff'
 import { parseThreadReferenceMention } from '../../utils/threadReferences'
+import { classifyCodexThreadSource, readCodexThreadAudience } from '../../utils/codexThreadSource'
 
 function toIso(seconds: number): string {
   return new Date(seconds * 1000).toISOString()
@@ -495,6 +497,14 @@ function normalizeThreadRuntimeStatus(value: unknown): UiThread['runtimeStatus']
   return undefined
 }
 
+export function normalizeThreadSourceV2(summary: unknown): UiThreadSource {
+  const source = classifyCodexThreadSource(summary)
+  return {
+    isInternalSubagent: readCodexThreadAudience(summary) === 'unknown' ? undefined : source.isInternalSubagent,
+    parentThreadId: source.parentThreadId,
+  }
+}
+
 export function normalizeThreadV2(summary: Thread): UiThread {
   const rawSummary = summary as Record<string, unknown>
   const cwd = typeof rawSummary.cwd === 'string' ? rawSummary.cwd : summary.cwd
@@ -508,6 +518,7 @@ export function normalizeThreadV2(summary: Thread): UiThread {
     cwd.includes('/.git/worktrees/')
 
   return {
+    ...normalizeThreadSourceV2(summary),
     id: summary.id,
     title: toThreadTitle(summary),
     projectName: toProjectName(summary.cwd),

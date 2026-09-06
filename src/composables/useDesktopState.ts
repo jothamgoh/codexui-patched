@@ -50,6 +50,7 @@ import {
 } from '../api/codexGateway'
 import { formatMcpToolCallPresentation, readMcpAppResult } from '../api/toolCallPresentation'
 import { normalizeSubAgentActivity } from '../api/subAgentActivity'
+import { normalizeThreadSourceV2 } from '../api/normalizers/v2'
 import type {
   CommandExecutionData,
   McpAppResultData,
@@ -65,6 +66,7 @@ import type {
   UiServerRequestReply,
   UiThreadTokenUsage,
   UiThread,
+  UiThreadSource,
   UiThreadGoal,
   UiTokenUsageBreakdown,
 } from '../types/codex'
@@ -1041,6 +1043,8 @@ function areThreadFieldsEqual(first: UiThread, second: UiThread): boolean {
     first.updatedAtIso === second.updatedAtIso &&
     first.preview === second.preview &&
     first.runtimeStatus === second.runtimeStatus &&
+    first.isInternalSubagent === second.isInternalSubagent &&
+    first.parentThreadId === second.parentThreadId &&
     first.unread === second.unread &&
     first.inProgress === second.inProgress
   )
@@ -1185,6 +1189,7 @@ export function useDesktopState() {
   const persistedNewThreadModelConfig = loadNewThreadModelConfig()
   const projectGroups = ref<UiProjectGroup[]>([])
   const sourceGroups = ref<UiProjectGroup[]>([])
+  const threadSourceById = ref<Record<string, UiThreadSource>>({})
   const selectedThreadId = ref(loadSelectedThreadId())
   const persistedMessagesByThreadId = ref<Record<string, UiMessage[]>>({})
   const liveAgentMessagesByThreadId = ref<Record<string, UiMessage[]>>({})
@@ -1651,22 +1656,44 @@ export function useDesktopState() {
     }))
   }
 
+  function rememberThreadSource(threadId: string, source?: UiThreadSource): boolean {
+    if (!threadId || (source?.isInternalSubagent === undefined && !source?.parentThreadId)) return false
+    const previous = threadSourceById.value[threadId]
+    // Parent identity is immutable. Sparse list/read responses must not erase
+    // the source already observed in a native thread/started event.
+    const next: UiThreadSource = {
+      isInternalSubagent: source?.isInternalSubagent === true || previous?.isInternalSubagent === true || Boolean(source?.parentThreadId),
+      parentThreadId: source?.parentThreadId || previous?.parentThreadId || null,
+    }
+    if (previous?.isInternalSubagent === next.isInternalSubagent && previous?.parentThreadId === next.parentThreadId) return false
+    threadSourceById.value = { ...threadSourceById.value, [threadId]: next }
+    audienceByThreadId.set(threadId, next.isInternalSubagent ? 'internalSubagent' : 'interactive')
+    return true
+  }
+
+  function applyPageThreadSource(threadId: string, page: ThreadMessagePage): void {
+    if (page.threadSource?.threadId === threadId && rememberThreadSource(threadId, page.threadSource)) applyThreadFlags()
+  }
+
   function applyThreadFlags(): void {
     const withTitles = applyCachedTitlesToGroups(sourceGroups.value)
     const flaggedGroups: UiProjectGroup[] = withTitles.map((group) => ({
       projectName: group.projectName,
       threads: group.threads.map((thread) => {
+        const source = threadSourceById.value[thread.id] ?? thread
         const inProgress = inProgressById.value[thread.id] === true
         const isSelected = selectedThreadId.value === thread.id
         const lastReadIso = readStateByThreadId.value[thread.id]
         const hasReadState = typeof lastReadIso === 'string' && lastReadIso.length > 0
         const unreadByEvent = eventUnreadByThreadId.value[thread.id] === true
-        const unread = !isSelected &&
+        const unread = !source.isInternalSubagent && !isSelected &&
           !inProgress &&
           (unreadByEvent || (hasReadState && hasThreadActivityAfterRead(lastReadIso, thread.updatedAtIso)))
 
         return {
           ...thread,
+          isInternalSubagent: source.isInternalSubagent,
+          parentThreadId: source.parentThreadId,
           inProgress,
           unread,
         }
@@ -1773,6 +1800,7 @@ export function useDesktopState() {
 
   function ensureSearchThreadVisible(thread: UiThread): void {
     if (!thread.id) return
+    rememberThreadSource(thread.id, thread)
 
     const existingGroupIndex = sourceGroups.value.findIndex((group) => group.projectName === thread.projectName)
     if (existingGroupIndex >= 0) {
@@ -2142,6 +2170,7 @@ export function useDesktopState() {
         getThreadGoal(threadId).catch(() => null),
       ])
       if (!acceptHistoryRead(threadId, readId)) return
+      applyPageThreadSource(threadId, page)
       const { isInProgress, activeTurnId, turnSummaries } = page
       const nextMessages = preserveObservedAgentText(threadId, page.messages, readId, isInProgress)
       const previousPersisted = persistedMessagesByThreadId.value[threadId] ?? []
@@ -3007,9 +3036,11 @@ export function useDesktopState() {
   }
 
   function resolveNotificationThreadAudience(threadId: string): Promise<CodexThreadAudience> {
-    if (allThreads.value.some((thread) => thread.id === threadId)) {
-      audienceByThreadId.set(threadId, 'interactive')
-      return Promise.resolve('interactive')
+    const source = threadSourceById.value[threadId] ?? allThreads.value.find((thread) => thread.id === threadId)
+    if (source?.isInternalSubagent !== undefined) {
+      const audience = source.isInternalSubagent ? 'internalSubagent' : 'interactive'
+      audienceByThreadId.set(threadId, audience)
+      return Promise.resolve(audience)
     }
 
     const knownAudience = audienceByThreadId.get(threadId)
@@ -3490,6 +3521,11 @@ export function useDesktopState() {
   }
 
   function applyRealtimeUpdates(notification: RpcNotification): void {
+    if (notification.method === 'thread/started') {
+      const thread = asRecord(asRecord(notification.params)?.thread)
+      const threadId = readString(thread?.id)
+      if (rememberThreadSource(threadId, normalizeThreadSourceV2(thread))) applyThreadFlags()
+    }
     if (handleServerRequestNotification(notification)) {
       return
     }
@@ -3961,6 +3997,7 @@ export function useDesktopState() {
         getSharedThreadReadState().catch(() => null),
       ])
       if (sharedReadState) applySharedReadState(sharedReadState)
+      for (const thread of flattenThreads(groups)) rememberThreadSource(thread.id, thread)
       await hydrateWorkspaceRootsStateIfNeeded(groups)
       syncThreadProgressFromRuntimeStatuses(groups)
 
@@ -4048,6 +4085,7 @@ export function useDesktopState() {
         getThreadGoal(threadId).catch(() => null),
       ])
       if (!acceptHistoryRead(threadId, readId)) return
+      applyPageThreadSource(threadId, page)
       const { isInProgress, activeTurnId, turnSummaries } = page
       const nextMessages = preserveObservedAgentText(threadId, page.messages, readId, isInProgress)
       const previousPersisted = persistedMessagesByThreadId.value[threadId] ?? []
@@ -4119,6 +4157,7 @@ export function useDesktopState() {
         limit: THREAD_MESSAGE_PAGE_SIZE,
       })
       if (!acceptHistoryRead(threadId, readId, true)) return
+      applyPageThreadSource(threadId, page)
       const previous = persistedMessagesByThreadId.value[threadId] ?? []
       const merged = mergeServerMessagesPreservingOptimistic(previous, page.messages, {
         preserveMissing: true,
@@ -5197,6 +5236,7 @@ export function useDesktopState() {
   return {
     setBoardManagedThreadIds,
     projectGroups,
+    threadSourceById,
     projectDisplayNameById,
     selectedThread,
     selectedThreadGoal,

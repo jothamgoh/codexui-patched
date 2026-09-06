@@ -58,7 +58,12 @@ export type UserInput = {
   url?: string
 }
 
-export type UiThread = {
+export type UiThreadSource = {
+  isInternalSubagent?: boolean
+  parentThreadId?: string | null
+}
+
+export type UiThread = UiThreadSource & {
   id: string
   title: string
   projectName: string

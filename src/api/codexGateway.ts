@@ -25,7 +25,7 @@ import type {
 } from './appServerDtos'
 import { callBridgeEndpoint } from './bridgeEndpoint'
 import { normalizeCodexApiError } from './codexErrors'
-import { getInProgressTurnStateV2, normalizeThreadGroupsV2, normalizeThreadMessagesV2, normalizeThreadV2 } from './normalizers/v2'
+import { getInProgressTurnStateV2, normalizeThreadGroupsV2, normalizeThreadMessagesV2, normalizeThreadSourceV2, normalizeThreadV2 } from './normalizers/v2'
 import { compactNotificationText } from '../utils/notificationText'
 import {
   buildThreadReferenceSection,
@@ -53,6 +53,7 @@ import type {
   UiMessage,
   UiProjectGroup,
   UiThread,
+  UiThreadSource,
   UiThreadGoal,
 } from '../types/codex'
 import { getNewChatQuestionConfig } from '../composables/useQuestionPreference'
@@ -83,6 +84,7 @@ export type ThreadSearchResult = {
 }
 
 export type ThreadMessagePage = {
+  threadSource?: UiThreadSource & { threadId: string }
   messages: UiMessage[]
   isInProgress: boolean
   activeTurnId: string
@@ -624,6 +626,7 @@ export async function getThreadMessagesWithStatus(
     }, 'thread/read')
     const turnState = getInProgressTurnStateV2(payload)
     return {
+      threadSource: { threadId: payload.thread.id, ...normalizeThreadSourceV2(payload.thread) },
       messages: normalizeThreadMessagesV2(payload, payload.page.startTurnIndex),
       isInProgress: turnState.isInProgress,
       activeTurnId: turnState.activeTurnId,

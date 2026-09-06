@@ -14,8 +14,26 @@ async function loadModule(path) {
   return import(`data:text/javascript;base64,${Buffer.from(outputFiles[0].contents).toString('base64')}`)
 }
 const { normalizeSubAgentActivity } = await loadModule('../src/api/subAgentActivity.ts')
-const { normalizeThreadMessagesV2 } = await loadModule('../src/api/normalizers/v2.ts')
+const { normalizeThreadMessagesV2, normalizeThreadV2, normalizeThreadGroupsV2 } = await loadModule('../src/api/normalizers/v2.ts')
 const base = { id: 'activity-1', type: 'subAgentActivity', agentThreadId: 'child-1', agentPath: '/root/ui_review' }
+
+test('thread summaries and lists retain authoritative helper ancestry without guessing from names', () => {
+  const summary = { id: 'child', name: 'Review helper', cwd: '/project', preview: '', createdAt: 1, updatedAt: 2 }
+  for (const source of [
+    { source: { subAgent: { thread_spawn: { parent_thread_id: 'lead' } } } },
+    { source: { subagent: { threadSpawn: { parentThreadId: 'lead' } } } },
+    { parentThreadId: 'lead' },
+  ]) {
+    const thread = normalizeThreadV2({ ...summary, ...source })
+    assert.equal(thread.isInternalSubagent, true)
+    assert.equal(thread.parentThreadId, 'lead')
+    assert.equal(normalizeThreadGroupsV2({ data: [{ ...summary, ...source }] })[0].threads[0].parentThreadId, 'lead')
+  }
+  assert.equal(normalizeThreadV2({ ...summary, source: { subAgent: 'review' } }).isInternalSubagent, true)
+  assert.equal(normalizeThreadV2({ ...summary, source: 'vscode' }).isInternalSubagent, false)
+  assert.equal(normalizeThreadV2(summary).isInternalSubagent, undefined, 'Missing source is not proof of an ordinary chat')
+  assert.equal(normalizeThreadV2(summary).parentThreadId, null)
+})
 
 test('normalizes persisted native and snake case activities with turn order and child identity', () => {
   const messages = normalizeThreadMessagesV2({ thread: { cwd: '/project', turns: [{

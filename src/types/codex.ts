@@ -281,6 +281,7 @@ export type UiMessage = {
   orderKey?: string
   messageType?: string
   phase?: 'commentary' | 'final_answer'
+  asyncQuestions?: Array<{ id: string; title: string; options: string[] }>
   rawPayload?: string
   isUnhandled?: boolean
   commandExecution?: CommandExecutionData

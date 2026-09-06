@@ -5,7 +5,22 @@ import ts from 'typescript'
 
 const source = await readFile(new URL('../src/api/requestUserInput.ts', import.meta.url), 'utf8')
 const compiled = ts.transpileModule(source, { compilerOptions: { module: ts.ModuleKind.ES2022, target: ts.ScriptTarget.ES2022 } }).outputText
-const { readRequestQuestions, requestQuestionAnswerValues } = await import(`data:text/javascript;base64,${Buffer.from(compiled).toString('base64')}`)
+const { readRequestQuestions, requestQuestionAnswerValues, normalizeAsyncQuestions, encodeAsyncQuestionReply, readAsyncQuestionReplies } = await import(`data:text/javascript;base64,${Buffer.from(compiled).toString('base64')}`)
+
+test('native async questions preserve source indices and support legacy free-text messages', () => {
+  const item = { id: 'question-call', delivery: 'async', text: 'Fallback', questions: [null, { title: 'Choose an approach', options: ['Small', null, 'Large'] }] }
+  assert.deepEqual(normalizeAsyncQuestions(item), [{ id: JSON.stringify(['request_user_input_async', 'question-call', 1]), title: 'Choose an approach', options: ['Small', 'Large'] }])
+  assert.equal(normalizeAsyncQuestions({ ...item, delivery: null }), undefined)
+  assert.deepEqual(normalizeAsyncQuestions({ id: 'legacy', delivery: 'async', text: 'Anything else?' }), [{ id: 'legacy', title: 'Anything else?', options: [] }])
+})
+
+test('async answer envelopes round-trip native IDs and cannot mistake ordinary prose for a reply', () => {
+  const question = { id: '["request_user_input_async","call",0]', title: 'Which "approach"?\nDetails?', options: [] }
+  const text = encodeAsyncQuestionReply(question, '  First line\nSecond line  ')
+  assert.deepEqual(readAsyncQuestionReplies(text), [{ questionItemId: question.id, question: question.title, answer: 'First line\nSecond line' }])
+  assert.deepEqual(readAsyncQuestionReplies(`Here is an example:\n${text}`), [])
+  assert.deepEqual(readAsyncQuestionReplies('<send_user_message_question_reply>invalid</send_user_message_question_reply>'), [])
+})
 
 test('retains question descriptions, free-text and secret input protocol fields', () => {
   const questions = readRequestQuestions({ questions: [

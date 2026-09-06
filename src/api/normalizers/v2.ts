@@ -1,3 +1,4 @@
+import { normalizeAsyncQuestions } from '../requestUserInput'
 import type {
   Thread,
   ThreadItem,
@@ -377,6 +378,7 @@ function toUiMessages(item: ThreadItem): UiMessage[] {
         text,
         messageType: itemType,
         phase: rawItem.phase === 'final_answer' || rawItem.phase === 'commentary' ? rawItem.phase : undefined,
+        asyncQuestions: normalizeAsyncQuestions(rawItem),
       },
     ]
   }

@@ -20,10 +20,13 @@ user’s request; its saved rendering work has now been reviewed in the follow-u
   the Lead chat and feature details distinguish Requested from Confirmed by
   Codex, and current from last-run settings. All 251 unit tests, production build,
   secret scan, and the desktop/touch-mobile board and chat journeys pass.
-  The current requested Lead
-  was explicitly stopped through the board lifecycle; resume that same feature
-  after deployment with Full access and its source chat's Astra/xhigh settings.
-  Do not create replacement cards or start unrelated boards.
+  Published through 6951878; CI 34019855561 passed. One independent-Terminal
+  restart completed and local API health/public authentication were verified.
+  The requested Lead resumed in the same chat with Full access; native metadata
+  and the live mobile header both confirm Astra/xhigh. Its two completed tasks
+  remain done and its remaining verification is running. Other feature cards
+  remain backlog and inherit the same source settings when explicitly started.
+  Do not repeat the restart/resume or create replacement cards.
 
 - Work overview now collects requests, current Leads, results and board progress
   across projects. Activity separates Board work from Chats running and keeps
@@ -34,8 +37,17 @@ user’s request; its saved rendering work has now been reviewed in the follow-u
   check reaches the last card through normal wheel scrolling. Phone cards stack,
   and recording fields show only a compact status with Stop/Cancel. Screenshots
   were inspected in both themes and touch Chromium; physical iPhone Safari is
-  still unverified. Sidebar layout is unchanged. Publish the final UI commit,
-  verify CI, then perform the authorized one-shot restart and resume above.
+  still unverified. Sidebar layout is unchanged. These changes are deployed.
+
+- New question-format follow-up: a real newly created chat returned native
+  agentMessage delivery=async with structured questions, but the frontend dropped
+  those fields and displayed its fallback bullet text. The frontend now preserves
+  those fields through live events and history reload, renders selectable answers
+  with custom text/dictation, and sends the native structured chat reply. Accepted
+  answers survive reload; failed sends preserve the draft. Desktop/touch-mobile
+  question journeys and all 253 unit tests pass. The existing question setting
+  alone cannot fix this renderer gap. This correction needs only a frontend
+  build/refresh, with no further interruption of the running board Lead.
 
 - Full access is now the saved board execution default for new and existing
   boards without an explicit setting. Board options can retain Project access;
@@ -45,10 +57,8 @@ user’s request; its saved rendering work has now been reviewed in the follow-u
   Native isolated tests proved a loaded chat needs a per-turn permission override:
   Full access wrote outside its project with zero approvals, and the next planning
   turn denied writes again. Full tests/build and desktop/mobile browser flows
-  passed. This backend change requires the authorised separate-Terminal restart.
-  The user also requested source-chat model/reasoning inheritance and switching
-  the current Lead to Astra/full access; complete that follow-up before resuming
-  the current feature after deployment. Preserve the same Lead chat and task plan.
+  passed. This backend change is deployed, and the requested same-chat Lead
+  resume with source model/reasoning inheritance is verified above.
 
 - Mobile review flow: Board options collapses management controls; phone cards
   form one vertical list with a status filter. Finished feature details lead

@@ -5,6 +5,25 @@ description: "Use when implementing or changing user-visible behavior/UI in this
 
 # Codex App Parity Skill
 
+## Findings: Structured asynchronous question messages (2026-09-06)
+
+- Native app-initial-caa927532ffb.js maps agentMessage delivery=async and
+  questions[{title,options}] into separate interactive cards. This is distinct
+  from blocking item/tool/requestUserInput; the new-chat question flag cannot
+  repair a renderer that drops these message fields. Preserve them in both
+  item/completed and history normalization, including legacy async text-only items.
+- Native question IDs are JSON.stringify([request_user_input_async,itemId,index]);
+  legacy messages use itemId. Answers are ordinary chat input wrapped in
+  send_user_message_question_reply tags with an array of questionItemId, question,
+  and answer objects. Retain that native identity, show readable answer text in
+  history, and reconstruct accepted answers from persisted user messages.
+- Async questions permit continued work. Use explicit Send answer, selectable
+  options and a custom voice/text answer; await actual send acknowledgement,
+  preserve drafts on failure, and never mark optimistic/failed steering accepted.
+  Keep ordinary composer drafts intact. Existing board replies still use the
+  managed board lifecycle. Browser checks cover event/history parity, failed
+  send/retry, voice without auto-send, reload, and 44px mobile controls.
+
 ## Findings: Cross-project work visibility and run settings (2026-09-06)
 
 - Boards have no direct native equivalent. Use native attention-before-working

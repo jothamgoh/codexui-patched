@@ -108,8 +108,13 @@
               </details>
 
               <article v-if="shouldRenderMessageCard(message)" class="message-card" :data-role="message.role">
+                <template v-if="message.asyncQuestions?.length">
+                  <AsyncQuestionCard v-for="question in message.asyncQuestions" :key="question.id"
+                    :question="question" :draft="asyncQuestionDraftFor(question)" :answer="asyncQuestionAnswers.get(question.id)"
+                    :thread-id="activeThreadId" :submit="submitQuestionAnswer" />
+                </template>
                 <SubAgentActivityCard
-                  v-if="message.subAgentActivity"
+                  v-else-if="message.subAgentActivity"
                   :activity="message.subAgentActivity"
                   :parent-thread-id="activeThreadId"
                 />
@@ -647,6 +652,8 @@ import markdownit from 'markdown-it'
 import ConversationItem from './ConversationItem.vue'
 import SubAgentActivityCard from './SubAgentActivityCard.vue'
 import RequestUserInputCard from './RequestUserInputCard.vue'
+import AsyncQuestionCard from './AsyncQuestionCard.vue'
+import { readAsyncQuestionReplies, type AsyncQuestion, type AsyncQuestionDraft } from '../../api/requestUserInput'
 import type { RequestQuestionDraft } from '../../api/requestUserInput'
 import { MessageSquare, MessageSquarePlus, MessageSquareQuote } from '@lucide/vue'
 import { RouterLink } from 'vue-router'
@@ -774,7 +781,7 @@ function compactReasoningPreview(text: string): string {
 
 function shouldRenderMessageCard(message: UiMessage): boolean {
   if (message.messageType === 'commandExecution' && message.commandExecution) return true
-  return Boolean(message.subAgentActivity) || Boolean(message.reviewChanges) || Boolean(message.mcpApp) || Boolean(message.toolCall) || message.text.length > 0 || shouldRenderDetailsPayload(message)
+  return Boolean(message.asyncQuestions?.length) || Boolean(message.subAgentActivity) || Boolean(message.reviewChanges) || Boolean(message.mcpApp) || Boolean(message.toolCall) || message.text.length > 0 || shouldRenderDetailsPayload(message)
 }
 
 function messageDeliveryState(message: UiMessage): 'pending' | 'sent' | 'failed' | '' {
@@ -924,6 +931,7 @@ const props = defineProps<{
   hasEarlierMessages?: boolean
   isLoadingEarlierMessages?: boolean
   earlierLoadError?: string
+  submitQuestionAnswer?: (threadId: string, text: string) => Promise<void>
 }>()
 
 const emit = defineEmits<{
@@ -1023,6 +1031,26 @@ const useDockedResponseSelectionActions = computed(() =>
     responseSelectionPointerType.value,
   ),
 )
+const asyncQuestionDrafts = ref(new Map<string, AsyncQuestionDraft>())
+function asyncQuestionDraftFor(question: AsyncQuestion): AsyncQuestionDraft {
+  const key = `${props.activeThreadId}:${question.id}`
+  if (!asyncQuestionDrafts.value.has(key)) {
+    if (asyncQuestionDrafts.value.size >= 100) {
+      const removable = [...asyncQuestionDrafts.value].find(([, draft]) => !draft.sending && !draft.dictating)
+      if (removable) asyncQuestionDrafts.value.delete(removable[0])
+    }
+    asyncQuestionDrafts.value.set(key, { choice: question.options.length ? 0 : -1, text: '', sending: false, dictating: false, error: '' })
+  }
+  return asyncQuestionDrafts.value.get(key)!
+}
+const asyncQuestionAnswers = computed(() => {
+  const answers = new Map<string, string>()
+  for (const message of props.messages) {
+    if (message.role !== 'user' || message.id.startsWith('optimistic-') || ['userMessage.failed', 'userMessage.steering'].includes(message.messageType ?? '')) continue
+    for (const reply of readAsyncQuestionReplies(message.text)) answers.set(reply.questionItemId, reply.answer)
+  }
+  return answers
+})
 const visibleMessages = computed(() => {
   const supersededAppMessageIds = new Set<string>()
   const latestAppMessageByTurnAndResource = new Map<string, string>()
@@ -1035,10 +1063,17 @@ const visibleMessages = computed(() => {
   }
   return props.messages.filter((message) =>
     !supersededAppMessageIds.has(message.id) && shouldDisplayMessage(message),
-  )
+  ).map((message) => {
+    const replies = message.role === 'user' ? readAsyncQuestionReplies(message.text) : []
+    return replies.length ? { ...message, text: replies.map((reply) => `${reply.question}\n\n${reply.answer}`).join('\n\n') } : message
+  })
 })
 function isMessagePinned(message: UiMessage): boolean {
   return Boolean(message.mcpApp)
+    || Boolean(message.asyncQuestions?.some((question) => {
+      const draft = asyncQuestionDrafts.value.get(`${props.activeThreadId}:${question.id}`)
+      return draft?.sending || draft?.dictating
+    }))
     || message.commandExecution?.status === 'inProgress'
     || message.toolCall?.status === 'inProgress'
     || capturedResponseSelection.value?.messageId === message.id

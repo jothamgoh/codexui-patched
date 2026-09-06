@@ -1,3 +1,4 @@
+import { normalizeAsyncQuestions } from '../api/requestUserInput'
 import { computed, ref } from 'vue'
 import {
   archiveThread,
@@ -3208,6 +3209,7 @@ export function useDesktopState() {
         text,
         messageType: 'agentMessage.live',
         phase: item.phase === 'final_answer' || item.phase === 'commentary' ? item.phase : undefined,
+        asyncQuestions: normalizeAsyncQuestions(item),
       }
     }
 
@@ -4326,6 +4328,15 @@ export function useDesktopState() {
     }
   }
 
+  async function sendQuestionAnswer(threadId: string, text: string): Promise<void> {
+    if (!threadId || threadId !== selectedThreadId.value) throw new Error('Open the question’s chat before answering.')
+    promoteThreadForActivity(threadId)
+    shouldAutoScrollOnNextAgentEvent = true
+    // Reuse native send/steer with an awaited acknowledgement. Do not mark an
+    // optimistic or failed answer as accepted, and keep the composer draft intact.
+    await startTurnForThread(threadId, text)
+  }
+
   async function sendMessageToSelectedThread(
     text: string,
     imageUrls: string[] = [],
@@ -5229,6 +5240,7 @@ export function useDesktopState() {
     renameThread,
     createThreadWithGoal,
     sendMessageToSelectedThread,
+    sendQuestionAnswer,
     sendMessageToNewThread,
     setGoalForSelectedThread,
     clearGoalForSelectedThread,

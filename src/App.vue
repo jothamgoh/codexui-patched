@@ -345,6 +345,7 @@
                   :live-overlay="liveOverlay"
                   :pending-requests="selectedThreadServerRequests"
                   :is-turn-in-progress="isSelectedThreadInProgress"
+                  :submit-question-answer="onSubmitQuestionAnswer"
                   :is-forking-thread="isForkingThread"
                   :is-rolling-back="isRollingBack"
                   :thread-cwd="selectedThread?.cwd ?? ''"
@@ -525,6 +526,7 @@ const {
   renameThread,
   createThreadWithGoal,
   sendMessageToSelectedThread,
+  sendQuestionAnswer,
   sendMessageToNewThread,
   setGoalForSelectedThread,
   clearGoalForSelectedThread,
@@ -1119,6 +1121,14 @@ function openLinkedFeature(): void {
   if (!selectedChatBoard.value) return
   if (selectedChatFeature.value) setProjectBoardFeature(selectedChatFeature.value.id, selectedChatBoard.value.id)
   else openProjectBoard(selectedChatBoard.value.id)
+}
+
+async function onSubmitQuestionAnswer(threadId: string, text: string): Promise<void> {
+  if (threadId !== selectedThreadId.value) throw new Error('Open the question’s chat before answering.')
+  requestBrowserTurnNotificationsPermission()
+  if (selectedChatBoard.value) {
+    await onSubmitBoardChatMessage({ text, imageUrls: [], fileAttachments: [], responseTextAnnotations: [], skills: [], plugins: [], threads: [], mode: 'steer' })
+  } else await sendQuestionAnswer(threadId, text)
 }
 
 async function onSubmitBoardChatMessage(payload: SubmitPayload): Promise<void> {

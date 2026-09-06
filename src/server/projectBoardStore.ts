@@ -763,7 +763,7 @@ export class ProjectBoardStore {
       const changes = asRecord(changesValue) ?? {}
       const executionAccess = readProjectBoardExecutionAccess(changes.executionAccess, existing.executionAccess)
       if ('maxConcurrentRuns' in changes && changes.maxConcurrentRuns !== 1) {
-        throw new Error('Project boards currently support one active feature per project.')
+        throw new Error('Project boards currently support one active feature per board.')
       }
       const makeDefault = changes.isDefault === true
       const knownAgentIds = new Set(current.agents.map((agent) => agent.id))
@@ -1189,8 +1189,8 @@ export class ProjectBoardStore {
       }
       const blocker = kind === 'plan' ? '' : dependencyBlocker(current, card)
       if (blocker) throw new Error(blocker)
-      if (current.runs.some((run) => run.cardId === cardId && run.status === 'running')) {
-        throw new Error('This card already has a running agent.')
+      if (current.runs.some((run) => run.boardId === card.boardId && run.status === 'running')) {
+        throw new Error('Wait for this board’s active run to finish.')
       }
       const agent = current.agents.find((entry) => entry.id === agentId)
       if (!agent) throw new Error('Assigned agent not found.')

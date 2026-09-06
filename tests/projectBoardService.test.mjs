@@ -373,7 +373,7 @@ test('a delayed Stop snapshot and replay cannot cancel a replacement run', async
   assert.equal((await store.read()).runs[0].status, 'running')
 })
 
-test('Stop retains project ownership until the Lead and its proven descendants have ended', async (t) => {
+test('Stop retains board ownership until the Lead and its proven descendants have ended', async (t) => {
   const { appServer, board, feature, service, store } = await createHarness(t)
   await service.startFeature(feature.id, { allowWorkspaceWrite: true })
   await waitFor(() => appServer.calls.find((call) => call.method === 'turn/start'), 'No Lead')
@@ -410,7 +410,7 @@ test('Stop retains project ownership until the Lead and its proven descendants h
   rejectChild = false
   invalidChildStatus = true
   await assert.rejects(service.stopFeature(feature.id), /subagent’s current state could not be verified/u)
-  assert.equal((await store.read()).runs[0].status, 'running', 'Unknown child state must keep the project lock')
+  assert.equal((await store.read()).runs[0].status, 'running', 'Unknown child state must keep the board lock')
   invalidChildStatus = false
   const stopped = await service.stopFeature(feature.id)
   assert.equal(stopped.runs[0].status, 'interrupted')
@@ -840,16 +840,21 @@ test('requires explicit write consent and scopes mutations to the active feature
   for (const projectPath of [board.projectPath + '/', aliasPath]) {
     const withAlias = await service.createBoard({ projectPath, name: 'Aliased project' })
     const aliasBoard = withAlias.boards[0]
-    const withFeature = await service.createCard({ boardId: aliasBoard.id, title: 'Conflicting feature' })
+    const withFeature = await service.createCard({ boardId: aliasBoard.id, title: 'Independent feature' })
     const aliasFeature = withFeature.cards.find((card) => card.boardId === aliasBoard.id)
-    await assert.rejects(service.startFeature(aliasFeature.id, { allowWorkspaceWrite: true }), /Another feature is running/u)
+    await service.startFeature(aliasFeature.id, { allowWorkspaceWrite: true })
   }
+  await waitFor(() => appServer.calls.filter((call) => call.method === 'turn/start').length === 3, 'Same-folder boards did not start independently')
+  assert.ok(appServer.calls.filter((call) => call.method === 'turn/start').every((call) => call.params.cwd === board.projectPath), 'Each Lead keeps its actual working directory')
+  const withSecond = await service.createCard({ boardId: board.id, title: 'Wait on this board' })
+  await assert.rejects(service.startFeature(withSecond.cards.find((card) => card.title === 'Wait on this board').id, { allowWorkspaceWrite: true }), /running on this board/u)
+  await assert.rejects(service.startBoardPlan(board.id, { plan: 'More work' }), /running on this board/u)
   const missingPath = join(board.projectPath, 'missing')
   const withMissing = await service.createBoard({ projectPath: missingPath, name: 'Missing project' })
   const withMissingFeature = await service.createCard({ boardId: withMissing.boards[0].id, title: 'Unavailable feature' })
   const missingFeature = withMissingFeature.cards.find((card) => card.boardId === withMissing.boards[0].id)
   await assert.rejects(service.startFeature(missingFeature.id, { allowWorkspaceWrite: true }), /Project folder is unavailable/u)
-  assert.equal((await store.read()).runs.length, 1)
+  assert.equal((await store.read()).runs.length, 3)
   for (const turnId of ['', 'another-turn']) {
     await assert.rejects(service.handleDynamicToolCall({
       ...toolCall('lead-thread', 'comment', { comment: 'Stale update' }), turnId,
@@ -861,7 +866,7 @@ test('requires explicit write consent and scopes mutations to the active feature
   await service.handleDynamicToolCall(toolCall('lead-thread', 'comment', { comment: 'Current update' }))
   const snapshot = await store.read()
   assert.equal(snapshot.comments.length, 1)
-  assert.equal(snapshot.comments[0].runId, snapshot.runs[0].id)
+  assert.equal(snapshot.comments[0].runId, snapshot.runs.find((run) => run.cardId === feature.id).id)
 
   await service.handleDynamicToolCall(toolCall('lead-thread', 'ask_user', { question: 'First decision?' }))
   const firstQuestion = (await store.read()).questions[0]
@@ -897,7 +902,7 @@ test('app-server exit interrupts pending and active turns, releases locks, and r
     await assert.rejects(service.startFeature(feature.id), /Confirm workspace-write access/u)
     appServer.rpc = rpc
     await service.startFeature(feature.id, { allowWorkspaceWrite: true })
-    await waitFor(() => appServer.calls.filter((call) => call.method === 'turn/start')[1], 'Project lock remained stranded')
+    await waitFor(() => appServer.calls.filter((call) => call.method === 'turn/start')[1], 'Board lock remained stranded')
     await service.handleNotification({ method: 'turn/completed', params: { threadId: 'lead-thread', turn: { id: 'lead-turn-1', status: 'completed' } } })
     snapshot = await store.read()
     assert.equal(snapshot.runs[0].status, 'running')
@@ -1064,6 +1069,49 @@ test('notifies once after the last approved feature turn finishes and gives late
   await waitFor(() => batchEvents().length === 2, 'Later approved batch did not notify')
   assert.notEqual(batchEvents()[1].id, firstEvent.id, 'Separate approvals must not deduplicate each other')
   assert.equal(batchEvents()[1].queueId, nextBatch.queues[0].id)
+})
+
+test('same-folder boards run independent queues and retain separate stop and restart ownership', async (t) => {
+  const { appServer, board, feature, service, store } = await createHarness(t)
+  const siblingBoard = (await service.createBoard({ projectPath: board.projectPath, name: 'Separate initiative', executionAccess: 'project' })).boards[0]
+  const sibling = (await service.createCard({ boardId: siblingBoard.id, title: 'Independent work' })).cards.find((card) => card.boardId === siblingBoard.id)
+  await Promise.all([
+    service.startBoardQueue(board.id, { featureIds: [feature.id], allowWorkspaceWrite: true }),
+    service.startBoardQueue(siblingBoard.id, { featureIds: [sibling.id], allowWorkspaceWrite: true }),
+  ])
+  await waitFor(() => appServer.calls.filter((call) => call.method === 'turn/start').length === 2, 'Both board queues should start')
+  let snapshot = await service.read()
+  const firstRun = snapshot.runs.find((run) => run.cardId === feature.id)
+  const siblingRun = snapshot.runs.find((run) => run.cardId === sibling.id)
+  assert.notEqual(firstRun.threadId, siblingRun.threadId)
+  assert.equal(snapshot.queues.filter((queue) => queue.status === 'running').length, 2)
+
+  await service.stopBoardQueue(board.id)
+  snapshot = await service.read()
+  assert.equal(snapshot.queues.find((queue) => queue.boardId === siblingBoard.id).status, 'running')
+  assert.equal(snapshot.runs.filter((run) => run.status === 'running').length, 2, 'Pause leaves current turns to finish')
+  await service.stopFeature(feature.id)
+  snapshot = await service.read()
+  assert.equal(snapshot.runs.find((run) => run.id === firstRun.id).status, 'interrupted')
+  assert.equal(snapshot.runs.find((run) => run.id === siblingRun.id).status, 'running')
+  assert.deepEqual(appServer.calls.filter((call) => call.method === 'turn/interrupt').map((call) => call.params.threadId), [firstRun.threadId])
+
+  // Releasing A's lock must neither release B's lock nor prevent planning A.
+  await service.startBoardPlan(board.id, { plan: 'Plan a later increment.' })
+  await waitFor(() => appServer.calls.filter((call) => call.method === 'turn/start').length === 3, 'Other board should permit planning')
+  await assert.rejects(service.startBoardPlan(siblingBoard.id, { plan: 'Still running.' }), /running on this board/u)
+  await service.handleNotification({ method: 'codexui/appServer/exited', params: {} })
+  snapshot = await service.read()
+  assert.equal(snapshot.runs.filter((run) => run.status === 'running').length, 0)
+  assert.equal(snapshot.queues.filter((queue) => queue.status === 'running').length, 0)
+  assert.equal(snapshot.runs.find((run) => run.id === siblingRun.id).status, 'interrupted')
+  await assert.rejects(service.startFeature(sibling.id), /Confirm workspace-write access/u)
+  await Promise.all([
+    service.startFeature(feature.id, { allowWorkspaceWrite: true }),
+    service.startFeature(sibling.id, { allowWorkspaceWrite: true }),
+  ])
+  await waitFor(() => appServer.calls.filter((call) => call.method === 'turn/start').length === 5, 'Both board locks should be released after exit')
+  assert.equal((await store.read()).runs.filter((run) => run.status === 'running').length, 2)
 })
 
 test('runs only the approved ready queue and pauses at questions without answer-triggered restart', async (t) => {

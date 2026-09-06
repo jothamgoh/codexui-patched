@@ -65,6 +65,29 @@ async function createBoardAndFeature(store, feature = {}) {
   }
 }
 
+test('serializes starts per board while other boards in the same folder remain independent', async (t) => {
+  const { store } = await createFixture(t)
+  const { board, feature } = await createBoardAndFeature(store)
+  const second = (await store.createCard({ boardId: board.id, title: 'Second feature' })).cards.find((card) => card.id !== feature.id)
+  const starts = await Promise.allSettled([
+    store.startRun(feature.id, 'builtin-lead', 'execute'),
+    store.startRun(second.id, 'builtin-lead', 'execute'),
+  ])
+  assert.equal(starts[0].status, 'fulfilled')
+  assert.equal(starts[1].status, 'rejected')
+  assert.match(starts[1].reason.message, /board’s active run/u)
+  const siblingBoard = (await store.createBoard({ projectPath: board.projectPath, name: 'Separate initiative' })).boards[0]
+  const sibling = (await store.createCard({ boardId: siblingBoard.id, title: 'Independent work' })).cards.find((card) => card.boardId === siblingBoard.id)
+  const siblingRun = await store.startRun(sibling.id, 'builtin-lead', 'execute')
+  await assert.rejects(store.startBoardPlan(board.id, 'builtin-lead', 'More work', ''), /board’s active run/u)
+  await store.failRun(starts[0].value.run.id, 'Stopped for planning', 'interrupted')
+  await store.startBoardPlan(board.id, 'builtin-lead', 'More work', '')
+  await assert.rejects(store.startRun(second.id, 'builtin-lead', 'execute'), /board’s active run/u)
+  const snapshot = await store.read()
+  assert.equal(snapshot.runs.find((run) => run.id === siblingRun.run.id).status, 'running')
+  assert.equal(snapshot.runs.filter((run) => run.status === 'running').length, 2)
+})
+
 function planTask(overrides) {
   return {
     key: 'task',

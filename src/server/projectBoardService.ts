@@ -362,7 +362,7 @@ export class ProjectBoardService {
   private readonly executionConsentByFeatureId = new Map<string, ExecutionConsent>()
   private processGeneration = 0
   private readonly activeFeatureIds = new Set<string>()
-  private readonly activeProjectPaths = new Set<string>()
+  private readonly activeBoardIds = new Set<string>()
   private readonly autoContinuationsByFeatureId = new Map<string, number>()
   private readonly featureStartEpochs = new Map<string, number>()
   private readonly featureStopEpochs = new Map<string, number>()
@@ -658,8 +658,8 @@ export class ProjectBoardService {
       if (!(await stat(projectPath)).isDirectory()) throw new Error('Not a directory')
     } catch { throw new Error('Project folder is unavailable. Choose an existing directory before planning.') }
     if (generation !== this.processGeneration) throw new Error('Codex app-server exited. Try planning again.')
-    if (this.activeProjectPaths.has(projectPath)) throw new Error('Another feature is running in this project. Let it finish before planning.')
-    this.activeProjectPaths.add(projectPath)
+    if (this.activeBoardIds.has(boardId)) throw new Error('Another feature is running on this board. Let it finish before planning.')
+    this.activeBoardIds.add(boardId)
     try {
       const { snapshot: started, run } = await this.store.startBoardPlan(boardId, agent.id, readString(record.plan).slice(0, 20_000), sourceThreadId, settings)
       if (generation !== this.processGeneration) {
@@ -675,7 +675,7 @@ export class ProjectBoardService {
       void this.executeFeature(context, false)
       return this.withQueues(started)
     } catch (error) {
-      this.activeProjectPaths.delete(projectPath)
+      this.activeBoardIds.delete(boardId)
       throw error
     }
   }
@@ -819,8 +819,8 @@ export class ProjectBoardService {
     if (generation !== this.processGeneration) throw new Error('Codex app-server exited. Select Start to retry this feature.')
     assertNotStopped()
     if (this.activeFeatureIds.has(featureId)) throw new Error('This feature is already running.')
-    if (this.activeProjectPaths.has(projectPath)) {
-      throw new Error('Another feature is running in this project. Let it finish before starting this one.')
+    if (this.activeBoardIds.has(board.id)) {
+      throw new Error('Another feature is running on this board. Let it finish before starting this one.')
     }
     const roster = snapshot.agents.filter((agent) => board.agentIds.includes(agent.id))
     const workspaceWrite = kind === 'execute' && consent.executionAccess === 'project' && roster.some((agent) => agent.sandbox === 'workspace-write')
@@ -842,9 +842,9 @@ export class ProjectBoardService {
       throw new Error('The queue was paused or replaced before this feature started.')
     }
     if (generation !== this.processGeneration) throw new Error('Codex app-server exited. Select Start to retry.')
-    if (this.activeFeatureIds.has(featureId) || this.activeProjectPaths.has(projectPath)) throw new Error('Another feature is running in this project.')
+    if (this.activeFeatureIds.has(featureId) || this.activeBoardIds.has(board.id)) throw new Error('Another feature is running on this board.')
     this.activeFeatureIds.add(feature.id)
-    this.activeProjectPaths.add(projectPath)
+    this.activeBoardIds.add(board.id)
     try {
       const { snapshot: startedSnapshot, run } = await this.store.startRun(feature.id, lead.id, kind, projectBoardFeatureFingerprint(feature), settings, message?.reopenAndSend)
       if (generation !== this.processGeneration || (this.featureStartEpochs.get(featureId) ?? 0) !== startEpoch) {
@@ -873,7 +873,7 @@ export class ProjectBoardService {
       return startedSnapshot
     } catch (error) {
       this.activeFeatureIds.delete(feature.id)
-      this.activeProjectPaths.delete(projectPath)
+      this.activeBoardIds.delete(board.id)
       throw error
     }
   }
@@ -1147,7 +1147,7 @@ export class ProjectBoardService {
       context.resolveTurnReady?.()
       if (this.activeRunsById.get(context.runId) !== context || context.finishing) return
       // Stop owns cancellation once requested, including a late/failed native
-      // start response. It must verify the turn before releasing project locks.
+      // start response. It must verify the turn before releasing board locks.
       if (context.stopping) return
       context.finishing = true
       this.pauseQueue(context.boardId, 'A run failed. Review the feature chat, then start the queue again.')
@@ -1214,7 +1214,7 @@ export class ProjectBoardService {
     context.resolveTurnReady?.()
     this.activeRunsById.delete(context.runId)
     this.activeFeatureIds.delete(context.featureId)
-    this.activeProjectPaths.delete(context.projectPath)
+    this.activeBoardIds.delete(context.boardId)
   }
 
   private queueContinuation(featureId: string): void {

@@ -151,3 +151,60 @@ test('rollback removes messages and rejects a pre-rollback history response', as
   await rollingBack
   assert.deepEqual(f.state.messages.value, [])
 })
+
+test('overlapping cold loads retain earlier pages loaded before the later tail response', async (t) => {
+  const f = fixture(t)
+  const first = await f.read()
+  const second = await f.read()
+  first.response.resolve(page([message('Latest final answer', { phase: 'final_answer' })], false))
+  await first.pending
+  const earlier = f.state.loadEarlierMessages('chat-1')
+  await flush()
+  f.reads.at(-1).resolve({
+    ...page([message('Earlier text', { id: 'earlier-answer', turnId: 'turn-0', turnIndex: 49, orderKey: '000049:000002:000000' })], false),
+    startTurnIndex: 30, endTurnIndex: 50,
+    turnSummaries: [{ turnId: 'turn-0', durationMs: 1200 }],
+  })
+  await earlier
+  second.response.resolve(page([message('Latest final answer', { phase: 'final_answer' })], false))
+  await second.pending
+  assert.equal(f.state.messages.value.find((item) => item.id === 'earlier-answer')?.text, 'Earlier text')
+  assert.equal(f.state.messages.value.some((item) => item.id === 'turn-summary:turn-0'), true)
+  assert.equal(f.answers()[0].text, 'Latest final answer')
+  const nextEarlier = f.state.loadEarlierMessages('chat-1')
+  await flush()
+  assert.equal(f.reads.at(-1).options.beforeTurnIndex, 30)
+  f.reads.at(-1).resolve({ ...page([], false), startTurnIndex: 10, endTurnIndex: 30 })
+  await nextEarlier
+})
+
+test('completed work stays visible through turn completion and delayed history without duplicates', async (t) => {
+  const f = fixture(t)
+  const initial = await f.read()
+  initial.response.resolve(page([]))
+  await initial.pending
+  f.emit('item/completed', { item: { id: 'command', type: 'commandExecution', command: 'npm test', status: 'completed', aggregatedOutput: 'Tests pass', exitCode: 0 } })
+  f.emit('item/completed', { item: { id: 'tool', type: 'mcpToolCall', server: 'fixture', tool: 'inspect', status: 'completed', result: { content: [{ type: 'text', text: 'Checked' }] } } })
+  f.emit('item/started', { item: { id: 'unfinished-command', type: 'commandExecution', command: 'pending' } })
+  f.emit('item/started', { item: { id: 'unfinished-tool', type: 'mcpToolCall', server: 'fixture', tool: 'pending' } })
+  f.emit('item/completed', { item: { id: 'answer', type: 'agentMessage', text: 'Done.', phase: 'final_answer' } })
+  const work = f.state.messages.value.filter((item) => item.id === 'command' || item.id === 'tool')
+  assert.equal(work.length, 2)
+  f.emit('turn/completed', { turn: { id: 'turn-1', status: 'completed' } })
+  const assertVisible = () => {
+    for (const item of work) assert.equal(f.state.messages.value.filter((row) => row.id === item.id).length, 1, `${item.id} remains visible exactly once`)
+    assert.equal(f.answers()[0].text, 'Done.')
+    assert.equal(f.state.messages.value.at(-1).id, 'answer')
+    assert.equal(f.state.messages.value.some((item) => item.id.startsWith('unfinished-')), false)
+  }
+  assertVisible()
+  const incomplete = await f.read()
+  incomplete.response.resolve(page([message('Done.', { phase: 'final_answer' })], false))
+  await incomplete.pending
+  assertVisible()
+  const hydrated = await f.read()
+  hydrated.response.resolve(page([...work.map((item, index) => ({ ...item, turnIndex: 50, orderKey: `000050:00000${index}:000000` })), message('Done.', { phase: 'final_answer' })], false))
+  await hydrated.pending
+  assertVisible()
+  for (const item of work) assert.equal(f.state.messages.value.find((row) => row.id === item.id).turnIndex, 50)
+})

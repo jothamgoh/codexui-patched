@@ -3742,11 +3742,22 @@ export function useDesktopState() {
       activeReasoningItemId = ''
       shouldAutoScrollOnNextAgentEvent = false
       clearLiveReasoningForThread(notificationThreadId)
+      // Completed rows stay visible until matching persisted items replace them.
+      // Clearing them here makes the transcript shrink and then grow when the
+      // final history response arrives. Drop only unfinished transient rows.
       if (liveCommandsByThreadId.value[notificationThreadId]) {
-        liveCommandsByThreadId.value = omitKey(liveCommandsByThreadId.value, notificationThreadId)
+        liveCommandsByThreadId.value = {
+          ...liveCommandsByThreadId.value,
+          [notificationThreadId]: liveCommandsByThreadId.value[notificationThreadId]!
+            .filter((message) => message.commandExecution?.status !== 'inProgress'),
+        }
       }
       if (liveToolMessagesByThreadId.value[notificationThreadId]) {
-        liveToolMessagesByThreadId.value = omitKey(liveToolMessagesByThreadId.value, notificationThreadId)
+        liveToolMessagesByThreadId.value = {
+          ...liveToolMessagesByThreadId.value,
+          [notificationThreadId]: liveToolMessagesByThreadId.value[notificationThreadId]!
+            .filter((message) => message.toolCall?.status !== 'inProgress'),
+        }
       }
       const completedThreadId = extractThreadIdFromNotification(notification)
       if (completedThreadId) {
@@ -3959,15 +3970,18 @@ export function useDesktopState() {
       const { isInProgress, activeTurnId, turnSummaries } = page
       const nextMessages = preserveObservedAgentText(threadId, page.messages, readId, isInProgress)
       const previousPersisted = persistedMessagesByThreadId.value[threadId] ?? []
+      // Another startup read may have finished while this one was pending,
+      // allowing the user to load earlier pages. Preserve that current state.
+      const preserveMissing = options.silent === true || loadedMessagesByThreadId.value[threadId] === true
       const mergedMessages = mergeServerMessagesPreservingOptimistic(previousPersisted, nextMessages, {
-        preserveMissing: options.silent === true || alreadyLoaded,
+        preserveMissing,
       })
       setPersistedMessagesForThread(threadId, mergedMessages)
       setTurnSummariesForThread(threadId, turnSummaries, {
-        preserveMissing: options.silent === true || alreadyLoaded,
+        preserveMissing,
       })
       setThreadPagination(threadId, page, {
-        preserveEarlier: options.silent === true || alreadyLoaded,
+        preserveEarlier: preserveMissing,
       })
 
       const previousLiveAgent = liveAgentMessagesByThreadId.value[threadId] ?? []

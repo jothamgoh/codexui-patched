@@ -5,6 +5,23 @@ description: "Use when implementing or changing user-visible behavior/UI in this
 
 # Codex App Parity Skill
 
+## Findings: Long-chat reload and layout settling (2026-09-06)
+
+- Rechecked native local-conversation-thread-7fad29d31eb2.js: virtualized
+  content retains estimated-height shells and observes viewport/content changes.
+  Retain the lightweight web shells rather than replacing the rendering system.
+- A pending cold tail read must merge against the currently loaded history when
+  it resolves. Another initial read may already have enabled earlier-page loads;
+  a captured entry-time loaded flag can erase that newly loaded text and cursor.
+- Browser scroll events can precede ResizeObserver after composer focus/growth.
+  A measured 530→430px viewport shrink moved scrollTop upward by 8px and wrongly
+  disabled bottom-follow. Ignore viewport-change adjustments; still recognize
+  upward reading during content growth. Disable browser anchoring while following
+  and preserve it while reading history; ignore scroll clamping after row shrink.
+- Verify actual reloads with delayed loading, complete final text/formatting,
+  bounded mounted bodies, and final text inside the resized viewport. Mocked
+  observer callbacks alone do not prove browser layout behavior.
+
 ## Findings: Optional planning from ordinary chats (2026-09-06)
 
 - Dynamic tools remain tied to thread creation. A bundled skill plus a compact

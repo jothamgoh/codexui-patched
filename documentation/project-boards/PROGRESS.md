@@ -6,12 +6,23 @@ Status: released through 2cb29f5. Main was published, CI passed, the verified
 frontend/CLI build was deployed, and one authorized independent-Terminal
 restart completed. Post-restart bridge, boards, models, and pending-request
 endpoints returned healthy responses; no runs or native requests were left
-active. The public UI and API still redirect through the authenticated gateway. Preserve the stopped Lead’s uncommitted
-message-display edits in the main checkout; they are separate from this release.
+active. The public UI and API still redirect through the authenticated gateway.
 A real run waiting at an invisible native test approval was stopped at the
-user’s request; its code edits remain saved.
+user’s request; its saved rendering work has now been reviewed in the follow-up below.
 
 ## Current follow-up
+
+- Long-chat rendering: reviewed the saved Lead changes and fixed a confirmed
+  overlapping cold-read race that discarded earlier text/summaries/pagination.
+  Completed work rows remain until matching history arrives. Browser clamping
+  and viewport changes no longer masquerade as upward user scrolling; deliberate
+  history reading remains respected. The original saved scroll patch failed a
+  real composer-resize check; the additional viewport guard fixes that case.
+  All 237 unit tests, production build, and the existing browser journey passed,
+  including three delayed 2,000-message reloads with complete final text and
+  formatting, bounded mounted bodies, desktop/phone resizing, history reading,
+  live activity, and voice drafts. The redundant mocked-observer test was omitted.
+  Built frontend assets are available on refresh; no backend restart is needed.
 
 - Optional same-chat board planning is implemented: ask to put a plan in a board;
   the current chat saves/revises draft cards through a bundled metadata-only
@@ -31,7 +42,8 @@ user’s request; its code edits remain saved.
   Post-restart bridge, boards, models, and pending-request endpoints returned
   healthy responses; the deployed helper resolved the exact source chat/project.
   No board runs or native requests remained active. Public UI/API still redirect
-  through the authenticated gateway. The saved message-display edits are intact.
+  through the authenticated gateway. The rendering edits were preserved then
+  and subsequently reviewed in the rendering follow-up above.
 
 Next: dogfood one real user-selected plan through review, execution, and result
 review. Improve demonstrated friction before adding more orchestration. Ordinary
@@ -217,11 +229,10 @@ References and adopted choices remain in PRD.md and ../UX_BACKLOG.md.
 
 ## Exact next steps
 
-1. Refresh the browser and dogfood one small feature through Track on board →
-   Lead chat → approval/result → feature/board navigation. Existing stopped
-   features can now be deleted after their run is confirmed stopped.
-2. Review and verify the stopped Lead’s saved message-display edits as a separate
-   task. Their exact changes and untracked test were preserved during integration
-   and were not included in the deployed build.
+1. Refresh a long desktop conversation and check the previously missing text;
+   capture any remaining distinct failure before changing the renderer further.
+2. Dogfood an explicitly requested board plan → review/revise cards → selected
+   feature execution → result/check review. Existing stopped features can be
+   deleted after their run is confirmed stopped.
 3. Verify physical iPhone Safari. Keep provider rotation, scheduling, and
    automatic batch QA separate unless a real workflow needs them.

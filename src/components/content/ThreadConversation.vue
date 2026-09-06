@@ -9,7 +9,9 @@
       No messages in this thread yet.
     </p>
 
-    <ul v-else ref="conversationListRef" class="conversation-list" @scroll="onConversationScroll">
+    <ul v-else ref="conversationListRef" class="conversation-list"
+      :style="{ overflowAnchor: userHasScrolledAwayFromBottom ? 'auto' : 'none' }"
+      @scroll="onConversationScroll">
       <li
         v-if="isLoadingEarlierMessages || earlierLoadError"
         class="conversation-history-control"
@@ -664,9 +666,11 @@ import { Textarea } from '@/components/ui/textarea'
 import { useDictation } from '../../composables/useDictation'
 import { useComposerDraftStore } from '../../stores/composerDrafts'
 import {
+  didScrollAwayFromConversationBottom,
   shouldFollowConversationBottom,
   shouldForceThreadOpenToBottom,
 } from '../../utils/threadScroll'
+import type { ConversationScrollMetrics } from '../../utils/threadScroll'
 import {
   normalizeResponseSelectionPointerType,
   responseAnnotationPositionUpdateStrategy,
@@ -1087,7 +1091,6 @@ const responseAnnotationAnchor = computed(() => {
 })
 const BOTTOM_THRESHOLD_PX = 16
 const BOTTOM_RESET_THRESHOLD_PX = 20
-const SCROLL_DIRECTION_THRESHOLD_PX = 2
 const EARLIER_MESSAGES_THRESHOLD_PX = 180
 
 let scrollRestoreFrame = 0
@@ -1096,8 +1099,8 @@ let responseAnnotationMarkerFrame = 0
 let responseSelectionFrame = 0
 let responseSelectionSettleTimer = 0
 let bottomLockFramesLeft = 0
-let lastScrollTop = 0
-let userHasScrolledAwayFromBottom = false
+let lastScrollMetrics: ConversationScrollMetrics | null = null
+const userHasScrolledAwayFromBottom = ref(false)
 let responseSelectionPointerIsDown = false
 let responseSelectionChangedWhilePointerDown = false
 let pendingResponseAnnotationSelection: CapturedResponseSelection | null = null
@@ -1704,6 +1707,7 @@ function cancelBottomLock(): void {
 
 function emitScrollState(container: HTMLElement): void {
   if (!props.activeThreadId) return
+  lastScrollMetrics = readScrollMetrics(container)
   const atBottom = isAtBottom(container)
   showScrollToBottom.value = !atBottom
   const maxScrollTop = Math.max(container.scrollHeight - container.clientHeight, 0)
@@ -1721,14 +1725,13 @@ function emitScrollState(container: HTMLElement): void {
 function enforceBottomState(): void {
   const container = conversationListRef.value
   if (!container) return
-  userHasScrolledAwayFromBottom = false
+  userHasScrolledAwayFromBottom.value = false
   scrollToBottom()
-  lastScrollTop = container.scrollTop
   emitScrollState(container)
 }
 
 function shouldLockToBottom(): boolean {
-  return shouldFollowConversationBottom(userHasScrolledAwayFromBottom)
+  return shouldFollowConversationBottom(userHasScrolledAwayFromBottom.value)
 }
 
 function runBottomLockFrame(): void {
@@ -1782,9 +1785,7 @@ async function scheduleThreadOpenScroll(): Promise<void> {
   scrollRestoreFrame = requestAnimationFrame(() => {
     scrollRestoreFrame = 0
     enforceBottomState()
-    const container = conversationListRef.value
-    lastScrollTop = container?.scrollTop ?? 0
-    userHasScrolledAwayFromBottom = false
+    userHasScrolledAwayFromBottom.value = false
     bindPendingImageHandlers()
     scheduleBottomLock()
   })
@@ -1845,8 +1846,7 @@ async function restorePrependAnchor(): Promise<boolean> {
   if (addedHeight <= 0) return false
 
   container.scrollTop = anchor.scrollTop + addedHeight
-  lastScrollTop = container.scrollTop
-  userHasScrolledAwayFromBottom = true
+  userHasScrolledAwayFromBottom.value = true
   pendingPrependAnchor = null
   emitScrollState(container)
   bindPendingImageHandlers()
@@ -1995,8 +1995,8 @@ watch(
     responseAnnotationMarkers.value = []
     showScrollToBottom.value = false
     cancelBottomLock()
-    lastScrollTop = 0
-    userHasScrolledAwayFromBottom = false
+    lastScrollMetrics = null
+    userHasScrolledAwayFromBottom.value = false
     pendingPrependAnchor = null
     if (shouldForceThreadOpenToBottom(props.activeThreadId, props.isLoading)) {
       await scheduleThreadOpenScroll()
@@ -2005,18 +2005,21 @@ watch(
   { flush: 'post', immediate: true },
 )
 
+function readScrollMetrics(container: HTMLElement): ConversationScrollMetrics {
+  return { scrollTop: container.scrollTop, scrollHeight: container.scrollHeight, clientHeight: container.clientHeight }
+}
+
 function onConversationScroll(): void {
   const container = conversationListRef.value
   if (!container || props.isLoading) return
   const nextScrollTop = container.scrollTop
-  if (nextScrollTop < lastScrollTop - SCROLL_DIRECTION_THRESHOLD_PX) {
-    userHasScrolledAwayFromBottom = true
+  if (didScrollAwayFromConversationBottom(lastScrollMetrics, readScrollMetrics(container))) {
+    userHasScrolledAwayFromBottom.value = true
     cancelBottomLock()
   }
   if (distanceFromBottom(container) <= BOTTOM_RESET_THRESHOLD_PX) {
-    userHasScrolledAwayFromBottom = false
+    userHasScrolledAwayFromBottom.value = false
   }
-  lastScrollTop = nextScrollTop
   emitScrollState(container)
   scheduleResponseAnnotationMarkerUpdate()
   if (nextScrollTop <= EARLIER_MESSAGES_THRESHOLD_PX) {
@@ -2033,7 +2036,7 @@ function onConversationViewportResize(): void {
   const container = conversationListRef.value
   // Responsive gaps and composer height can move the viewport without resizing
   // any message. Rebase layout movement before interpreting upward user scroll.
-  if (container) lastScrollTop = container.scrollTop
+  if (container) lastScrollMetrics = readScrollMetrics(container)
   if (shouldLockToBottom()) scheduleBottomLock()
   scheduleResponseAnnotationMarkerUpdate()
 }

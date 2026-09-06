@@ -18,14 +18,15 @@ import {normalizeThreadMessagesV2} from '/src/api/normalizers/v2.ts';
 import '/src/style.css';
 const count=Number(new URLSearchParams(location.search).get('count')||2000);
 const text='A useful result with **formatting**, a [link](https://example.com), and detail.\\n\\n'+Array.from({length:12},(_,i)=>'- Detail '+i+' describes the work, checks and next steps.').join('\\n');
-const state=reactive({messages:Array.from({length:count},(_,i)=>({id:'message-'+i,role:i%3===0?'user':'assistant',text:i%3===0?'Request '+i:'Result '+i+'\\n\\n'+text,turnId:'turn-'+Math.floor(i/3),turnIndex:Math.floor(i/3)})), activeThreadId:'chat-1', submits:0});
+const state=reactive({messages:Array.from({length:count},(_,i)=>({id:'message-'+i,role:i%3===0?'user':'assistant',text:i%3===0?'Request '+i:'Result '+i+'\\n\\n'+text,turnId:'turn-'+Math.floor(i/3),turnIndex:Math.floor(i/3)})), activeThreadId:'chat-1', submits:0,loading:true});
+setTimeout(()=>{state.loading=false},75);
 window.fixture=state;
 window.loadActivityHistory=(items)=>{state.live=false;state.activeThreadId='chat-1';state.messages=normalizeThreadMessagesV2({thread:{cwd:'/project',turns:[{id:'activity-turn',status:'completed',items}]}})};
 window.startActivityStream=async()=>{const {useDesktopState}=await import('/src/composables/useDesktopState.ts');window.desktop=useDesktopState();desktop.selectedThreadId.value='chat-1';desktop.startPolling();state.live=true};
 const pinia=createPinia();
 const router=createRouter({history:createMemoryHistory(),routes:[{path:'/',component:{render:()=>null}},{path:'/thread/:threadId',name:'thread',component:{render:()=>null}}]});
 window.fixtureRouter=router;
-const App={setup(){const store=useComposerDraftStore();window.drafts=store;return()=>h('div',{style:'height:100dvh;display:flex;flex-direction:column'},[h('div',{style:'min-height:0;flex:1;display:flex;flex-direction:column'},[h(Conversation,{messages:state.live?desktop.messages.value:state.messages,pendingRequests:[],liveOverlay:null,isLoading:false,activeThreadId:state.activeThreadId,scrollState:null,automationProposals:[],automationTasks:[],onAddResponseAnnotation:(a)=>store.draftFor(state.activeThreadId).responseTextAnnotations.push(a)})]), h(Composer,{activeThreadId:state.activeThreadId,models:['gpt-6-astra'],selectedModel:'gpt-6-astra',selectedReasoningEffort:'low',disabled:false,isTurnInProgress:false,installedSkills:[],onSubmit:()=>state.submits++})])}};
+const App={setup(){const store=useComposerDraftStore();window.drafts=store;return()=>h('div',{style:'height:100dvh;display:flex;flex-direction:column'},[h('div',{style:'min-height:0;flex:1;display:flex;flex-direction:column'},[h(Conversation,{messages:state.live?desktop.messages.value:state.messages,pendingRequests:[],liveOverlay:null,isLoading:state.loading,activeThreadId:state.activeThreadId,scrollState:null,automationProposals:[],automationTasks:[],onAddResponseAnnotation:(a)=>store.draftFor(state.activeThreadId).responseTextAnnotations.push(a)})]), h(Composer,{activeThreadId:state.activeThreadId,models:['gpt-6-astra'],selectedModel:'gpt-6-astra',selectedReasoningEffort:'low',disabled:false,isTurnInProgress:false,installedSkills:[],onSubmit:()=>state.submits++})])}};
 createApp(App).use(pinia).use(router).mount('#app');
 `
 await writeFile(`${output}/fixture.js`, fixture)
@@ -59,7 +60,7 @@ try {
  // Latest text must remain inside the actual scroll viewport after history
  // remounts, resize, chat switching and a burst of live items.
  const assertLatestVisible=async()=>{
-   await page.waitForFunction(()=>{
+   try { await page.waitForFunction(()=>{
      const list=document.querySelector('.conversation-list');
      const rows=[...list.querySelectorAll('.conversation-item')];
      const last=rows.at(-1);
@@ -67,9 +68,29 @@ try {
      if(!body?.textContent?.trim()) return false;
      const a=body.getBoundingClientRect(),b=list.getBoundingClientRect();
      return a.bottom>b.top && a.top<b.bottom && list.scrollHeight-list.scrollTop-list.clientHeight<24;
-   },null,{timeout:5000});
+   },null,{timeout:5000}); } catch(error) {
+     await page.screenshot({path:`${output}/latest-not-visible.png`});
+     console.log('Tail layout failure', JSON.stringify(await page.locator('.conversation-list').evaluate(list=>({
+       top:list.scrollTop,height:list.scrollHeight,viewport:list.clientHeight,
+       rows:[...list.querySelectorAll('.conversation-item')].slice(-5).map(row=>({
+         top:row.getBoundingClientRect().top,height:row.getBoundingClientRect().height,
+         virtual:row.dataset.virtualized,textLength:row.textContent.trim().length,style:row.getAttribute('style'),
+       })),
+     })),null,2));
+     throw error;
+   }
  };
  await assertLatestVisible();
+ for(let reload=0;reload<3;reload++) {
+   await page.reload();
+   await page.locator('.conversation-item').last().waitFor();
+   await assertLatestVisible();
+   const finalAnswer=page.locator('[data-response-message-id="message-1999"]');
+   assert.match(await finalAnswer.innerText(),/Detail 11 describes the work, checks and next steps\./);
+   assert.equal(await finalAnswer.locator('strong').innerText(),'formatting');
+   assert.ok((await page.locator('.message-body').count())<100);
+ }
+ results.reload={attempts:3,fullFinalText:true,formatting:true,boundedBodies:true};
  for(const width of [390,1100]) {
    await page.setViewportSize({width,height:844});
    for(let i=0;i<3;i++) {

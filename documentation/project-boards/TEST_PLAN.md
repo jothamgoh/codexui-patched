@@ -77,7 +77,11 @@ notification storage too. Retain explicit defense in every bridge fixture:
 - A selected batch alerts exactly once after its last turn; replay, pause,
   question, failure, and replacement cannot produce false completion.
 - Delayed history must not overwrite newer streamed text or remove a fresh final
-  answer. Keep turn-local final/separator order and relevant viewport coverage.
+  answer. An overlapping initial tail read must preserve earlier pages loaded
+  meanwhile, their summaries, and the earlier-page cursor. Keep turn-local
+  final/separator order and relevant viewport coverage. Reload a long conversation
+  with delayed loading and assert full final text/formatting, bounded rich bodies,
+  and tail visibility through composer growth and virtual-row measurement.
 - Question retries and bridge replays retain drafts and prevent duplicate replies;
   secret answers remain masked. New-chat configuration must respect capability
   and managed-policy constraints without claiming to reconfigure loaded chats.

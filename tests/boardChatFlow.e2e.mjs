@@ -677,6 +677,39 @@ try {
       await tracked.getByRole('button', { name: 'Back to original chat', exact: true }).waitFor()
       assert.equal(await composer.inputValue(), 'Preserve my planning notes.')
       assert.equal(mutations.length, mutationsBeforeReview, 'Leaving planning must not execute or rewrite the board')
+
+      // Board navigation uses Cmd/Ctrl+B without touching the sidebar or draft.
+      await tracked.getByRole('button', { name: 'Back to original chat', exact: true }).click()
+      const shortcutDraft = 'Keep this draft while I review all project boards.'
+      await composer.fill(shortcutDraft)
+      if (!mobile && await page.getByRole('button', { name: 'Expand sidebar', exact: true }).count()) await page.getByRole('button', { name: 'Expand sidebar', exact: true }).click()
+      const sidebarBeforeShortcut = await page.locator('.desktop-sidebar').count()
+      const ignoredBoardKeys = await composer.evaluate((element) => [
+        { isComposing: true }, { shiftKey: true }, { altKey: true },
+      ].map((extra) => {
+        const event = new KeyboardEvent('keydown', { key: 'b', code: 'KeyB', metaKey: true, bubbles: true, cancelable: true, ...extra })
+        element.dispatchEvent(event)
+        return event.defaultPrevented
+      }))
+      assert.deepEqual(ignoredBoardKeys, [false, false, false])
+      assert.ok(page.url().endsWith(`#/thread/${sourceId}`))
+      await page.keyboard.press('Meta+k')
+      const searchDialog = page.getByRole('dialog', { name: 'Search chats', exact: true })
+      await searchDialog.waitFor()
+      await page.keyboard.press('Meta+b')
+      assert.ok(page.url().endsWith(`#/thread/${sourceId}`), 'The board shortcut cannot navigate behind a modal dialog')
+      await searchDialog.getByRole('button', { name: 'Close search', exact: true }).click()
+      for (const shortcut of ['Meta+b', 'Control+b']) {
+        await composer.focus()
+        await page.keyboard.press(shortcut)
+        await page.waitForURL('**/#/boards')
+        await overview.waitFor()
+        if (!mobile) assert.equal(await page.locator('.desktop-sidebar').count(), sidebarBeforeShortcut, 'Opening boards must not toggle the desktop sidebar')
+        await page.goBack()
+        await page.waitForURL(`**/#/thread/${sourceId}`)
+        assert.equal(await composer.inputValue(), shortcutDraft)
+      }
+      assert.equal(mutations.length, mutationsBeforeReview, 'Keyboard navigation never starts or changes board work')
     } catch (error) {
       await page.screenshot({ path: join(output, `failure-${label}.png`), fullPage: true })
       console.error(JSON.stringify({ label, url: page.url(), mutations, errors }, null, 2))

@@ -20,10 +20,13 @@
             class="sidebar-primary-link"
             :class="{ 'is-active': isBoardsRoute }"
             type="button"
+            :title="`Project boards (${boardShortcutLabel})`"
+            aria-keyshortcuts="Meta+B Control+B"
             @click="openBoardsHub"
           >
             <SquareKanban class="sidebar-primary-link-icon" />
             <span>Project boards</span>
+            <span v-if="!isMobile" class="sidebar-primary-shortcut" aria-hidden="true">{{ boardShortcutLabel }}</span>
             <span v-if="projectBoardNeedsInputCount" class="sidebar-primary-count is-attention">
               {{ projectBoardNeedsInputCount }}
             </span>
@@ -776,6 +779,7 @@ const notificationSettingsRef = ref<{
 } | null>(null)
 let lastAppResumeRefreshAt = 0
 const chatSearchShortcutLabel = /Mac|iPhone|iPad|iPod/u.test(navigator.platform) ? '⌘K' : 'Ctrl K'
+const boardShortcutLabel = /Mac|iPhone|iPad|iPod/u.test(navigator.platform) ? '⌘B' : 'Ctrl B'
 
 const routeThreadId = computed(() => {
   const rawThreadId = route.params.threadId
@@ -1463,8 +1467,9 @@ function onWindowKeyDown(event: KeyboardEvent): void {
   }
 
   if (event.key.toLowerCase() === 'b') {
+    if (event.isComposing || document.querySelector('[role="dialog"][aria-modal="true"], [role="alertdialog"]')) return
     event.preventDefault()
-    setSidebarCollapsed(!isSidebarCollapsed.value)
+    if (!event.repeat) openBoardsHub()
   }
 }
 

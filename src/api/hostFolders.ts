@@ -4,6 +4,9 @@ export async function getHostFolders(path = '', showHidden = false, signal?: Abo
   const query = new URLSearchParams({ path, showHidden: String(showHidden) })
   const response = await fetch(`/codex-api/host-folders?${query}`, { signal })
   const payload = await response.json().catch(() => null)
+  if (response.status === 404 && payload?.error === 'Unknown CodexUI API route.') {
+    throw new Error('The running CodexUI server does not support folder browsing yet. Restart the CodexUI service, then try again.')
+  }
   if (!response.ok) throw new Error(typeof payload?.error === 'string' ? payload.error : 'Could not browse folders. Try again.')
   const data = payload?.data
   if (!data || typeof data.path !== 'string' || typeof data.homePath !== 'string'

@@ -5,6 +5,17 @@ description: "Use when implementing or changing user-visible behavior/UI in this
 
 # Codex App Parity Skill
 
+## Findings: Folder browsing on an older running bridge (2026-09-07)
+
+- Rechecked the integrated remote workspace dialog's directory-only host query.
+  Production can serve that web picker from a new frontend while its running
+  bridge predates the host-folders route. Recognize the exact unknown-route JSON
+  404 and explain that the service needs a restart; preserve a missing folder's
+  distinct 404 and permission errors. Retry must work after the route is loaded.
+- Check the live folder route, not just the generic methods health endpoint,
+  when verifying activation. A successful build alone cannot activate a new
+  server route in an existing Node process.
+
 ## Findings: Browse host folders from desktop or mobile (2026-09-06)
 
 - Integrated `remote-workspace-root-dialog-f72d5ceb05a9.js` uses

@@ -9,6 +9,45 @@ const source = await readFile(new URL('../src/server/hostFolders.ts', import.met
 const compiled = ts.transpileModule(source, { compilerOptions: { module: ts.ModuleKind.ES2022, target: ts.ScriptTarget.ES2022 } }).outputText
 const { listHostFolders } = await import(`data:text/javascript;base64,${Buffer.from(compiled).toString('base64')}`)
 
+const clientSource = await readFile(new URL('../src/api/hostFolders.ts', import.meta.url), 'utf8')
+const clientCompiled = ts.transpileModule(clientSource, { compilerOptions: { module: ts.ModuleKind.ES2022, target: ts.ScriptTarget.ES2022 } }).outputText
+const { getHostFolders } = await import(`data:text/javascript;base64,${Buffer.from(clientCompiled).toString('base64')}`)
+
+test('folder picker explains a missing server route without mislabeling folder errors', async (t) => {
+  const originalFetch = globalThis.fetch
+  t.after(() => { globalThis.fetch = originalFetch })
+  for (const [status, message, expected] of [
+    [404, 'Unknown CodexUI API route.', /Restart the CodexUI service/u],
+    [404, 'This folder is unavailable. Choose another folder or check the path.', /^This folder is unavailable\./u],
+    [403, 'CodexUI cannot read this folder.', /^CodexUI cannot read this folder\.$/u],
+  ]) {
+    globalThis.fetch = async () => new Response(JSON.stringify({ error: message }), {
+      status, headers: { 'Content-Type': 'application/json' },
+    })
+    await assert.rejects(getHostFolders(), { message: expected })
+  }
+})
+
+test('folder picker can retry successfully after its server gains the route', async (t) => {
+  const originalFetch = globalThis.fetch
+  t.after(() => { globalThis.fetch = originalFetch })
+  const listing = { path: '/projects', homePath: '/home', parentPath: '/', folders: [], truncated: false }
+  let restarted = false
+  const controller = new AbortController()
+  globalThis.fetch = async (url, options) => {
+    const query = new URL(url, 'http://localhost').searchParams
+    assert.equal(query.get('path'), '/projects')
+    assert.equal(query.get('showHidden'), 'true')
+    assert.equal(options.signal, controller.signal)
+    return restarted
+      ? new Response(JSON.stringify({ data: listing }), { headers: { 'Content-Type': 'application/json' } })
+      : new Response(JSON.stringify({ error: 'Unknown CodexUI API route.' }), { status: 404 })
+  }
+  await assert.rejects(getHostFolders('/projects', true, controller.signal), /Restart/u)
+  restarted = true
+  assert.deepEqual(await getHostFolders('/projects', true, controller.signal), listing)
+})
+
 async function fixture(t) {
   const path = await realpath(await mkdtemp(join(tmpdir(), 'codexui-folders-')))
   t.after(() => rm(path, { recursive: true, force: true }))

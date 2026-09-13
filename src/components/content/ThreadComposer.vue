@@ -450,12 +450,14 @@
           <button
             class="thread-composer-submit"
             type="button"
-            :aria-label="isTurnInProgress ? 'Send steering message' : 'Send message'"
-            :title="isTurnInProgress ? 'Steer' : 'Send'"
-            :disabled="!canSubmit || dictationState !== 'idle' || isStartingDictation"
+            :aria-label="sendButtonLabel"
+            :title="sendButtonLabel"
+            :aria-busy="pendingDictationSend !== null"
+            :disabled="!canSend"
             @click="onSubmit('steer')"
           >
-            <IconTablerArrowUp class="thread-composer-submit-icon" />
+            <span v-if="pendingDictationSend" class="thread-composer-mic-spinner" aria-hidden="true" />
+            <IconTablerArrowUp v-else class="thread-composer-submit-icon" />
           </button>
         </div>
       </div>
@@ -640,13 +642,19 @@ const responseTextAnnotations = computed({
 })
 
 let dictationDraftThreadId = ''
-const { state: dictationState, statusText: dictationStatus, errorMessage: dictationError, isStarting: isStartingDictation, canRetry: canRetryDictation, retryTranscription, isSupported: isDictationSupported, startRecording, stopRecording, cancelRecording } = useDictation({
+const pendingDictationSend = ref<object | null>(null)
+watch(() => props.activeThreadId, () => { pendingDictationSend.value = null }, { flush: 'sync' })
+const { state: dictationState, statusText: dictationStatus, errorMessage: dictationError, isStarting: isStartingDictation, canRetry: canRetryDictation, retryTranscription, isSupported: isDictationSupported, startRecording, stopRecording, finishRecording, cancelRecording: cancelDictation } = useDictation({
   onTranscript: (text) => {
     const targetDraft = composerDraftStore.draftFor(dictationDraftThreadId || props.activeThreadId)
     targetDraft.text = targetDraft.text ? `${targetDraft.text}\n${text}` : text
     dictationDraftThreadId = ''
   },
 })
+function cancelRecording(): void {
+  pendingDictationSend.value = null
+  cancelDictation()
+}
 const attachMenuRootRef = ref<HTMLElement | null>(null)
 const photoLibraryInputRef = ref<HTMLInputElement | null>(null)
 const cameraCaptureInputRef = ref<HTMLInputElement | null>(null)
@@ -745,6 +753,13 @@ const canSubmit = computed(() => {
     || responseTextAnnotations.value.length > 0
 })
 const isInteractionDisabled = computed(() => props.disabled || isSubmitting.value || !props.activeThreadId)
+const canSend = computed(() => {
+  if (isInteractionDisabled.value || props.sendDisabled || isStartingDictation.value || pendingDictationSend.value) return false
+  return dictationState.value === 'idle' ? canSubmit.value : dictationDraftThreadId === props.activeThreadId
+})
+const sendButtonLabel = computed(() => pendingDictationSend.value ? 'Transcribing and sending…'
+  : dictationState.value !== 'idle' ? 'Transcribe and send'
+  : props.isTurnInProgress ? 'Send steering message' : 'Send message')
 const dictationButtonLabel = computed(() => {
   if (dictationState.value === 'recording') return 'Stop dictation'
   if (dictationState.value === 'transcribing') return 'Transcribing'
@@ -868,7 +883,16 @@ const contextUsageToneClass = computed(() => {
 })
 
 async function onSubmit(mode: 'steer' | 'queue' = 'steer'): Promise<void> {
-  if (dictationState.value !== 'idle' || isStartingDictation.value) return
+  if (!canSend.value) return
+  if (dictationState.value !== 'idle') {
+    const targetThreadId = props.activeThreadId
+    pendingDictationSend.value = {}
+    const request = pendingDictationSend.value
+    const transcribed = await finishRecording()
+    if (pendingDictationSend.value !== request) return
+    pendingDictationSend.value = null
+    if (!transcribed || props.activeThreadId !== targetThreadId || !canSend.value) return
+  }
   if (!props.submitMessage && tryHandleGoalSlashCommand()) return
   const text = draft.value.trim()
   if (!canSubmit.value) return
@@ -1532,6 +1556,7 @@ onMounted(() => {
 })
 
 onBeforeUnmount(() => {
+  pendingDictationSend.value = null
   document.removeEventListener('click', onDocumentClick)
   pluginLoadToken += 1
   if (fileMentionDebounceTimer) {

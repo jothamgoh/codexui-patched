@@ -5,6 +5,21 @@ description: "Use when implementing or changing user-visible behavior/UI in this
 
 # Codex App Parity Skill
 
+## Findings: One-click dictation send (2026-09-13)
+
+- Integrated renderer `app-initial-cadb12d4a15e.js`, component `WLs`, has
+  `stopDictation('abort' | 'insert' | 'send')`. Its primary action is labelled
+  `Transcribe and send`, with a loading state while the send action transcribes;
+  the separate Stop action inserts text without sending.
+- The web composer awaits final audio and successful transcript insertion before
+  submitting through its existing message path. It also accepts Send during an
+  existing transcription. Cancellation, navigation, and unmount disarm sending;
+  failed transcription and manual Retry preserve a draft without stale send intent.
+- Node component lifecycle tests exercise the real composer and MediaRecorder
+  event ordering with mocked audio/network. Repository instructions exclude
+  Playwright/E2E unless explicitly requested; these checks do not establish
+  physical-device microphone behavior.
+
 ## Findings: Folder browsing on an older running bridge (2026-09-07)
 
 - Rechecked the integrated remote workspace dialog's directory-only host query.

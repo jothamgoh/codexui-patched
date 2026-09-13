@@ -1,4 +1,4 @@
-import { computed, ref, onBeforeUnmount } from 'vue'
+import { computed, ref, onBeforeUnmount, watch } from 'vue'
 import { createScreenWakeLockController } from '../utils/screenWakeLock'
 
 export type DictationState = 'idle' | 'recording' | 'transcribing'
@@ -67,8 +67,21 @@ export function useDictation(options: {
 
   function stopRecording() {
     if (state.value !== 'recording' || !mediaRecorder) return
+    state.value = 'transcribing'
     void screenWakeLock.release()
     if (mediaRecorder.state !== 'inactive') mediaRecorder.stop()
+  }
+
+  function finishRecording(): Promise<boolean> {
+    if (state.value === 'idle') return Promise.resolve(false)
+    return new Promise((resolve) => {
+      const stopWatching = watch(state, (value) => {
+        if (value !== 'idle') return
+        stopWatching()
+        resolve(hasTranscript.value && !errorMessage.value)
+      }, { flush: 'sync' })
+      stopRecording()
+    })
   }
 
   async function transcribe(recordedChunks: Blob[], mimeType: string) {
@@ -177,5 +190,5 @@ export function useDictation(options: {
 
   onBeforeUnmount(cancelRecording)
 
-  return { state, statusText, errorMessage, isStarting, canRetry, retryTranscription, isSupported, startRecording, stopRecording, cancelRecording }
+  return { state, statusText, errorMessage, isStarting, canRetry, retryTranscription, isSupported, startRecording, stopRecording, finishRecording, cancelRecording }
 }

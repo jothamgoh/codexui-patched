@@ -57,7 +57,7 @@
     "test:e2e:board-chat-flow": "node tests/boardChatFlow.e2e.mjs",
     "test:e2e:project-boards": "node tests/projectBoards.e2e.mjs",
     "check:project-boards": "npm test && npm run build && npm run test:e2e:project-boards",
-    "test:composer-drafts": "node --test tests/composerDrafts.test.mjs",
+    "test:composer-drafts": "node --test tests/composerDrafts.test.mjs tests/dictationSend.test.mjs",
     "test:composer-mobile": "node --test tests/mobileComposer.test.mjs",
     "test:response-selection": "node --test tests/responseSelection.test.mjs",
     "test:thread-references": "node --test tests/threadReferences.test.mjs",

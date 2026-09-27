@@ -54,8 +54,18 @@ export class BackendRouter<PendingRequest> implements CodexBackend<PendingReques
     return this.codex.rpc(method, params)
   }
 
+  /** One backend failing must not hide the other's chats or models. */
+  private async readCodexList(method: string, params: unknown): Promise<Record<string, unknown>> {
+    try {
+      return asRecord(await this.codex.rpc(method, params)) ?? {}
+    } catch (error) {
+      console.warn(`[codex-bridge] ${method} failed:`, error instanceof Error ? error.message : error)
+      return { data: [], nextCursor: null }
+    }
+  }
+
   private async listThreads(params: unknown): Promise<unknown> {
-    const codexResult = asRecord(await this.codex.rpc('thread/list', params)) ?? {}
+    const codexResult = await this.readCodexList('thread/list', params)
     // Claude chats join the first page only; Codex's cursor pages its own list.
     if (asRecord(params)?.cursor) return codexResult
     let claudeThreads: Array<Record<string, unknown>> = []
@@ -70,7 +80,7 @@ export class BackendRouter<PendingRequest> implements CodexBackend<PendingReques
   }
 
   private async listModels(params: unknown): Promise<unknown> {
-    const codexResult = asRecord(await this.codex.rpc('model/list', params)) ?? {}
+    const codexResult = await this.readCodexList('model/list', params)
     const codexModels = Array.isArray(codexResult.data) ? codexResult.data : []
     return { ...codexResult, data: [...codexModels, ...this.claude.listModels()] }
   }

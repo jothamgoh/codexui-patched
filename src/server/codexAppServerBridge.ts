@@ -44,6 +44,8 @@ import {
   ReviewPatchRequestError,
 } from './reviewPatch'
 import { ReviewMutationConflictError, ReviewMutationGate } from './reviewMutationGate'
+import { BackendRouter } from './backendRouter'
+import { ClaudeBackend } from './claudeBackend'
 import { readReviewClientScope, reviewScopeMatches } from './reviewScope'
 import {
   GitWorkspaceRequestError,
@@ -1604,6 +1606,7 @@ type CodexBridgeMiddleware = ((req: IncomingMessage, res: ServerResponse, next: 
 
 type SharedBridgeState = {
   appServer: AppServerProcess
+  claude: ClaudeBackend
   threadTitleGenerator: ThreadTitleGenerator
   methodCatalog: MethodCatalog
   automationService: AutomationService
@@ -1686,6 +1689,7 @@ function getSharedBridgeState(): SharedBridgeState {
 
   const created: SharedBridgeState = {
     appServer,
+    claude: new ClaudeBackend(join(getCodexHomeDir(), 'codexui-claude-threads.json')),
     threadTitleGenerator: new ThreadTitleGenerator(),
     methodCatalog: new MethodCatalog(),
     automationService,
@@ -1698,7 +1702,10 @@ function getSharedBridgeState(): SharedBridgeState {
 
 export function createCodexBridgeMiddleware(): CodexBridgeMiddleware {
   const shared = getSharedBridgeState()
-  const { appServer, threadTitleGenerator, methodCatalog, automationService, projectBoardService } = shared
+  const { threadTitleGenerator, methodCatalog, automationService, projectBoardService } = shared
+  // Chat traffic goes through the router so `claude-` chats reach Claude Code.
+  // Automations and project boards keep talking to Codex directly.
+  const appServer = new BackendRouter(shared.appServer, shared.claude)
   const localNotificationListeners = new Set<
     (value: { method: string; params: unknown; atIso: string }) => void
   >()
@@ -2601,7 +2608,7 @@ export function createCodexBridgeMiddleware(): CodexBridgeMiddleware {
           if (!existsSync(installerScript)) {
             throw new Error(`Codex skill installer was not found under CODEX_HOME: ${installerScript}`)
           }
-          const installDest = await detectUserSkillsDir(appServer)
+          const installDest = await detectUserSkillsDir(shared.appServer)
           const skillPathInRepo = `skills/${owner}/${name}`
           await runCommand('python3', [
             installerScript,
@@ -2611,7 +2618,7 @@ export function createCodexBridgeMiddleware(): CodexBridgeMiddleware {
             '--method', 'git',
           ])
           const skillDir = join(installDest, name)
-          await ensureInstalledSkillIsValid(appServer, skillDir)
+          await ensureInstalledSkillIsValid(shared.appServer, skillDir)
           setJson(res, 200, { ok: true, path: skillDir })
         } catch (error) {
           setJson(res, 502, { error: getErrorMessage(error, 'Failed to install skill') })

@@ -78,6 +78,25 @@ test('normalizes current Claude usage windows', () => {
   ])
 })
 
+test('normalizes the Agent SDK usage response and model-scoped windows', () => {
+  const usage = normalizeClaudeUsage({
+    subscription_type: 'pro',
+    rate_limits: {
+      five_hour: { utilization: 12, resets_at: '2026-09-28T12:00:00Z' },
+      seven_day: { utilization: 34, resets_at: null },
+      model_scoped: [
+        { display_name: 'Opus', utilization: 56, resets_at: '2026-09-29T12:00:00Z' },
+      ],
+    },
+  }, null)
+  assert.equal(usage.plan, 'pro')
+  assert.deepEqual(usage.limits.map(({ label, usedPercent }) => ({ label, usedPercent })), [
+    { label: '5h limit', usedPercent: 12 },
+    { label: 'Weekly · all models', usedPercent: 34 },
+    { label: 'Weekly · Opus', usedPercent: 56 },
+  ])
+})
+
 test('resumes an unloaded Codex thread and retries the read', async () => {
   const calls = []
   const { codex, claude } = createBackends(async (method, params) => {

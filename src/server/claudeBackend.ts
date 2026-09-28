@@ -1,5 +1,5 @@
 import { randomUUID } from 'node:crypto'
-import { spawn, spawnSync } from 'node:child_process'
+import { spawn } from 'node:child_process'
 import { access, mkdir, readdir, readFile, writeFile } from 'node:fs/promises'
 import { homedir } from 'node:os'
 import { dirname, join } from 'node:path'
@@ -9,6 +9,7 @@ import type {
   ModelInfo,
   Options,
   Query,
+  SDKControlGetUsageResponse,
   SDKMessage,
   SDKSessionInfo,
   SDKUserMessage,
@@ -34,7 +35,6 @@ const DEFAULT_MODEL_ID = 'claude-default'
 const ENCODED_MODEL_PREFIX = 'claude-model:'
 const RUNTIME_CACHE_MS = 30_000
 const USAGE_CACHE_MS = 5 * 60_000
-const CLAUDE_USAGE_URL = 'https://api.anthropic.com/api/oauth/usage'
 const LEGACY_MODEL_VALUES: Record<string, string> = {
   'claude-default': 'default',
   'claude-fable': 'fable',
@@ -195,8 +195,10 @@ function normalizePercent(value: unknown): number | null {
 
 export function normalizeClaudeUsage(raw: unknown, plan: string | null): ClaudeUsage {
   const record = asRecord(raw)
+  const rateLimits = asRecord(record?.rate_limits) ?? record
+  const resolvedPlan = readString(record?.subscription_type) || plan
   const limits: ClaudeUsageLimit[] = []
-  const rows = Array.isArray(record?.limits) ? record.limits : []
+  const rows = Array.isArray(rateLimits?.limits) ? rateLimits.limits : []
   for (const rawLimit of rows) {
     const limit = asRecord(rawLimit)
     const key = readString(limit?.kind)
@@ -222,49 +224,25 @@ export function normalizeClaudeUsage(raw: unknown, plan: string | null): ClaudeU
     ['seven_day_sonnet', 'Weekly · Sonnet'],
   ]
   for (const [key, label] of legacyRows) {
-    const limit = asRecord(record?.[key])
+    const limit = asRecord(rateLimits?.[key])
     const usedPercent = normalizePercent(limit?.utilization)
     if (!limit || usedPercent === null || limits.some((entry) => entry.key === key)) continue
     limits.push({ key, label, usedPercent, resetsAt: readString(limit.resets_at) || null })
   }
-  return { plan, limits }
-}
-
-type ClaudeOauthCredentials = {
-  accessToken: string
-  expiresAt: number | null
-  plan: string | null
-}
-
-async function readClaudeOauthCredentials(): Promise<ClaudeOauthCredentials | null> {
-  const configDir = process.env.CLAUDE_CONFIG_DIR || join(homedir(), '.claude')
-  let raw: unknown = null
-  try {
-    raw = JSON.parse(await readFile(join(configDir, '.credentials.json'), 'utf8'))
-  } catch {
-    if (process.platform !== 'darwin') return null
-    const result = spawnSync('/usr/bin/security', ['find-generic-password', '-s', 'Claude Code-credentials', '-w'], {
-      encoding: 'utf8',
-      stdio: ['ignore', 'pipe', 'ignore'],
-      timeout: 5_000,
-      maxBuffer: 1024 * 1024,
+  const scoped = Array.isArray(rateLimits?.model_scoped) ? rateLimits.model_scoped : []
+  for (const [index, rawLimit] of scoped.entries()) {
+    const limit = asRecord(rawLimit)
+    const label = readString(limit?.display_name)
+    const usedPercent = normalizePercent(limit?.utilization)
+    if (!label || usedPercent === null) continue
+    limits.push({
+      key: `model_scoped_${String(index)}`,
+      label: `Weekly · ${label}`,
+      usedPercent,
+      resetsAt: readString(limit?.resets_at) || null,
     })
-    if (result.error || result.status !== 0 || !result.stdout) return null
-    try {
-      raw = JSON.parse(result.stdout.trim())
-    } catch {
-      return null
-    }
   }
-
-  const oauth = asRecord(asRecord(raw)?.claudeAiOauth)
-  const accessToken = readString(oauth?.accessToken)
-  if (!accessToken) return null
-  return {
-    accessToken,
-    expiresAt: typeof oauth?.expiresAt === 'number' ? oauth.expiresAt : null,
-    plan: readString(oauth?.subscriptionType) || null,
-  }
+  return { plan: resolvedPlan, limits }
 }
 
 async function runClaudeCommand(args: string[]): Promise<void> {
@@ -665,29 +643,26 @@ export class ClaudeBackend {
     if (!force && this.usageCache && Date.now() - this.usageCache.at < USAGE_CACHE_MS) {
       return this.usageCache.value
     }
-    const credentials = await readClaudeOauthCredentials()
-    if (!credentials) return null
-    if (credentials.expiresAt !== null && credentials.expiresAt < Date.now()) {
-      return { plan: credentials.plan, limits: [], notice: 'Claude credentials need to be refreshed.' }
-    }
-    const response = await fetch(CLAUDE_USAGE_URL, {
-      headers: {
-        Authorization: `Bearer ${credentials.accessToken}`,
-        'anthropic-beta': 'oauth-2025-04-20',
-        'Content-Type': 'application/json',
-      },
-      signal: AbortSignal.timeout(10_000),
-    })
-    if (!response.ok) {
+    const { query } = await this.sdk()
+    const usageQuery = query({ prompt: emptyInput(), options: this.queryOptions() })
+    try {
+      const response = await usageQuery.usage_EXPERIMENTAL_MAY_CHANGE_DO_NOT_RELY_ON_THIS_API_YET({ skipBehaviors: true })
+      const value = normalizeClaudeUsage(response satisfies SDKControlGetUsageResponse, runtime.account.subscriptionType ?? null)
+      this.usageCache = { at: Date.now(), value }
+      return value
+    } catch (error) {
       if (this.usageCache) {
         const age = Math.max(1, Math.round((Date.now() - this.usageCache.at) / 60_000))
-        return { ...this.usageCache.value, notice: `Claude usage refresh failed (${String(response.status)}). Showing data from ${String(age)} min ago.` }
+        return { ...this.usageCache.value, notice: `Claude usage refresh failed. Showing data from ${String(age)} min ago.` }
       }
-      return { plan: credentials.plan, limits: [], notice: `Claude usage is temporarily unavailable (${String(response.status)}).` }
+      return {
+        plan: runtime.account.subscriptionType ?? null,
+        limits: [],
+        notice: 'Claude usage is temporarily unavailable.',
+      }
+    } finally {
+      usageQuery.close()
     }
-    const value = normalizeClaudeUsage(await response.json(), credentials.plan ?? runtime.account.subscriptionType ?? null)
-    this.usageCache = { at: Date.now(), value }
-    return value
   }
 
   async startLogin(): Promise<{ loginId: string; authUrl: string }> {

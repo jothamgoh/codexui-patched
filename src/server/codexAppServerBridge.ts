@@ -1803,7 +1803,13 @@ export function createCodexBridgeMiddleware(): CodexBridgeMiddleware {
           setJson(res, 400, { error: 'Invalid body: expected { loginId, code }' })
           return
         }
-        setJson(res, 200, { data: await shared.claude.completeLogin(loginId, code) })
+        try {
+          setJson(res, 200, { data: await shared.claude.completeLogin(loginId, code) })
+        } catch (error) {
+          // Do not surface this as an origin 502: Cloudflare replaces 502
+          // bodies, which hid the actionable Claude sign-in error remotely.
+          setJson(res, 409, { error: getErrorMessage(error, 'Claude could not complete sign-in.') })
+        }
         return
       }
 

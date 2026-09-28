@@ -84,6 +84,7 @@ type ClaudeLogin = {
   id: string
   query: ClaudeLoginQuery
   state: string
+  completion: Promise<unknown>
   timer: ReturnType<typeof setTimeout>
 }
 
@@ -675,12 +676,17 @@ export class ClaudeBackend {
       const authUrl = response.manualUrl
       const state = new URL(authUrl).searchParams.get('state') ?? ''
       if (!authUrl || !state) throw new Error('Claude did not return a valid login URL.')
+      // Claude Code keeps the authentication flow active only while this
+      // request is waiting. Start it before returning the manual URL, then
+      // deliver the pasted callback through the same query process.
+      const completion = loginQuery.claudeOAuthWaitForCompletion()
+      void completion.catch(() => undefined)
       const id = randomUUID()
       const timer = setTimeout(() => {
         if (this.login?.id === id) this.cancelLogin()
       }, 10 * 60_000)
       timer.unref?.()
-      this.login = { id, query: loginQuery, state, timer }
+      this.login = { id, query: loginQuery, state, completion, timer }
       return { loginId: id, authUrl }
     } catch (error) {
       loginQuery.close()
@@ -695,7 +701,9 @@ export class ClaudeBackend {
     if (!authorizationCode) throw new Error('Paste the authorization code from Claude.')
     try {
       await login.query.claudeOAuthCallback(authorizationCode, pastedState || login.state)
-      await login.query.claudeOAuthWaitForCompletion()
+      await login.completion
+    } catch {
+      throw new Error('Claude could not complete sign-in. Start again and paste the new authorization code.')
     } finally {
       this.cancelLogin()
     }

@@ -13,7 +13,7 @@ async function loadTypeScriptModule(sourcePath, replacements = []) {
 }
 
 const claudeModule = await loadTypeScriptModule(new URL('../src/server/claudeBackend.ts', import.meta.url))
-const { isClaudeModelId, normalizeClaudeUsage, runtimeModel } = claudeModule
+const { ClaudeBackend, isClaudeModelId, normalizeClaudeUsage, runtimeModel } = claudeModule
 
 const routerModule = await loadTypeScriptModule(
   new URL('../src/server/backendRouter.ts', import.meta.url),
@@ -95,6 +95,35 @@ test('normalizes the Agent SDK usage response and model-scoped windows', () => {
     { label: 'Weekly · all models', usedPercent: 34 },
     { label: 'Weekly · Opus', usedPercent: 56 },
   ])
+})
+
+test('keeps the Claude authentication flow waiting before sending its callback', async () => {
+  const events = []
+  let closed = false
+  const loginQuery = {
+    initializationResult: async () => { events.push('initialize') },
+    claudeAuthenticate: async () => {
+      events.push('authenticate')
+      return { manualUrl: 'https://claude.ai/oauth/authorize?state=expected-state' }
+    },
+    claudeOAuthWaitForCompletion: async () => { events.push('wait') },
+    claudeOAuthCallback: async (code, state) => { events.push(`callback:${code}:${state}`) },
+    close: () => { closed = true },
+  }
+  const backend = new ClaudeBackend('/tmp/codexui-claude-login-test.json')
+  backend.sdkPromise = Promise.resolve({ query: () => loginQuery })
+  backend.readProviderStatus = async () => ({ id: 'claude', connected: true })
+
+  const login = await backend.startLogin()
+  assert.deepEqual(events, ['initialize', 'authenticate', 'wait'])
+  await backend.completeLogin(login.loginId, 'authorization-code#pasted-state')
+  assert.deepEqual(events, [
+    'initialize',
+    'authenticate',
+    'wait',
+    'callback:authorization-code:pasted-state',
+  ])
+  assert.equal(closed, true)
 })
 
 test('resumes an unloaded Codex thread and retries the read', async () => {

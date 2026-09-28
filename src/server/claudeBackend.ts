@@ -1,5 +1,6 @@
 import { randomUUID } from 'node:crypto'
 import { spawn } from 'node:child_process'
+import type { ChildProcessWithoutNullStreams } from 'node:child_process'
 import { access, mkdir, readdir, readFile, writeFile } from 'node:fs/promises'
 import { homedir } from 'node:os'
 import { dirname, join } from 'node:path'
@@ -74,17 +75,10 @@ type ClaudeRuntimeState = {
   models: ModelInfo[]
 }
 
-type ClaudeLoginQuery = Query & {
-  claudeAuthenticate(loginWithClaudeAi: boolean): Promise<{ manualUrl: string; automaticUrl?: string }>
-  claudeOAuthCallback(authorizationCode: string, state: string): Promise<unknown>
-  claudeOAuthWaitForCompletion(): Promise<unknown>
-}
-
 type ClaudeLogin = {
   id: string
-  query: ClaudeLoginQuery
-  state: string
-  completion: Promise<unknown>
+  child: ChildProcessWithoutNullStreams
+  completion: Promise<void>
   timer: ReturnType<typeof setTimeout>
 }
 
@@ -178,15 +172,23 @@ export function runtimeModel(model: ModelInfo): Record<string, unknown> {
 
 function isClaudeConnected(account: AccountInfo): boolean {
   if (account.apiProvider && account.apiProvider !== 'firstParty') return true
-  return Boolean(account.tokenSource && account.tokenSource !== 'none')
+  return Boolean(
+    (account.tokenSource && account.tokenSource !== 'none') ||
+    account.email ||
+    account.organization ||
+    account.subscriptionType,
+  )
 }
 
 function emptyInput(): AsyncGenerator<SDKUserMessage> {
   return (async function* () {})()
 }
 
-function holdingInput(): AsyncGenerator<SDKUserMessage> {
-  return (async function* () { await new Promise<void>(() => undefined) })()
+function rejectAfter(ms: number, message: string): Promise<never> {
+  return new Promise((_, reject) => {
+    const timer = setTimeout(() => reject(new Error(message)), ms)
+    timer.unref?.()
+  })
 }
 
 function normalizePercent(value: unknown): number | null {
@@ -668,28 +670,59 @@ export class ClaudeBackend {
 
   async startLogin(): Promise<{ loginId: string; authUrl: string }> {
     this.cancelLogin()
-    const { query } = await this.sdk()
-    const loginQuery = query({ prompt: holdingInput(), options: this.queryOptions() }) as ClaudeLoginQuery
+    const command = process.env.CODEXUI_CLAUDE_PATH?.trim() || 'claude'
+    const child = spawn(command, ['auth', 'login', '--claudeai'], {
+      env: {
+        ...process.env,
+        ...(process.platform === 'win32' ? {} : { BROWSER: '/usr/bin/false' }),
+      },
+      stdio: ['pipe', 'pipe', 'pipe'],
+    })
+    let output = ''
+    let resolveUrl: ((url: string) => void) | null = null
+    let rejectUrl: ((error: Error) => void) | null = null
+    const authUrlPromise = new Promise<string>((resolve, reject) => {
+      resolveUrl = resolve
+      rejectUrl = reject
+    })
+    const appendOutput = (chunk: Buffer): void => {
+      output = `${output}${chunk.toString()}`.slice(-32_768)
+      const match = output.match(/https:\/\/(?:claude\.com|claude\.ai)\/[^\s\u001b\u0007]+/u)
+      if (match && resolveUrl) {
+        resolveUrl(match[0])
+        resolveUrl = null
+        rejectUrl = null
+      }
+    }
+    child.stdout.on('data', appendOutput)
+    child.stderr.on('data', appendOutput)
+    const completion = new Promise<void>((resolve, reject) => {
+      child.once('error', reject)
+      child.once('close', (code) => {
+        if (rejectUrl) {
+          rejectUrl(new Error('Claude CLI ended before returning a login URL.'))
+          resolveUrl = null
+          rejectUrl = null
+        }
+        if (code === 0) resolve()
+        else reject(new Error('Claude CLI rejected the sign-in.'))
+      })
+    })
+    void completion.catch(() => undefined)
     try {
-      await loginQuery.initializationResult()
-      const response = await loginQuery.claudeAuthenticate(true)
-      const authUrl = response.manualUrl
-      const state = new URL(authUrl).searchParams.get('state') ?? ''
-      if (!authUrl || !state) throw new Error('Claude did not return a valid login URL.')
-      // Claude Code keeps the authentication flow active only while this
-      // request is waiting. Start it before returning the manual URL, then
-      // deliver the pasted callback through the same query process.
-      const completion = loginQuery.claudeOAuthWaitForCompletion()
-      void completion.catch(() => undefined)
+      const authUrl = await Promise.race([
+        authUrlPromise,
+        rejectAfter(15_000, 'Claude did not return a login URL.'),
+      ])
       const id = randomUUID()
       const timer = setTimeout(() => {
         if (this.login?.id === id) this.cancelLogin()
       }, 10 * 60_000)
       timer.unref?.()
-      this.login = { id, query: loginQuery, state, completion, timer }
+      this.login = { id, child, completion, timer }
       return { loginId: id, authUrl }
     } catch (error) {
-      loginQuery.close()
+      child.kill('SIGTERM')
       throw error
     }
   }
@@ -697,11 +730,14 @@ export class ClaudeBackend {
   async completeLogin(loginId: string, pastedCode: string): Promise<ClaudeProviderStatus> {
     const login = this.login
     if (!login || login.id !== loginId) throw new Error('This Claude login has expired. Start again.')
-    const [authorizationCode, pastedState] = pastedCode.trim().split('#', 2)
+    const authorizationCode = pastedCode.trim()
     if (!authorizationCode) throw new Error('Paste the authorization code from Claude.')
     try {
-      await login.query.claudeOAuthCallback(authorizationCode, pastedState || login.state)
-      await login.completion
+      login.child.stdin.end(`${authorizationCode}\n`)
+      await Promise.race([
+        login.completion,
+        rejectAfter(60_000, 'Claude sign-in timed out.'),
+      ])
     } catch {
       throw new Error('Claude could not complete sign-in. Start again and paste the new authorization code.')
     } finally {
@@ -709,13 +745,15 @@ export class ClaudeBackend {
     }
     this.runtimeCache = null
     this.usageCache = null
-    return this.readProviderStatus(true)
+    const status = await this.readProviderStatus(true)
+    if (!status.connected) throw new Error('Claude sign-in completed, but the saved account could not be read.')
+    return status
   }
 
   cancelLogin(): void {
     if (!this.login) return
     clearTimeout(this.login.timer)
-    this.login.query.close()
+    if (!this.login.child.killed && this.login.child.exitCode === null) this.login.child.kill('SIGTERM')
     this.login = null
   }
 

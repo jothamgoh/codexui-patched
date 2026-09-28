@@ -105,3 +105,17 @@ test('does not resume on unrelated Codex read failures', async () => {
   )
   assert.deepEqual(calls, ['thread/read'])
 })
+
+test('keeps Claude ids out of Codex-only ancestry lookups', async () => {
+  const calls = []
+  const { codex, claude } = createBackends(async (method) => {
+    calls.push(method)
+    return { data: [{ id: 'unexpected' }], nextCursor: null }
+  })
+  const result = await new BackendRouter(codex, claude).rpc('thread/list', {
+    ancestorThreadId: 'claude-session-id',
+    sourceKinds: ['subAgentThreadSpawn'],
+  })
+  assert.deepEqual(result, { data: [], nextCursor: null })
+  assert.deepEqual(calls, [])
+})

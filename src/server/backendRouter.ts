@@ -49,6 +49,9 @@ export class BackendRouter<PendingRequest> implements CodexBackend<PendingReques
     const request = asRecord(params)
     if (isClaudeThreadId(request?.threadId)) return this.claude.rpc(method, params)
     if (method === 'thread/start' && isClaudeModelId(request?.model)) return this.claude.rpc(method, params)
+    if (method === 'thread/list' && isClaudeThreadId(request?.ancestorThreadId)) {
+      return { data: [], nextCursor: null }
+    }
     if (method === 'thread/list') return this.listThreads(params)
     if (method === 'model/list') return this.listModels(params)
     try {
@@ -75,8 +78,10 @@ export class BackendRouter<PendingRequest> implements CodexBackend<PendingReques
 
   private async listThreads(params: unknown): Promise<unknown> {
     const codexResult = await this.readCodexList('thread/list', params)
-    // Claude chats join the first page only; Codex's cursor pages its own list.
-    if (asRecord(params)?.cursor) return codexResult
+    const request = asRecord(params)
+    // Claude has no Codex subagent ancestry metadata. Keep source-filtered and
+    // cursor pages native to Codex; Claude chats join only the main first page.
+    if (request?.cursor || Array.isArray(request?.sourceKinds) || request?.ancestorThreadId) return codexResult
     let claudeThreads: Array<Record<string, unknown>> = []
     try {
       claudeThreads = await this.claude.listThreads(params)

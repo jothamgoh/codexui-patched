@@ -158,9 +158,13 @@ async function onLogin(provider: ProviderId): Promise<void> {
   busyProvider.value = provider
   errorMessage.value = ''
   logoutConfirm.value = ''
+  // Open synchronously while the click still carries a user gesture. Browsers
+  // otherwise block the OAuth tab because the URL arrives after an API await.
+  const authWindow = window.open('about:blank', '_blank')
+  if (authWindow) authWindow.opener = null
   try {
     const login = await startProviderLogin(provider)
-    window.open(login.authUrl, '_blank', 'noopener,noreferrer')
+    if (authWindow) authWindow.location.replace(login.authUrl)
     if (provider === 'claude') {
       pendingClaudeLogin.value = login
       claudeCode.value = ''
@@ -168,6 +172,7 @@ async function onLogin(provider: ProviderId): Promise<void> {
       startCodexLoginPoll()
     }
   } catch (error) {
+    authWindow?.close()
     errorMessage.value = error instanceof Error ? error.message : `Could not start ${provider} login.`
   } finally {
     busyProvider.value = ''

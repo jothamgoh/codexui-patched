@@ -1717,6 +1717,30 @@ export function createCodexBridgeMiddleware(): CodexBridgeMiddleware {
     }
   }
 
+  const readCodexProviderStatus = async () => {
+    try {
+      const payload = asRecord(await shared.appServer.rpc('account/read', { refreshToken: false }))
+      const account = asRecord(payload?.account)
+      const accountType = typeof account?.type === 'string' ? account.type : null
+      return {
+        id: 'codex',
+        label: 'Codex',
+        connected: Boolean(account) || payload?.requiresOpenaiAuth === false,
+        email: typeof account?.email === 'string' ? account.email : null,
+        organization: null,
+        plan: typeof account?.planType === 'string' ? account.planType : null,
+        authMethod: accountType,
+        apiProvider: 'openai',
+      }
+    } catch (error) {
+      return {
+        id: 'codex', label: 'Codex', connected: false, email: null,
+        organization: null, plan: null, authMethod: null, apiProvider: 'openai',
+        notice: getErrorMessage(error, 'Codex account status is unavailable.'),
+      }
+    }
+  }
+
   const middleware = async (req: IncomingMessage, res: ServerResponse, next: () => void) => {
     try {
       if (!req.url) {
@@ -1731,6 +1755,67 @@ export function createCodexBridgeMiddleware(): CodexBridgeMiddleware {
 
       if (req.method === 'GET' && url.pathname === '/codex-api/runtime-config') {
         setJson(res, 200, { data: readCodexUiRuntimeConfig() })
+        return
+      }
+
+      if (req.method === 'GET' && url.pathname === '/codex-api/providers') {
+        const force = url.searchParams.has('force')
+        const [codex, claude] = await Promise.all([
+          readCodexProviderStatus(),
+          shared.claude.readProviderStatus(force).catch((error) => ({
+            id: 'claude' as const,
+            label: 'Claude' as const,
+            connected: false,
+            email: null,
+            organization: null,
+            plan: null,
+            authMethod: null,
+            apiProvider: null,
+            notice: getErrorMessage(error, 'Claude account status is unavailable.'),
+          })),
+        ])
+        setJson(res, 200, { data: { codex, claude } })
+        return
+      }
+
+      if (req.method === 'GET' && url.pathname === '/codex-api/providers/claude/usage') {
+        const usage = await shared.claude.readUsage(url.searchParams.has('force'))
+        setJson(res, 200, { data: usage })
+        return
+      }
+
+      if (req.method === 'POST' && url.pathname === '/codex-api/providers/codex/login/start') {
+        const result = await shared.appServer.rpc('account/login/start', { type: 'chatgpt' })
+        setJson(res, 200, { data: result })
+        return
+      }
+
+      if (req.method === 'POST' && url.pathname === '/codex-api/providers/claude/login/start') {
+        setJson(res, 200, { data: await shared.claude.startLogin() })
+        return
+      }
+
+      if (req.method === 'POST' && url.pathname === '/codex-api/providers/claude/login/complete') {
+        const body = asRecord(await readJsonBody(req))
+        const loginId = typeof body?.loginId === 'string' ? body.loginId.trim() : ''
+        const code = typeof body?.code === 'string' ? body.code.trim() : ''
+        if (!loginId || !code) {
+          setJson(res, 400, { error: 'Invalid body: expected { loginId, code }' })
+          return
+        }
+        setJson(res, 200, { data: await shared.claude.completeLogin(loginId, code) })
+        return
+      }
+
+      if (req.method === 'POST' && url.pathname === '/codex-api/providers/codex/logout') {
+        await shared.appServer.rpc('account/logout', undefined)
+        setJson(res, 200, { data: { ok: true } })
+        return
+      }
+
+      if (req.method === 'POST' && url.pathname === '/codex-api/providers/claude/logout') {
+        await shared.claude.logout()
+        setJson(res, 200, { data: { ok: true } })
         return
       }
 

@@ -1,9 +1,12 @@
 import { randomUUID } from 'node:crypto'
+import { spawn, spawnSync } from 'node:child_process'
 import { access, mkdir, readdir, readFile, writeFile } from 'node:fs/promises'
 import { homedir } from 'node:os'
 import { dirname, join } from 'node:path'
 import type {
+  AccountInfo,
   EffortLevel,
+  ModelInfo,
   Options,
   Query,
   SDKMessage,
@@ -26,22 +29,73 @@ type SdkModule = typeof import('@anthropic-ai/claude-agent-sdk')
 
 const THREAD_ID_PREFIX = 'claude-'
 const MODEL_PROVIDER = 'anthropic'
-
-export const CLAUDE_MODELS = [
-  { id: 'claude-opus', alias: 'opus', displayName: 'Claude Opus', description: 'Claude Code with the latest Opus model.' },
-  { id: 'claude-sonnet', alias: 'sonnet', displayName: 'Claude Sonnet', description: 'Claude Code with the latest Sonnet model.' },
-  { id: 'claude-haiku', alias: 'haiku', displayName: 'Claude Haiku', description: 'Claude Code with the latest Haiku model.' },
-] as const
-
 const EFFORT_LEVELS: EffortLevel[] = ['low', 'medium', 'high', 'xhigh', 'max']
-const DEFAULT_MODEL_ID = 'claude-opus'
+const DEFAULT_MODEL_ID = 'claude-default'
+const ENCODED_MODEL_PREFIX = 'claude-model:'
+const RUNTIME_CACHE_MS = 30_000
+const USAGE_CACHE_MS = 5 * 60_000
+const CLAUDE_USAGE_URL = 'https://api.anthropic.com/api/oauth/usage'
+const LEGACY_MODEL_VALUES: Record<string, string> = {
+  'claude-default': 'default',
+  'claude-fable': 'fable',
+  'claude-opus': 'opus',
+  'claude-sonnet': 'sonnet',
+  'claude-sonnet[1m]': 'sonnet[1m]',
+  'claude-haiku': 'haiku',
+}
+
+export type ClaudeProviderStatus = {
+  id: 'claude'
+  label: 'Claude'
+  connected: boolean
+  email: string | null
+  organization: string | null
+  plan: string | null
+  authMethod: string | null
+  apiProvider: string | null
+}
+
+export type ClaudeUsageLimit = {
+  key: string
+  label: string
+  usedPercent: number
+  resetsAt: string | null
+}
+
+export type ClaudeUsage = {
+  plan: string | null
+  limits: ClaudeUsageLimit[]
+  notice?: string
+}
+
+type ClaudeRuntimeState = {
+  account: AccountInfo
+  connected: boolean
+  models: ModelInfo[]
+}
+
+type ClaudeLoginQuery = Query & {
+  claudeAuthenticate(loginWithClaudeAi: boolean): Promise<{ manualUrl: string; automaticUrl?: string }>
+  claudeOAuthCallback(authorizationCode: string, state: string): Promise<unknown>
+  claudeOAuthWaitForCompletion(): Promise<unknown>
+}
+
+type ClaudeLogin = {
+  id: string
+  query: ClaudeLoginQuery
+  state: string
+  timer: ReturnType<typeof setTimeout>
+}
 
 export function isClaudeThreadId(value: unknown): value is string {
   return typeof value === 'string' && value.startsWith(THREAD_ID_PREFIX)
 }
 
 export function isClaudeModelId(value: unknown): value is string {
-  return typeof value === 'string' && CLAUDE_MODELS.some((model) => model.id === value)
+  return typeof value === 'string' && (
+    Object.prototype.hasOwnProperty.call(LEGACY_MODEL_VALUES, value) ||
+    value.startsWith(ENCODED_MODEL_PREFIX)
+  )
 }
 
 function toSessionId(threadId: string): string {
@@ -70,8 +124,164 @@ function toEffort(value: unknown): EffortLevel | null {
   return typeof value === 'string' && (EFFORT_LEVELS as string[]).includes(value) ? value as EffortLevel : null
 }
 
-function toModelAlias(modelId: string): string {
-  return CLAUDE_MODELS.find((model) => model.id === modelId)?.alias ?? 'opus'
+function toModelValue(modelId: string): string {
+  const legacy = LEGACY_MODEL_VALUES[modelId]
+  if (legacy) return legacy
+  if (!modelId.startsWith(ENCODED_MODEL_PREFIX)) return 'default'
+  try {
+    return decodeURIComponent(modelId.slice(ENCODED_MODEL_PREFIX.length)) || 'default'
+  } catch {
+    return 'default'
+  }
+}
+
+function toModelId(value: string): string {
+  const legacy = Object.entries(LEGACY_MODEL_VALUES).find(([, candidate]) => candidate === value)
+  return legacy?.[0] ?? `${ENCODED_MODEL_PREFIX}${encodeURIComponent(value)}`
+}
+
+function defaultEffort(model: ModelInfo): EffortLevel | null {
+  const levels = model.supportedEffortLevels ?? []
+  if (!model.supportsEffort || levels.length === 0) return null
+  const identity = `${model.displayName} ${model.description}`
+  if (/Opus 5\.5/iu.test(identity) && levels.includes('medium')) return 'medium'
+  if (/Opus 4\.7/iu.test(identity) && levels.includes('xhigh')) return 'xhigh'
+  if (levels.includes('high')) return 'high'
+  return levels[0] ?? null
+}
+
+function modelDisplayName(model: ModelInfo): string {
+  const describedModel = model.description.match(/(?:currently\s+)?((?:Fable|Opus|Sonnet|Haiku)\s+\d+(?:\.\d+)?(?:\s+\(1M context\))?)/iu)?.[1]
+  if (model.value === 'default' && describedModel) return `Claude · Default (${describedModel})`
+  if (describedModel) return `Claude ${describedModel}`
+  return `Claude ${model.displayName}`
+}
+
+export function runtimeModel(model: ModelInfo): Record<string, unknown> {
+  const efforts = model.supportedEffortLevels ?? []
+  return {
+    id: toModelId(model.value),
+    model: toModelId(model.value),
+    upgrade: null,
+    displayName: modelDisplayName(model),
+    description: model.description,
+    modelProvider: MODEL_PROVIDER,
+    hidden: false,
+    supportedReasoningEfforts: efforts.map((effort) => ({ reasoningEffort: effort, description: effort })),
+    defaultReasoningEffort: defaultEffort(model),
+    inputModalities: ['text', 'image'],
+    supportsPersonality: false,
+    isDefault: model.value === 'default',
+  }
+}
+
+function isClaudeConnected(account: AccountInfo): boolean {
+  if (account.apiProvider && account.apiProvider !== 'firstParty') return true
+  return Boolean(account.tokenSource && account.tokenSource !== 'none')
+}
+
+function emptyInput(): AsyncGenerator<SDKUserMessage> {
+  return (async function* () {})()
+}
+
+function holdingInput(): AsyncGenerator<SDKUserMessage> {
+  return (async function* () { await new Promise<void>(() => undefined) })()
+}
+
+function normalizePercent(value: unknown): number | null {
+  if (typeof value !== 'number' || !Number.isFinite(value)) return null
+  return Math.max(0, Math.min(100, value))
+}
+
+export function normalizeClaudeUsage(raw: unknown, plan: string | null): ClaudeUsage {
+  const record = asRecord(raw)
+  const limits: ClaudeUsageLimit[] = []
+  const rows = Array.isArray(record?.limits) ? record.limits : []
+  for (const rawLimit of rows) {
+    const limit = asRecord(rawLimit)
+    const key = readString(limit?.kind)
+    const usedPercent = normalizePercent(limit?.percent)
+    if (!key || usedPercent === null) continue
+    const scope = asRecord(limit?.scope)
+    const model = readString(asRecord(scope?.model)?.display_name)
+    const baseLabel = key === 'session' ? '5h limit'
+      : key === 'weekly_all' ? 'Weekly · all models'
+        : key === 'weekly_scoped' ? 'Weekly' : key.replace(/_/g, ' ')
+    limits.push({
+      key,
+      label: model ? `${baseLabel} · ${model}` : baseLabel,
+      usedPercent,
+      resetsAt: readString(limit?.resets_at) || null,
+    })
+  }
+
+  const legacyRows: Array<[string, string]> = [
+    ['five_hour', '5h limit'],
+    ['seven_day', 'Weekly · all models'],
+    ['seven_day_opus', 'Weekly · Opus'],
+    ['seven_day_sonnet', 'Weekly · Sonnet'],
+  ]
+  for (const [key, label] of legacyRows) {
+    const limit = asRecord(record?.[key])
+    const usedPercent = normalizePercent(limit?.utilization)
+    if (!limit || usedPercent === null || limits.some((entry) => entry.key === key)) continue
+    limits.push({ key, label, usedPercent, resetsAt: readString(limit.resets_at) || null })
+  }
+  return { plan, limits }
+}
+
+type ClaudeOauthCredentials = {
+  accessToken: string
+  expiresAt: number | null
+  plan: string | null
+}
+
+async function readClaudeOauthCredentials(): Promise<ClaudeOauthCredentials | null> {
+  const configDir = process.env.CLAUDE_CONFIG_DIR || join(homedir(), '.claude')
+  let raw: unknown = null
+  try {
+    raw = JSON.parse(await readFile(join(configDir, '.credentials.json'), 'utf8'))
+  } catch {
+    if (process.platform !== 'darwin') return null
+    const result = spawnSync('/usr/bin/security', ['find-generic-password', '-s', 'Claude Code-credentials', '-w'], {
+      encoding: 'utf8',
+      stdio: ['ignore', 'pipe', 'ignore'],
+      timeout: 5_000,
+      maxBuffer: 1024 * 1024,
+    })
+    if (result.error || result.status !== 0 || !result.stdout) return null
+    try {
+      raw = JSON.parse(result.stdout.trim())
+    } catch {
+      return null
+    }
+  }
+
+  const oauth = asRecord(asRecord(raw)?.claudeAiOauth)
+  const accessToken = readString(oauth?.accessToken)
+  if (!accessToken) return null
+  return {
+    accessToken,
+    expiresAt: typeof oauth?.expiresAt === 'number' ? oauth.expiresAt : null,
+    plan: readString(oauth?.subscriptionType) || null,
+  }
+}
+
+async function runClaudeCommand(args: string[]): Promise<void> {
+  const command = process.env.CODEXUI_CLAUDE_PATH?.trim() || 'claude'
+  await new Promise<void>((resolve, reject) => {
+    const child = spawn(command, args, {
+      env: process.env,
+      stdio: ['ignore', 'pipe', 'pipe'],
+    })
+    let errorText = ''
+    child.stderr.on('data', (chunk: Buffer) => { errorText += chunk.toString() })
+    child.on('error', reject)
+    child.on('close', (code) => {
+      if (code === 0) resolve()
+      else reject(new Error(errorText.trim() || `Claude command exited with code ${String(code)}`))
+    })
+  })
 }
 
 // ── Persisted per-chat settings ─────────────────────────────────────────
@@ -394,6 +604,9 @@ export class ClaudeBackend {
   private readonly listeners = new Set<NotificationListener>()
   private readonly liveTurns = new Map<string, LiveTurn>()
   private readonly store: ClaudeThreadStore
+  private runtimeCache: { at: number; value: ClaudeRuntimeState } | null = null
+  private usageCache: { at: number; value: ClaudeUsage } | null = null
+  private login: ClaudeLogin | null = null
 
   constructor(storeFilePath: string) {
     this.store = new ClaudeThreadStore(storeFilePath)
@@ -402,6 +615,132 @@ export class ClaudeBackend {
   private sdk(): Promise<SdkModule> {
     this.sdkPromise ??= import('@anthropic-ai/claude-agent-sdk')
     return this.sdkPromise
+  }
+
+  private queryOptions(): Options {
+    return {
+      cwd: process.cwd(),
+      permissionMode: 'dontAsk',
+      settingSources: ['user', 'project', 'local'],
+      ...(process.env.CODEXUI_CLAUDE_PATH ? { pathToClaudeCodeExecutable: process.env.CODEXUI_CLAUDE_PATH } : {}),
+    }
+  }
+
+  private async readRuntime(force = false): Promise<ClaudeRuntimeState> {
+    if (!force && this.runtimeCache && Date.now() - this.runtimeCache.at < RUNTIME_CACHE_MS) {
+      return this.runtimeCache.value
+    }
+    const { query } = await this.sdk()
+    const runtimeQuery = query({ prompt: emptyInput(), options: this.queryOptions() })
+    try {
+      const [models, account] = await Promise.all([
+        runtimeQuery.supportedModels(),
+        runtimeQuery.accountInfo(),
+      ])
+      const value = { account, connected: isClaudeConnected(account), models }
+      this.runtimeCache = { at: Date.now(), value }
+      return value
+    } finally {
+      runtimeQuery.close()
+    }
+  }
+
+  async readProviderStatus(force = false): Promise<ClaudeProviderStatus> {
+    const runtime = await this.readRuntime(force)
+    return {
+      id: 'claude',
+      label: 'Claude',
+      connected: runtime.connected,
+      email: runtime.account.email ?? null,
+      organization: runtime.account.organization ?? null,
+      plan: runtime.account.subscriptionType ?? null,
+      authMethod: runtime.account.tokenSource ?? runtime.account.apiKeySource ?? null,
+      apiProvider: runtime.account.apiProvider ?? null,
+    }
+  }
+
+  async readUsage(force = false): Promise<ClaudeUsage | null> {
+    const runtime = await this.readRuntime(force)
+    if (!runtime.connected || runtime.account.apiProvider !== 'firstParty') return null
+    if (!force && this.usageCache && Date.now() - this.usageCache.at < USAGE_CACHE_MS) {
+      return this.usageCache.value
+    }
+    const credentials = await readClaudeOauthCredentials()
+    if (!credentials) return null
+    if (credentials.expiresAt !== null && credentials.expiresAt < Date.now()) {
+      return { plan: credentials.plan, limits: [], notice: 'Claude credentials need to be refreshed.' }
+    }
+    const response = await fetch(CLAUDE_USAGE_URL, {
+      headers: {
+        Authorization: `Bearer ${credentials.accessToken}`,
+        'anthropic-beta': 'oauth-2025-04-20',
+        'Content-Type': 'application/json',
+      },
+      signal: AbortSignal.timeout(10_000),
+    })
+    if (!response.ok) {
+      if (this.usageCache) {
+        const age = Math.max(1, Math.round((Date.now() - this.usageCache.at) / 60_000))
+        return { ...this.usageCache.value, notice: `Claude usage refresh failed (${String(response.status)}). Showing data from ${String(age)} min ago.` }
+      }
+      return { plan: credentials.plan, limits: [], notice: `Claude usage is temporarily unavailable (${String(response.status)}).` }
+    }
+    const value = normalizeClaudeUsage(await response.json(), credentials.plan ?? runtime.account.subscriptionType ?? null)
+    this.usageCache = { at: Date.now(), value }
+    return value
+  }
+
+  async startLogin(): Promise<{ loginId: string; authUrl: string }> {
+    this.cancelLogin()
+    const { query } = await this.sdk()
+    const loginQuery = query({ prompt: holdingInput(), options: this.queryOptions() }) as ClaudeLoginQuery
+    try {
+      await loginQuery.initializationResult()
+      const response = await loginQuery.claudeAuthenticate(true)
+      const authUrl = response.manualUrl
+      const state = new URL(authUrl).searchParams.get('state') ?? ''
+      if (!authUrl || !state) throw new Error('Claude did not return a valid login URL.')
+      const id = randomUUID()
+      const timer = setTimeout(() => {
+        if (this.login?.id === id) this.cancelLogin()
+      }, 10 * 60_000)
+      timer.unref?.()
+      this.login = { id, query: loginQuery, state, timer }
+      return { loginId: id, authUrl }
+    } catch (error) {
+      loginQuery.close()
+      throw error
+    }
+  }
+
+  async completeLogin(loginId: string, pastedCode: string): Promise<ClaudeProviderStatus> {
+    const login = this.login
+    if (!login || login.id !== loginId) throw new Error('This Claude login has expired. Start again.')
+    const [authorizationCode, pastedState] = pastedCode.trim().split('#', 2)
+    if (!authorizationCode) throw new Error('Paste the authorization code from Claude.')
+    try {
+      await login.query.claudeOAuthCallback(authorizationCode, pastedState || login.state)
+      await login.query.claudeOAuthWaitForCompletion()
+    } finally {
+      this.cancelLogin()
+    }
+    this.runtimeCache = null
+    this.usageCache = null
+    return this.readProviderStatus(true)
+  }
+
+  cancelLogin(): void {
+    if (!this.login) return
+    clearTimeout(this.login.timer)
+    this.login.query.close()
+    this.login = null
+  }
+
+  async logout(): Promise<void> {
+    this.cancelLogin()
+    await runClaudeCommand(['auth', 'logout'])
+    this.runtimeCache = null
+    this.usageCache = null
   }
 
   onNotification(listener: NotificationListener): () => void {
@@ -413,20 +752,9 @@ export class ClaudeBackend {
     for (const listener of this.listeners) listener({ method, params })
   }
 
-  listModels(): Record<string, unknown>[] {
-    return CLAUDE_MODELS.map((model) => ({
-      id: model.id,
-      model: model.id,
-      upgrade: null,
-      displayName: model.displayName,
-      description: model.description,
-      hidden: false,
-      supportedReasoningEfforts: EFFORT_LEVELS.map((effort) => ({ reasoningEffort: effort, description: effort })),
-      defaultReasoningEffort: 'high',
-      inputModalities: ['text', 'image'],
-      supportsPersonality: false,
-      isDefault: false,
-    }))
+  async listModels(): Promise<Record<string, unknown>[]> {
+    const runtime = await this.readRuntime()
+    return runtime.connected ? runtime.models.map(runtimeModel) : []
   }
 
   private async toThread(sessionId: string, info: SDKSessionInfo | undefined, turns: unknown[] = []) {
@@ -493,13 +821,33 @@ export class ClaudeBackend {
     }
   }
 
+  private async executionSettings(requestedModel: unknown, requestedEffort: unknown): Promise<{
+    model: string
+    effort: EffortLevel | null
+  }> {
+    const runtime = await this.readRuntime()
+    if (!runtime.connected) throw new Error('Claude is signed out. Sign in to Claude before starting a Claude turn.')
+    const requestedModelId = isClaudeModelId(requestedModel) ? requestedModel : ''
+    const requestedValue = requestedModelId ? toModelValue(requestedModelId) : 'default'
+    const modelInfo = runtime.models.find((model) => model.value === requestedValue)
+      ?? runtime.models.find((model) => model.value === 'default')
+      ?? runtime.models[0]
+    const model = modelInfo ? toModelId(modelInfo.value) : (requestedModelId || DEFAULT_MODEL_ID)
+    const supportedEfforts = modelInfo?.supportedEffortLevels ?? EFFORT_LEVELS
+    const effort = toEffort(requestedEffort)
+    return {
+      model,
+      effort: effort && supportedEfforts.includes(effort) ? effort : (modelInfo ? defaultEffort(modelInfo) : effort),
+    }
+  }
+
   private async startThread(request: Record<string, unknown>): Promise<unknown> {
     const sessionId = randomUUID()
-    const model = isClaudeModelId(request.model) ? request.model : DEFAULT_MODEL_ID
+    const { model, effort } = await this.executionSettings(request.model, request.effort)
     const stored = await this.store.update(sessionId, {
       cwd: readString(request.cwd) || process.cwd(),
       model,
-      effort: null,
+      effort,
       createdAtMs: Date.now(),
     })
     const thread = await this.toThread(sessionId, undefined)
@@ -578,9 +926,14 @@ export class ClaudeBackend {
       return { turn: { id: live.turnId, items: [], status: 'inProgress', error: null } }
     }
 
+    const existing = await this.store.get(sessionId)
+    const requested = await this.executionSettings(
+      isClaudeModelId(request.model) ? request.model : existing?.model,
+      toEffort(request.effort) ?? existing?.effort,
+    )
     const stored = await this.store.update(sessionId, {
-      ...(isClaudeModelId(request.model) ? { model: request.model } : {}),
-      ...(toEffort(request.effort) ? { effort: toEffort(request.effort) } : {}),
+      model: requested.model,
+      effort: requested.effort,
       ...(readString(request.cwd) ? { cwd: readString(request.cwd) } : {}),
     })
 
@@ -589,7 +942,7 @@ export class ClaudeBackend {
     const input = createInputStream(userMessage)
     const options: Options = {
       cwd: stored.cwd || undefined,
-      model: toModelAlias(stored.model),
+      model: toModelValue(stored.model),
       ...(stored.effort ? { effort: stored.effort } : {}),
       ...(exists ? { resume: sessionId } : { sessionId }),
       permissionMode: 'bypassPermissions',
@@ -710,6 +1063,7 @@ export class ClaudeBackend {
   }
 
   dispose(): void {
+    this.cancelLogin()
     for (const turn of this.liveTurns.values()) {
       turn.interrupted = true
       turn.release()

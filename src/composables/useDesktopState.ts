@@ -35,6 +35,7 @@ import {
   startThreadTurn,
   buildThreadTurnInput,
   type AccountRateLimitsState,
+  type AvailableModel,
   type PluginMentionParam,
   type RpcNotification,
   type SkillInfo,
@@ -1212,6 +1213,7 @@ export function useDesktopState() {
   const eventUnreadByThreadId = ref<Record<string, boolean>>({})
   const manuallyRenamedThreadIds = new Set<string>()
   const availableModelIds = ref<string[]>([])
+  const availableModels = ref<AvailableModel[]>([])
   const defaultModelId = ref(PREFERRED_DEFAULT_MODEL_ID)
   const defaultReasoningEffort = ref<ReasoningEffort | ''>(DEFAULT_REASONING_EFFORT)
   const fastServiceTierByModel = ref<FastServiceTierByModel>({})
@@ -1413,10 +1415,15 @@ export function useDesktopState() {
     )
       ? defaultModelId.value
       : pickDefaultModelId(availableModelIds.value)
-    return {
-      model,
-      reasoningEffort: defaultReasoningEffort.value || DEFAULT_REASONING_EFFORT,
-    }
+    return { model, reasoningEffort: reasoningEffortForModel(model, defaultReasoningEffort.value) }
+  }
+
+  function reasoningEffortForModel(modelId: string, requested: ReasoningEffort | ''): ReasoningEffort | '' {
+    const model = availableModels.value.find((candidate) => candidate.id === modelId)
+    if (!model) return requested
+    if (model.reasoningEfforts.length === 0) return model.provider === 'anthropic' ? '' : requested
+    if (requested && model.reasoningEfforts.includes(requested)) return requested
+    return model.defaultReasoningEffort || model.reasoningEfforts[0] || ''
   }
 
   function getNewThreadModelConfig(): ThreadModelConfig {
@@ -1436,7 +1443,7 @@ export function useDesktopState() {
 
   function setPickerModelConfig(config: ThreadModelConfig): void {
     selectedModelId.value = config.model
-    selectedReasoningEffort.value = config.reasoningEffort
+    selectedReasoningEffort.value = reasoningEffortForModel(config.model, config.reasoningEffort)
   }
 
   function applyDefaultModelConfig(): void {
@@ -1499,18 +1506,20 @@ export function useDesktopState() {
     if (selectedModelId.value === nextModelId) return
 
     selectedModelId.value = nextModelId
+    const nextReasoningEffort = reasoningEffortForModel(nextModelId, selectedReasoningEffort.value)
+    selectedReasoningEffort.value = nextReasoningEffort
     const threadId = selectedThreadId.value
     if (threadId) {
       applyThreadModelConfig(threadId, {
         model: nextModelId,
-        reasoningEffort: selectedReasoningEffort.value,
+        reasoningEffort: nextReasoningEffort,
       }, false)
       return
     }
     newThreadPreferenceVersion += 1
     newThreadModelConfig.value = {
       model: nextModelId,
-      reasoningEffort: selectedReasoningEffort.value || getDefaultModelConfig().reasoningEffort,
+      reasoningEffort: nextReasoningEffort,
     }
     saveNewThreadModelConfig(newThreadModelConfig.value)
   }
@@ -1519,6 +1528,11 @@ export function useDesktopState() {
     if (effort && !REASONING_EFFORT_OPTIONS.includes(effort)) {
       return
     }
+    const selectedModel = availableModels.value.find((model) => model.id === selectedModelId.value)
+    if (selectedModel && (selectedModel.reasoningEfforts.length > 0 || selectedModel.provider === 'anthropic') && (
+      (!effort && selectedModel.reasoningEfforts.length > 0) ||
+      (effort && !selectedModel.reasoningEfforts.includes(effort))
+    )) return
     if (selectedReasoningEffort.value === effort) return
 
     selectedReasoningEffort.value = effort
@@ -1596,6 +1610,7 @@ export function useDesktopState() {
       const modelIds = modelCatalog.ids
 
       availableModelIds.value = modelIds
+      availableModels.value = modelCatalog.models
       fastServiceTierByModel.value = modelCatalog.fastServiceTierByModel
       if (!isUpdatingFastMode.value) {
         fastModeEnabled.value = currentConfig.fastModeEnabled
@@ -5249,6 +5264,7 @@ export function useDesktopState() {
     selectedLiveOverlay,
     selectedThreadId,
     availableModelIds,
+    availableModels,
     selectedModelId,
     selectedReasoningEffort,
     fastModeAvailable,
@@ -5270,6 +5286,7 @@ export function useDesktopState() {
     refreshAll,
     refreshThreadReadState,
     refreshAccountRateLimits,
+    refreshModelPreferences,
     useRateLimitReset,
     refreshSkills,
     loadEarlierMessages,

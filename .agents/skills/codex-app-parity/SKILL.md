@@ -1375,3 +1375,10 @@ After each feature implementation session that uses this skill:
   chat reply is allowed to answer without `save_features`; only initial explicit
   planning requires cards. Persist its follow-up intent on the run so Activity
   and notifications distinguish a conversation from a new reviewable plan.
+
+## Findings: Unified Codex and Claude provider controls (2026-09-28)
+
+- The installed Codex renderer keeps authentication in the account/settings surface through `account/read`, `account/login/start`, and `account/logout`; it does not mix sign-in controls into the model picker. CodexUI's compact Accounts card follows that separation while intentionally extending it to a second provider.
+- Native model controls consume each model's advertised `supportedReasoningEfforts`. Claude Code exposes its current alias-to-version labels and effort levels at runtime, so display those values instead of hardcoding an Opus version or applying Codex's global thinking choices to Claude.
+- A disconnected provider should not contribute selectable models or usage cards. Keep the account row visible so the user can sign in, then refresh model metadata and limits after authentication changes.
+- Codex state-database listings may include a saved thread that is absent from the app-server's in-memory registry. Match the native resume flow by retrying `thread/read` only after a targeted `thread/resume`; do not suppress unrelated read failures.

@@ -1,8 +1,8 @@
 <template>
-  <section class="rate-limits" aria-label="Rate limits remaining">
+  <section class="rate-limits" :aria-label="`${providerLabel || 'Account'} usage remaining`">
     <div class="rate-limits-header">
       <div>
-        <p class="rate-limits-eyebrow">Usage remaining</p>
+        <p class="rate-limits-eyebrow">{{ providerLabel ? `${providerLabel} usage` : 'Usage remaining' }}</p>
         <p v-if="accountMeta" class="rate-limits-meta">{{ accountMeta }}</p>
       </div>
       <button
@@ -76,6 +76,7 @@ type LimitRow = {
 }
 
 const props = defineProps<{
+  providerLabel?: string
   rateLimits: AccountRateLimitsState | null
   refreshRateLimits?: () => Promise<void> | void
   useRateLimitReset?: () => Promise<void> | void

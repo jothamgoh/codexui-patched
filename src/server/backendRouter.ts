@@ -19,7 +19,7 @@ export type ClaudeRouteTarget = {
   rpc(method: string, params: unknown): Promise<unknown>
   onNotification(listener: NotificationListener): () => void
   listThreads(params: unknown): Promise<Array<Record<string, unknown>>>
-  listModels(): Array<Record<string, unknown>>
+  listModels(): Promise<Array<Record<string, unknown>>>
   dispose(): void
 }
 
@@ -51,7 +51,16 @@ export class BackendRouter<PendingRequest> implements CodexBackend<PendingReques
     if (method === 'thread/start' && isClaudeModelId(request?.model)) return this.claude.rpc(method, params)
     if (method === 'thread/list') return this.listThreads(params)
     if (method === 'model/list') return this.listModels(params)
-    return this.codex.rpc(method, params)
+    try {
+      return await this.codex.rpc(method, params)
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error)
+      if (method !== 'thread/read' || !request?.threadId || !/thread not loaded/iu.test(message)) throw error
+      // State-db rows can outlive the app-server's in-memory thread registry.
+      // Native clients resume a saved thread before reading its transcript.
+      await this.codex.rpc('thread/resume', { threadId: request.threadId, excludeTurns: true })
+      return this.codex.rpc(method, params)
+    }
   }
 
   /** One backend failing must not hide the other's chats or models. */
@@ -82,7 +91,13 @@ export class BackendRouter<PendingRequest> implements CodexBackend<PendingReques
   private async listModels(params: unknown): Promise<unknown> {
     const codexResult = await this.readCodexList('model/list', params)
     const codexModels = Array.isArray(codexResult.data) ? codexResult.data : []
-    return { ...codexResult, data: [...codexModels, ...this.claude.listModels()] }
+    let claudeModels: Array<Record<string, unknown>> = []
+    try {
+      claudeModels = await this.claude.listModels()
+    } catch (error) {
+      console.warn('[claude-backend] Failed to list Claude models:', error instanceof Error ? error.message : error)
+    }
+    return { ...codexResult, data: [...codexModels, ...claudeModels] }
   }
 
   onNotification(listener: NotificationListener): () => void {

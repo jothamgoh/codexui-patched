@@ -360,7 +360,7 @@
             v-if="!hideModelSettings"
             class="thread-composer-control thread-composer-control--model"
             :model-value="selectedModel"
-            :options="modelOptions"
+            :options="composerModelOptions"
             placeholder="Model"
             open-direction="up"
             :disabled="disabled || !activeThreadId || models.length === 0 || isTurnInProgress"
@@ -379,11 +379,11 @@
           />
 
           <ComposerDropdown
-            v-if="!hideModelSettings"
+            v-if="!hideModelSettings && reasoningOptions.length > 0"
             class="thread-composer-control thread-composer-control--reasoning"
             :model-value="selectedReasoningEffort"
             :options="reasoningOptions"
-            placeholder="Thinking"
+            :placeholder="reasoningPlaceholder"
             open-direction="up"
             :disabled="disabled || !activeThreadId || isTurnInProgress"
             @update:model-value="onReasoningEffortSelect"
@@ -531,6 +531,7 @@ import {
   searchComposerFiles,
   uploadFile,
   type ComposerFileSuggestion,
+  type AvailableModel,
   type FileAttachmentParam,
   type PluginMentionParam,
   type ThreadMentionParam,
@@ -559,6 +560,7 @@ const props = defineProps<{
   activeThreadId: string
   cwd?: string
   models: string[]
+  modelOptions?: AvailableModel[]
   selectedModel: string
   selectedReasoningEffort: ReasoningEffort | ''
   skills?: SkillItem[]
@@ -683,7 +685,7 @@ const isIOS =
     (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1))
 const COMPOSER_INPUT_FALLBACK_MAX_HEIGHT = 180
 
-const reasoningOptions: Array<{ value: ReasoningEffort; label: string }> = [
+const allReasoningOptions: Array<{ value: ReasoningEffort; label: string }> = [
   { value: 'none', label: 'None' },
   { value: 'minimal', label: 'Minimal' },
   { value: 'low', label: 'Low' },
@@ -693,8 +695,22 @@ const reasoningOptions: Array<{ value: ReasoningEffort; label: string }> = [
   { value: 'max', label: 'Max' },
   { value: 'ultra', label: 'Ultra' },
 ]
-const modelOptions = computed(() =>
-  props.models.map((modelId) => ({ value: modelId, label: modelId })),
+const selectedModelMetadata = computed(() =>
+  props.modelOptions?.find((model) => model.id === props.selectedModel) ?? null,
+)
+const composerModelOptions = computed(() =>
+  props.models.map((modelId) => {
+    const metadata = props.modelOptions?.find((model) => model.id === modelId)
+    return { value: modelId, label: metadata?.label || modelId }
+  }),
+)
+const reasoningOptions = computed(() => {
+  const model = selectedModelMetadata.value
+  if (!model || (model.provider === 'openai' && model.reasoningEfforts.length === 0)) return allReasoningOptions
+  return allReasoningOptions.filter((option) => model.reasoningEfforts.includes(option.value))
+})
+const reasoningPlaceholder = computed(() =>
+  selectedModelMetadata.value?.provider === 'anthropic' ? 'Effort' : 'Thinking',
 )
 
 const goalSlashCommand = computed<SkillItem>(() => ({

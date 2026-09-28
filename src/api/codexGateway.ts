@@ -75,7 +75,17 @@ export type ThreadModelConfig = {
 
 export type AvailableModelCatalog = {
   ids: string[]
+  models: AvailableModel[]
   fastServiceTierByModel: FastServiceTierByModel
+}
+
+export type AvailableModel = {
+  id: string
+  label: string
+  description: string
+  provider: 'openai' | 'anthropic'
+  reasoningEfforts: ReasoningEffort[]
+  defaultReasoningEffort: ReasoningEffort | ''
 }
 
 export type ThreadSearchResult = {
@@ -1181,15 +1191,32 @@ export async function getAvailableModelCatalog(): Promise<AvailableModelCatalog>
   const extendedPayload = await callRpc<ModelListResponse>('model/list', { includeHidden: true })
   const models: unknown[] = [...payload.data, ...extendedPayload.data]
   const ids: string[] = []
+  const modelOptions: AvailableModel[] = []
   for (const row of models) {
     const record = asRecord(row)
     const candidate = readString(record?.id) || readString(record?.model)
     if (!candidate || ids.includes(candidate)) continue
     ids.push(candidate)
+    const supported = Array.isArray(record?.supportedReasoningEfforts)
+      ? record.supportedReasoningEfforts
+        .map((entry) => normalizeReasoningEffort(asRecord(entry)?.reasoningEffort))
+        .filter((effort): effort is ReasoningEffort => Boolean(effort))
+      : []
+    modelOptions.push({
+      id: candidate,
+      label: readString(record?.displayName) || candidate,
+      description: readString(record?.description),
+      provider: readString(record?.modelProvider) === 'anthropic' || candidate.startsWith('claude-')
+        ? 'anthropic'
+        : 'openai',
+      reasoningEfforts: supported,
+      defaultReasoningEffort: normalizeReasoningEffort(record?.defaultReasoningEffort),
+    })
   }
 
   return {
     ids,
+    models: modelOptions,
     fastServiceTierByModel: readFastServiceTierByModel(models),
   }
 }

@@ -139,12 +139,13 @@
             </div>
           </section>
 
-          <RateLimitsSummary
+          <UnifiedProviderStatus
             class="sidebar-rate-limits"
             :rate-limits="accountRateLimits"
             :refresh-rate-limits="refreshAccountRateLimits"
             :use-rate-limit-reset="useRateLimitReset"
             :is-using-rate-limit-reset="isUsingRateLimitReset"
+            @providers-changed="onProvidersChanged"
           />
         </div>
       </section>
@@ -301,7 +302,7 @@
 
               <ThreadComposer ref="threadComposerRef" :active-thread-id="composerThreadContextId"
                 :cwd="composerCwd"
-                :models="availableModelIds" :selected-model="selectedModelId"
+                :models="availableModelIds" :model-options="availableModels" :selected-model="selectedModelId"
                 :selected-reasoning-effort="selectedReasoningEffort" :skills="installedSkills"
                 :threads="composerThreadMentions"
                 :thread-token-usage="null"
@@ -401,6 +402,7 @@
                   :hide-model-settings="Boolean(selectedChatBoard)"
                   :cwd="composerCwd"
                   :models="availableModelIds"
+                  :model-options="availableModels"
                   :selected-model="selectedModelId" :selected-reasoning-effort="selectedReasoningEffort"
                   :skills="installedSkills"
                   :threads="composerThreadMentions"
@@ -468,7 +470,7 @@ import BoardRunSettings from './components/content/BoardRunSettings.vue'
 import Button from './components/ui/button/Button.vue'
 import { Popover, PopoverContent, PopoverTrigger } from './components/ui/popover'
 import ChatSearchDialog from './components/content/ChatSearchDialog.vue'
-import RateLimitsSummary from './components/content/RateLimitsSummary.vue'
+import UnifiedProviderStatus from './components/content/UnifiedProviderStatus.vue'
 import ThemeToggleButton from './components/content/ThemeToggleButton.vue'
 import UiFontSizeControl from './components/content/UiFontSizeControl.vue'
 import SpeedSettingControl from './components/content/SpeedSettingControl.vue'
@@ -535,6 +537,7 @@ const {
   selectedLiveOverlay,
   selectedThreadId,
   availableModelIds,
+  availableModels,
   selectedModelId,
   selectedReasoningEffort,
   setBoardManagedThreadIds,
@@ -556,6 +559,7 @@ const {
   refreshAll,
   refreshThreadReadState,
   refreshAccountRateLimits,
+  refreshModelPreferences,
   useRateLimitReset,
   refreshSkills,
   loadEarlierMessages,
@@ -1076,6 +1080,11 @@ function onSkillsChanged(): void {
 
 function onPluginsChanged(): void {
   void refreshSkills(composerCwd.value)
+}
+
+function onProvidersChanged(): void {
+  void refreshModelPreferences()
+  void refreshAccountRateLimits()
 }
 
 function openChatSearch(): void {

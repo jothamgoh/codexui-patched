@@ -220,30 +220,35 @@ export function normalizeClaudeUsage(raw: unknown, plan: string | null): ClaudeU
     })
   }
 
-  const legacyRows: Array<[string, string]> = [
-    ['five_hour', '5h limit'],
-    ['seven_day', 'Weekly · all models'],
-    ['seven_day_opus', 'Weekly · Opus'],
-    ['seven_day_sonnet', 'Weekly · Sonnet'],
-  ]
-  for (const [key, label] of legacyRows) {
-    const limit = asRecord(rateLimits?.[key])
-    const usedPercent = normalizePercent(limit?.utilization)
-    if (!limit || usedPercent === null || limits.some((entry) => entry.key === key)) continue
-    limits.push({ key, label, usedPercent, resetsAt: readString(limit.resets_at) || null })
-  }
-  const scoped = Array.isArray(rateLimits?.model_scoped) ? rateLimits.model_scoped : []
-  for (const [index, rawLimit] of scoped.entries()) {
-    const limit = asRecord(rawLimit)
-    const label = readString(limit?.display_name)
-    const usedPercent = normalizePercent(limit?.utilization)
-    if (!label || usedPercent === null) continue
-    limits.push({
-      key: `model_scoped_${String(index)}`,
-      label: `Weekly · ${label}`,
-      usedPercent,
-      resetsAt: readString(limit?.resets_at) || null,
-    })
+  // Current SDK responses include the server-native rows and compatibility
+  // fields for older clients. Prefer the native rows so each meter appears
+  // once; fall back to the compatibility fields only when rows are absent.
+  if (rows.length === 0) {
+    const legacyRows: Array<[string, string]> = [
+      ['five_hour', '5h limit'],
+      ['seven_day', 'Weekly · all models'],
+      ['seven_day_opus', 'Weekly · Opus'],
+      ['seven_day_sonnet', 'Weekly · Sonnet'],
+    ]
+    for (const [key, label] of legacyRows) {
+      const limit = asRecord(rateLimits?.[key])
+      const usedPercent = normalizePercent(limit?.utilization)
+      if (!limit || usedPercent === null) continue
+      limits.push({ key, label, usedPercent, resetsAt: readString(limit.resets_at) || null })
+    }
+    const scoped = Array.isArray(rateLimits?.model_scoped) ? rateLimits.model_scoped : []
+    for (const [index, rawLimit] of scoped.entries()) {
+      const limit = asRecord(rawLimit)
+      const label = readString(limit?.display_name)
+      const usedPercent = normalizePercent(limit?.utilization)
+      if (!label || usedPercent === null) continue
+      limits.push({
+        key: `model_scoped_${String(index)}`,
+        label: `Weekly · ${label}`,
+        usedPercent,
+        resetsAt: readString(limit?.resets_at) || null,
+      })
+    }
   }
   return { plan: resolvedPlan, limits }
 }
@@ -635,7 +640,9 @@ export class ClaudeBackend {
       email: runtime.account.email ?? null,
       organization: runtime.account.organization ?? null,
       plan: runtime.account.subscriptionType ?? null,
-      authMethod: runtime.account.tokenSource ?? runtime.account.apiKeySource ?? null,
+      authMethod: runtime.account.tokenSource ?? runtime.account.apiKeySource ?? (
+        runtime.connected && runtime.account.apiProvider === 'firstParty' ? 'claude.ai' : null
+      ),
       apiProvider: runtime.account.apiProvider ?? null,
     }
   }

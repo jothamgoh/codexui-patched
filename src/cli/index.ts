@@ -11,6 +11,7 @@ import qrcode from 'qrcode-terminal'
 import { createServer as createApp } from '../server/httpServer.js'
 import { generatePassword } from '../server/password.js'
 import { getCodexUiChildEnv, loadCodexUiEnv } from '../server/envFile.js'
+import { startClaudeProcessHost } from '../server/claudeProcessHost.js'
 
 const program = new Command().name('codexui').description('Web interface for Codex app-server')
 const __dirname = dirname(fileURLToPath(import.meta.url))
@@ -363,6 +364,21 @@ program
   })
 
 program.command('login').description('Install/check Codex CLI and run `codex login`').action(runLogin)
+
+program
+  .command('claude-host')
+  .description('Start Claude Code for a CodexUI service from this login session (keeps Claude sign-in available)')
+  .option('--socket <path>', 'Unix socket to listen on', join(homedir(), '.config', 'codexui', 'claude-host.sock'))
+  .action(async (opts: { socket: string }) => {
+    const server = await startClaudeProcessHost(opts.socket)
+    console.log(`[claude-host] Listening on ${opts.socket}`)
+    const stop = () => {
+      server.close()
+      process.exit(0)
+    }
+    process.on('SIGINT', stop)
+    process.on('SIGTERM', stop)
+  })
 
 program.command('help').description('Show codexui command help').action(() => {
   program.outputHelp()

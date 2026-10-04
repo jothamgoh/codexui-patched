@@ -1689,7 +1689,11 @@ function getSharedBridgeState(): SharedBridgeState {
 
   const created: SharedBridgeState = {
     appServer,
-    claude: new ClaudeBackend(join(getCodexHomeDir(), 'codexui-claude-threads.json')),
+    claude: new ClaudeBackend(join(getCodexHomeDir(), 'codexui-claude-threads.json'), {
+      // A LaunchDaemon cannot read the login keychain where Claude keeps its
+      // sign-in; a host in the login session starts Claude Code instead.
+      hostSocketPath: process.env.CODEXUI_CLAUDE_HOST_SOCKET,
+    }),
     threadTitleGenerator: new ThreadTitleGenerator(),
     methodCatalog: new MethodCatalog(),
     automationService,

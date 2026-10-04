@@ -20,6 +20,11 @@ export type ClaudeRouteTarget = {
   onNotification(listener: NotificationListener): () => void
   listThreads(params: unknown): Promise<Array<Record<string, unknown>>>
   listModels(): Promise<Array<Record<string, unknown>>>
+  searchThreads(params: unknown): Promise<Array<{ thread: Record<string, unknown>; snippet: string }>>
+  listSkills(cwd: string): Promise<unknown>
+  listPendingServerRequests(): Array<{ id: number; method: string; params: unknown; receivedAtIso: string }>
+  ownsServerRequest(id: unknown): boolean
+  respondToServerRequest(payload: unknown): Promise<void>
   dispose(): void
 }
 
@@ -36,8 +41,8 @@ function readUpdatedAt(thread: unknown): number {
 
 /**
  * Sends each request to Codex or Claude. Requests about a `claude-` chat, and
- * new chats started with a Claude model, go to Claude; chat and model lists
- * merge both; everything else stays with Codex.
+ * new chats started with a Claude model, go to Claude; chat lists, search and
+ * model lists merge both; everything else stays with Codex.
  */
 export class BackendRouter<PendingRequest> implements CodexBackend<PendingRequest> {
   constructor(
@@ -52,7 +57,12 @@ export class BackendRouter<PendingRequest> implements CodexBackend<PendingReques
     if (method === 'thread/list' && isClaudeThreadId(request?.ancestorThreadId)) {
       return { data: [], nextCursor: null }
     }
+    if (method === 'skills/list' && request?.provider === 'claude') {
+      const cwds = Array.isArray(request.cwds) ? request.cwds.filter((cwd): cwd is string => typeof cwd === 'string') : []
+      return this.claude.listSkills(cwds[0] ?? '')
+    }
     if (method === 'thread/list') return this.listThreads(params)
+    if (method === 'thread/search') return this.searchThreads(params)
     if (method === 'model/list') return this.listModels(params)
     try {
       return await this.codex.rpc(method, params)
@@ -77,31 +87,49 @@ export class BackendRouter<PendingRequest> implements CodexBackend<PendingReques
   }
 
   private async listThreads(params: unknown): Promise<unknown> {
-    const codexResult = await this.readCodexList('thread/list', params)
     const request = asRecord(params)
     // Claude has no Codex subagent ancestry metadata. Keep source-filtered and
     // cursor pages native to Codex; Claude chats join only the main first page.
-    if (request?.cursor || Array.isArray(request?.sourceKinds) || request?.ancestorThreadId) return codexResult
-    let claudeThreads: Array<Record<string, unknown>> = []
-    try {
-      claudeThreads = await this.claude.listThreads(params)
-    } catch (error) {
-      console.warn('[claude-backend] Failed to list Claude chats:', error instanceof Error ? error.message : error)
+    if (request?.cursor || Array.isArray(request?.sourceKinds) || request?.ancestorThreadId) {
+      return this.readCodexList('thread/list', params)
     }
+    const [codexResult, claudeThreads] = await Promise.all([
+      this.readCodexList('thread/list', params),
+      this.claude.listThreads(params).catch((error: unknown) => {
+        console.warn('[claude-backend] Failed to list Claude chats:', error instanceof Error ? error.message : error)
+        return [] as Array<Record<string, unknown>>
+      }),
+    ])
     const codexThreads = Array.isArray(codexResult.data) ? codexResult.data : []
     const data = [...codexThreads, ...claudeThreads].sort((a, b) => readUpdatedAt(b) - readUpdatedAt(a))
     return { ...codexResult, data }
   }
 
+  private async searchThreads(params: unknown): Promise<unknown> {
+    const [codexResult, claudeResults] = await Promise.all([
+      this.readCodexList('thread/search', params),
+      this.claude.searchThreads(params).catch((error: unknown) => {
+        console.warn('[claude-backend] Failed to search Claude chats:', error instanceof Error ? error.message : error)
+        return []
+      }),
+    ])
+    const codexRows = Array.isArray(codexResult.data) ? codexResult.data : []
+    const limit = typeof asRecord(params)?.limit === 'number' ? asRecord(params)?.limit as number : 50
+    const data = [...codexRows, ...claudeResults]
+      .sort((a, b) => readUpdatedAt(asRecord(b)?.thread) - readUpdatedAt(asRecord(a)?.thread))
+      .slice(0, limit)
+    return { ...codexResult, data }
+  }
+
   private async listModels(params: unknown): Promise<unknown> {
-    const codexResult = await this.readCodexList('model/list', params)
+    const [codexResult, claudeModels] = await Promise.all([
+      this.readCodexList('model/list', params),
+      this.claude.listModels().catch((error: unknown) => {
+        console.warn('[claude-backend] Failed to list Claude models:', error instanceof Error ? error.message : error)
+        return [] as Array<Record<string, unknown>>
+      }),
+    ])
     const codexModels = Array.isArray(codexResult.data) ? codexResult.data : []
-    let claudeModels: Array<Record<string, unknown>> = []
-    try {
-      claudeModels = await this.claude.listModels()
-    } catch (error) {
-      console.warn('[claude-backend] Failed to list Claude models:', error instanceof Error ? error.message : error)
-    }
     return { ...codexResult, data: [...codexModels, ...claudeModels] }
   }
 
@@ -115,11 +143,15 @@ export class BackendRouter<PendingRequest> implements CodexBackend<PendingReques
   }
 
   respondToServerRequest(payload: unknown): Promise<void> {
+    if (this.claude.ownsServerRequest(asRecord(payload)?.id)) return this.claude.respondToServerRequest(payload)
     return this.codex.respondToServerRequest(payload)
   }
 
   listPendingServerRequests(): PendingRequest[] {
-    return this.codex.listPendingServerRequests()
+    return [
+      ...this.codex.listPendingServerRequests(),
+      ...this.claude.listPendingServerRequests() as unknown as PendingRequest[],
+    ]
   }
 
   publishLocalNotification(method: string, params: unknown): void {

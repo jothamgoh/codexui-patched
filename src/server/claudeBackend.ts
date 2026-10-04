@@ -1,28 +1,59 @@
 import { randomUUID } from 'node:crypto'
 import { spawn } from 'node:child_process'
-import type { ChildProcessWithoutNullStreams } from 'node:child_process'
-import { access, mkdir, readdir, readFile, writeFile } from 'node:fs/promises'
+import { existsSync, statSync } from 'node:fs'
+import { mkdir, readdir, readFile, rename, stat, writeFile } from 'node:fs/promises'
+import { createRequire } from 'node:module'
 import { homedir } from 'node:os'
-import { dirname, join } from 'node:path'
+import { delimiter, dirname, join } from 'node:path'
 import type {
   AccountInfo,
   EffortLevel,
+  HookCallback,
   ModelInfo,
   Options,
   Query,
-  SDKControlGetUsageResponse,
   SDKMessage,
   SDKSessionInfo,
   SDKUserMessage,
+  SlashCommand,
+  SpawnedProcess,
+  SpawnOptions,
 } from '@anthropic-ai/claude-agent-sdk'
+import { getCodexUiChildEnv } from './envFile'
+import { spawnThroughHost } from './claudeProcessHost'
+import {
+  addUsage,
+  asRecord,
+  buildTurnsFromChain,
+  emptyUsage,
+  GOAL_CONTINUATION_TAG,
+  MY_REQUEST_MARKER,
+  parseTranscript,
+  readApiUsage,
+  readString,
+  reasoningItemId,
+  resolveMainChain,
+  rewindPointForRollback,
+  stringifyToolResult,
+  textItemId,
+  toolUseItem,
+  truncateChain,
+  type ClaudeTokenUsage,
+  type ClaudeToolUse,
+  type ClaudeTurn,
+  type ThreadItem,
+  type TranscriptEntry,
+} from './claudeTranscript'
 
 /**
  * Serves Claude Code chats through the Codex app-server protocol, so the
- * existing CodexUI frontend renders them without a separate code path.
+ * CodexUI frontend renders them with the same components as Codex chats.
  *
- * Claude chat ids are the Claude session id with a `claude-` prefix. History
- * comes from Claude Code's own transcripts via the Agent SDK; a running reply
- * is one SDK query whose input stream stays open, so steering is a push.
+ * Chat ids are the Claude session id with a `claude-` prefix. History comes
+ * from Claude Code's own transcripts, so chats started in the terminal,
+ * Remote Control or here are the same sessions. Each active chat keeps one
+ * Claude Code process with an open input stream: a message sent mid-reply
+ * steers the running turn, and the process stays warm between turns.
  */
 
 type Notification = { method: string; params: unknown }
@@ -34,8 +65,19 @@ const MODEL_PROVIDER = 'anthropic'
 const EFFORT_LEVELS: EffortLevel[] = ['low', 'medium', 'high', 'xhigh', 'max']
 const DEFAULT_MODEL_ID = 'claude-default'
 const ENCODED_MODEL_PREFIX = 'claude-model:'
-const RUNTIME_CACHE_MS = 30_000
+const SKILL_PATH_PREFIX = 'claude-command:'
+const RUNTIME_CACHE_MS = 10 * 60_000
 const USAGE_CACHE_MS = 5 * 60_000
+const LIST_CACHE_MS = 2_500
+const COMMANDS_CACHE_MS = 10 * 60_000
+const RUNNER_IDLE_MS = 15 * 60_000
+const INTERRUPT_SETTLE_MS = 8_000
+const SEARCH_FILE_LIMIT = 300
+const SEARCH_MAX_BYTES = 40 * 1024 * 1024
+const DEFAULT_CONTEXT_WINDOW = 200_000
+const SERVER_REQUEST_ID_BASE = 1_700_000_000
+const GOAL_COMPLETE_MARKER = /^\s*GOAL COMPLETE\s*$/mu
+const GOAL_BLOCKED_MARKER = /^\s*GOAL BLOCKED:?\s*(.*)$/mu
 const LEGACY_MODEL_VALUES: Record<string, string> = {
   'claude-default': 'default',
   'claude-fable': 'fable',
@@ -54,6 +96,7 @@ export type ClaudeProviderStatus = {
   plan: string | null
   authMethod: string | null
   apiProvider: string | null
+  notice?: string
 }
 
 export type ClaudeUsageLimit = {
@@ -69,6 +112,13 @@ export type ClaudeUsage = {
   notice?: string
 }
 
+export type ClaudePendingServerRequest = {
+  id: number
+  method: string
+  params: unknown
+  receivedAtIso: string
+}
+
 type ClaudeRuntimeState = {
   account: AccountInfo
   connected: boolean
@@ -77,9 +127,22 @@ type ClaudeRuntimeState = {
 
 type ClaudeLogin = {
   id: string
-  child: ChildProcessWithoutNullStreams
+  child: SpawnedChild
   completion: Promise<void>
   timer: ReturnType<typeof setTimeout>
+}
+
+type SpawnedChild = {
+  stdin: NodeJS.WritableStream
+  stdout: NodeJS.ReadableStream
+  stderr: NodeJS.ReadableStream
+  exitCode: number | null
+  killed: boolean
+  kill(signal?: NodeJS.Signals): boolean
+  on(event: 'close', listener: (code: number | null) => void): unknown
+  on(event: 'error', listener: (error: Error) => void): unknown
+  once(event: 'close', listener: (code: number | null) => void): unknown
+  once(event: 'error', listener: (error: Error) => void): unknown
 }
 
 export function isClaudeThreadId(value: unknown): value is string {
@@ -93,6 +156,10 @@ export function isClaudeModelId(value: unknown): value is string {
   )
 }
 
+export function isClaudeServerRequestId(value: unknown): value is number {
+  return typeof value === 'number' && Number.isInteger(value) && value >= SERVER_REQUEST_ID_BASE
+}
+
 function toSessionId(threadId: string): string {
   return threadId.slice(THREAD_ID_PREFIX.length)
 }
@@ -101,17 +168,7 @@ function toThreadId(sessionId: string): string {
   return `${THREAD_ID_PREFIX}${sessionId}`
 }
 
-function asRecord(value: unknown): Record<string, unknown> | null {
-  return value !== null && typeof value === 'object' && !Array.isArray(value)
-    ? value as Record<string, unknown>
-    : null
-}
-
-function readString(value: unknown): string {
-  return typeof value === 'string' ? value : ''
-}
-
-function toSeconds(ms: number | undefined): number {
+function toSeconds(ms: number | undefined | null): number {
   return Math.floor((ms ?? Date.now()) / 1000)
 }
 
@@ -253,24 +310,50 @@ export function normalizeClaudeUsage(raw: unknown, plan: string | null): ClaudeU
   return { plan: resolvedPlan, limits }
 }
 
-async function runClaudeCommand(args: string[]): Promise<void> {
-  const command = process.env.CODEXUI_CLAUDE_PATH?.trim() || 'claude'
-  await new Promise<void>((resolve, reject) => {
-    const child = spawn(command, args, {
-      env: process.env,
-      stdio: ['ignore', 'pipe', 'pipe'],
-    })
-    let errorText = ''
-    child.stderr.on('data', (chunk: Buffer) => { errorText += chunk.toString() })
-    child.on('error', reject)
-    child.on('close', (code) => {
-      if (code === 0) resolve()
-      else reject(new Error(errorText.trim() || `Claude command exited with code ${String(code)}`))
-    })
-  })
+/** The installed Claude CLI, for sign-in and sign-out. */
+function resolveClaudeExecutable(): string {
+  const configured = process.env.CODEXUI_CLAUDE_PATH?.trim()
+  if (configured) return configured
+  for (const directory of (process.env.PATH ?? '').split(delimiter)) {
+    if (!directory) continue
+    const candidate = join(directory, 'claude')
+    try {
+      if (statSync(candidate).isFile()) return candidate
+    } catch {
+      // keep looking
+    }
+  }
+  try {
+    const require = createRequire(import.meta.url)
+    const sdkDir = dirname(require.resolve('@anthropic-ai/claude-agent-sdk/package.json'))
+    const bundled = join(sdkDir, '..', `claude-agent-sdk-${process.platform}-${process.arch}`, 'claude')
+    if (existsSync(bundled)) return bundled
+  } catch {
+    // fall through
+  }
+  return 'claude'
+}
+
+/** Claude Code's project folder name for a working directory. */
+function projectDirName(cwd: string): string {
+  return cwd.replace(/[^a-zA-Z0-9]/gu, '-')
+}
+
+function claudeConfigDir(): string {
+  return process.env.CLAUDE_CONFIG_DIR || join(homedir(), '.claude')
 }
 
 // ── Persisted per-chat settings ─────────────────────────────────────────
+
+type StoredGoal = {
+  objective: string
+  status: 'active' | 'paused' | 'blocked' | 'usageLimited' | 'budgetLimited' | 'complete'
+  tokenBudget: number | null
+  tokensUsed: number
+  timeUsedSeconds: number
+  createdAt: number
+  updatedAt: number
+}
 
 type StoredThread = {
   cwd: string
@@ -278,6 +361,10 @@ type StoredThread = {
   effort: EffortLevel | null
   archived?: boolean
   createdAtMs: number
+  /** Resume the next turn at this transcript entry (a rolled-back chat). */
+  rewindAt?: string | null
+  contextWindow?: number
+  goal?: StoredGoal | null
 }
 
 type StoreFile = { threads: Record<string, StoredThread> }
@@ -313,7 +400,7 @@ class ClaudeThreadStore {
     this.writeChain = this.writeChain
       .then(async () => {
         await mkdir(dirname(this.filePath), { recursive: true })
-        await writeFile(this.filePath, snapshot, 'utf8')
+        await writeFile(this.filePath, snapshot, { encoding: 'utf8', mode: 0o600 })
       })
       .catch((error) => {
         console.warn('[claude-backend] Failed to save chat settings:', error instanceof Error ? error.message : error)
@@ -322,206 +409,77 @@ class ClaudeThreadStore {
   }
 }
 
-// ── Transcript → Codex thread items ─────────────────────────────────────
+// ── Transcripts ─────────────────────────────────────────────────────────
 
-type ToolUse = { id: string; name: string; input: Record<string, unknown> }
-type ToolResult = { text: string; isError: boolean }
-
-function stringifyToolResult(content: unknown): string {
-  if (typeof content === 'string') return content
-  if (!Array.isArray(content)) return ''
-  return content
-    .map((block) => {
-      const record = asRecord(block)
-      return record?.type === 'text' ? readString(record.text) : ''
-    })
-    .filter(Boolean)
-    .join('\n')
+type ParsedTranscript = {
+  mtimeMs: number
+  size: number
+  entries: TranscriptEntry[]
+  chain: TranscriptEntry[]
+  title: string
+  firstPrompt: string
+  createdAtMs: number | null
 }
 
-function summarizeToolInput(name: string, input: Record<string, unknown>): string {
-  const candidates = [input.file_path, input.path, input.pattern, input.url, input.query, input.description, input.prompt]
-  for (const candidate of candidates) {
-    if (typeof candidate === 'string' && candidate.trim()) return candidate.trim().split('\n')[0].slice(0, 200)
-  }
-  return name
-}
-
-function toToolItem(tool: ToolUse, cwd: string, result: ToolResult | null): Record<string, unknown> {
-  const status = result ? (result.isError ? 'failed' : 'completed') : 'inProgress'
-  if (tool.name === 'Bash') {
-    return {
-      type: 'commandExecution',
-      id: tool.id,
-      command: readString(tool.input.command),
-      cwd,
-      status,
-      aggregatedOutput: result?.text ?? '',
-      exitCode: result ? (result.isError ? 1 : 0) : null,
+function readTitle(entries: TranscriptEntry[]): { title: string; firstPrompt: string; createdAtMs: number | null } {
+  let customTitle = ''
+  let aiTitle = ''
+  let firstPrompt = ''
+  let createdAtMs: number | null = null
+  for (const entry of entries) {
+    if (entry.type === 'custom-title' && typeof entry.customTitle === 'string') customTitle = entry.customTitle
+    else if (entry.type === 'ai-title' && typeof entry.aiTitle === 'string') aiTitle = entry.aiTitle
+    else if (entry.type === 'summary' && typeof entry.summary === 'string' && !aiTitle) aiTitle = entry.summary
+    if (createdAtMs === null && typeof entry.timestamp === 'string') {
+      const parsed = Date.parse(entry.timestamp)
+      if (Number.isFinite(parsed)) createdAtMs = parsed
+    }
+    if (!firstPrompt && entry.type === 'user' && entry.isMeta !== true) {
+      const content = asRecord(entry.message)?.content
+      const text = typeof content === 'string'
+        ? content
+        : Array.isArray(content)
+          ? content.map((block) => readString(asRecord(block)?.text)).filter(Boolean).join('\n')
+          : ''
+      const request = text.split(MY_REQUEST_MARKER).at(-1) ?? text
+      if (request.trim() && !request.includes('<local-command')) firstPrompt = request.trim().slice(0, 300)
     }
   }
-  return {
-    type: 'mcpToolCall',
-    id: tool.id,
-    // The tool row shows `server` as its detail line, so carry what the tool
-    // acted on there rather than a server name Claude tools do not have.
-    server: summarizeToolInput(tool.name, tool.input),
-    tool: tool.name,
-    arguments: tool.input,
-    status,
-    result: result && !result.isError ? { content: [{ type: 'text', text: result.text }] } : null,
-    error: result?.isError ? { message: result.text } : null,
-  }
-}
-
-function textItemId(messageId: string, textIndex: number): string {
-  return `${messageId}:text:${String(textIndex)}`
-}
-
-/** Text a user typed, as opposed to tool results Claude Code files as user turns. */
-function readUserText(content: unknown): string | null {
-  if (typeof content === 'string') return content
-  if (!Array.isArray(content)) return null
-  const texts = content
-    .map((block) => asRecord(block))
-    .filter((block) => block?.type === 'text')
-    .map((block) => readString(block?.text))
-  return texts.length > 0 ? texts.join('\n') : null
-}
-
-type TranscriptMessage = { type: string; uuid: string; message: unknown; parent_tool_use_id: string | null }
-type SteerMessage = { id: string; text: string }
-
-/**
- * Messages sent mid-reply, keyed by the transcript entry they followed. Claude
- * Code files them as `queued_command` attachments, which the SDK's message
- * reader leaves out, so they are read from the transcript file directly.
- */
-export function readSteerMessages(transcript: string): Map<string, SteerMessage[]> {
-  const steers = new Map<string, SteerMessage[]>()
-  for (const line of transcript.split('\n')) {
-    if (!line.includes('"queued_command"')) continue
-    let entry: Record<string, unknown> | null = null
-    try {
-      entry = asRecord(JSON.parse(line))
-    } catch {
-      continue
-    }
-    const attachment = asRecord(entry?.attachment)
-    if (entry?.type !== 'attachment' || attachment?.type !== 'queued_command') continue
-    const text = readUserText(attachment.prompt)
-    const parentUuid = readString(entry.parentUuid)
-    if (!text || !parentUuid) continue
-    const list = steers.get(parentUuid) ?? []
-    list.push({ id: readString(entry.uuid) || `${parentUuid}:steer:${String(list.length)}`, text })
-    steers.set(parentUuid, list)
-  }
-  return steers
-}
-
-export function buildTurnsFromTranscript(
-  messages: TranscriptMessage[],
-  cwd: string,
-  steers: Map<string, SteerMessage[]> = new Map(),
-): Array<{ id: string; items: Record<string, unknown>[]; status: string; error: null }> {
-  const turns: Array<{ id: string; items: Record<string, unknown>[]; status: string; error: null }> = []
-  const toolResults = new Map<string, ToolResult>()
-  const textCounts = new Map<string, number>()
-
-  for (const entry of messages) {
-    const message = asRecord(entry.message)
-    if (entry.type !== 'user' || !Array.isArray(message?.content)) continue
-    for (const block of message.content) {
-      const record = asRecord(block)
-      if (record?.type !== 'tool_result') continue
-      toolResults.set(readString(record.tool_use_id), {
-        text: stringifyToolResult(record.content),
-        isError: record.is_error === true,
-      })
-    }
-  }
-
-  const appendEntry = (entry: TranscriptMessage, message: Record<string, unknown>): void => {
-    if (entry.type === 'user') {
-      const text = readUserText(message.content)
-      if (text === null) return
-      turns.push({
-        id: entry.uuid,
-        status: 'completed',
-        error: null,
-        items: [{ type: 'userMessage', id: entry.uuid, content: [{ type: 'text', text }] }],
-      })
-      return
-    }
-
-    if (entry.type !== 'assistant' || !Array.isArray(message.content)) return
-    if (turns.length === 0) {
-      turns.push({ id: `${entry.uuid}:turn`, status: 'completed', error: null, items: [] })
-    }
-    const turn = turns[turns.length - 1]
-    const messageId = readString(message.id) || entry.uuid
-    for (const block of message.content) {
-      const record = asRecord(block)
-      if (record?.type === 'text') {
-        const index = textCounts.get(messageId) ?? 0
-        textCounts.set(messageId, index + 1)
-        const text = readString(record.text)
-        if (text.trim()) turn.items.push({ type: 'agentMessage', id: textItemId(messageId, index), text })
-      } else if (record?.type === 'tool_use') {
-        const tool: ToolUse = {
-          id: readString(record.id),
-          name: readString(record.name),
-          input: asRecord(record.input) ?? {},
-        }
-        turn.items.push(toToolItem(tool, cwd, toolResults.get(tool.id) ?? null))
-      }
-    }
-  }
-
-  for (const entry of messages) {
-    if (entry.parent_tool_use_id) continue
-    const message = asRecord(entry.message)
-    if (!message) continue
-    appendEntry(entry, message)
-    const turn = turns[turns.length - 1]
-    for (const steer of steers.get(entry.uuid) ?? []) {
-      turn?.items.push({ type: 'userMessage', id: steer.id, content: [{ type: 'text', text: steer.text }] })
-    }
-  }
-
-  return turns
-}
-
-const transcriptPaths = new Map<string, string>()
-
-/** Claude Code stores each chat as `<config>/projects/<encoded cwd>/<session id>.jsonl`. */
-async function findTranscriptPath(sessionId: string): Promise<string | null> {
-  const cached = transcriptPaths.get(sessionId)
-  if (cached) return cached
-  const projectsDir = join(process.env.CLAUDE_CONFIG_DIR || join(homedir(), '.claude'), 'projects')
-  const dirs = await readdir(projectsDir).catch(() => [] as string[])
-  for (const dir of dirs) {
-    const candidate = join(projectsDir, dir, `${sessionId}.jsonl`)
-    if (await access(candidate).then(() => true, () => false)) {
-      transcriptPaths.set(sessionId, candidate)
-      return candidate
-    }
-  }
-  return null
+  return { title: customTitle || aiTitle, firstPrompt, createdAtMs }
 }
 
 // ── Live turns ──────────────────────────────────────────────────────────
 
 type LiveTurn = {
   turnId: string
-  query: Query
-  push: (message: SDKUserMessage) => boolean
-  release: () => void
+  threadId: string
+  sessionId: string
+  cwd: string
+  startedAtMs: number
   interrupted: boolean
+  userMessage: SDKUserMessage | null
+  tools: Map<string, ClaudeToolUse>
+  textCounts: Map<string, number>
+  reasoningCounts: Map<string, number>
+  streamItems: Map<number, { type: 'text' | 'thinking'; itemId: string }>
+  finalCounts: Map<string, number>
+  usageMessageIds: Set<string>
+  currentMessageId: string
+  lastAgentText: string
+  lastAgentItemId: string
+  usage: ClaudeTokenUsage
+  goalContinuation: boolean
+  settled: boolean
 }
 
-function createInputStream(first: SDKUserMessage) {
-  const pending: SDKUserMessage[] = [first]
+type InputStream = {
+  stream: AsyncGenerator<SDKUserMessage>
+  push: (message: SDKUserMessage) => boolean
+  release: () => void
+}
+
+function createInputStream(): InputStream {
+  const pending: SDKUserMessage[] = []
   let released = false
   let wake: (() => void) | null = null
   const notify = () => {
@@ -543,7 +501,7 @@ function createInputStream(first: SDKUserMessage) {
 
   return {
     stream: stream(),
-    push(message: SDKUserMessage): boolean {
+    push(message) {
       if (released) return false
       pending.push(message)
       notify()
@@ -556,23 +514,81 @@ function createInputStream(first: SDKUserMessage) {
   }
 }
 
-type UserContentBlock = Exclude<SDKUserMessage['message']['content'], string>[number]
+type SessionRunner = {
+  sessionId: string
+  threadId: string
+  cwd: string
+  settingsKey: string
+  query: Query
+  input: InputStream
+  activeTurn: LiveTurn | null
+  pushedCommands: Map<string, SDKUserMessage>
+  idleTimer: ReturnType<typeof setTimeout> | null
+  interruptTimer: ReturnType<typeof setTimeout> | null
+  totalUsage: ClaudeTokenUsage
+  contextWindow: number
+  closed: boolean
+}
 
-function buildUserMessage(input: unknown, sessionId: string): SDKUserMessage | null {
+type UserContentBlock = Exclude<SDKUserMessage['message']['content'], string>[number]
+type ImageMediaType = 'image/png' | 'image/jpeg' | 'image/gif' | 'image/webp'
+
+const IMAGE_TYPES: Record<string, ImageMediaType> = {
+  png: 'image/png',
+  jpg: 'image/jpeg',
+  jpeg: 'image/jpeg',
+  gif: 'image/gif',
+  webp: 'image/webp',
+}
+
+async function readImageBlock(url: string): Promise<UserContentBlock | null> {
+  const dataUrl = url.match(/^data:(image\/(?:png|jpeg|gif|webp));base64,(.+)$/u)
+  if (dataUrl) {
+    return { type: 'image', source: { type: 'base64', media_type: dataUrl[1] as ImageMediaType, data: dataUrl[2] ?? '' } }
+  }
+  const path = url.startsWith('file://') ? decodeURIComponent(url.slice('file://'.length)) : url
+  if (!path.startsWith('/')) return null
+  const mediaType = IMAGE_TYPES[path.split('.').at(-1)?.toLowerCase() ?? '']
+  if (!mediaType) return null
+  try {
+    const data = await readFile(path)
+    return { type: 'image', source: { type: 'base64', media_type: mediaType, data: data.toString('base64') } }
+  } catch {
+    return null
+  }
+}
+
+/** Composer input in Codex shape, as one Claude user message. */
+async function buildUserMessage(input: unknown, sessionId: string): Promise<SDKUserMessage | null> {
   const blocks = Array.isArray(input) ? input : []
-  const content: UserContentBlock[] = []
+  const texts: string[] = []
+  const images: UserContentBlock[] = []
+  const commands: string[] = []
   for (const block of blocks) {
     const record = asRecord(block)
-    if (record?.type === 'text' && readString(record.text)) {
-      content.push({ type: 'text', text: readString(record.text) })
-    }
-    const url = readString(record?.url)
-    const dataUrl = record?.type === 'image' ? url.match(/^data:(image\/(?:png|jpeg|gif|webp));base64,(.+)$/u) : null
-    if (dataUrl) {
-      const mediaType = dataUrl[1] as 'image/png' | 'image/jpeg' | 'image/gif' | 'image/webp'
-      content.push({ type: 'image', source: { type: 'base64', media_type: mediaType, data: dataUrl[2] } })
+    if (!record) continue
+    if (record.type === 'text' && readString(record.text)) texts.push(readString(record.text))
+    else if (record.type === 'image' || record.type === 'localImage') {
+      const image = await readImageBlock(readString(record.url) || readString(record.path))
+      if (image) images.push(image)
+    } else if (record.type === 'skill') {
+      const path = readString(record.path)
+      const name = path.startsWith(SKILL_PATH_PREFIX) ? path.slice(SKILL_PATH_PREFIX.length) : readString(record.name)
+      if (name && !commands.includes(name)) commands.push(name.replace(/^\//u, ''))
     }
   }
+  let text = texts.join('\n')
+    .replace(/my request for codex/giu, 'My request for Claude')
+    .replace(/from an earlier Codex response/giu, 'from an earlier response')
+  if (commands.length > 0 && !text.trimStart().startsWith('/')) {
+    // A selected skill runs the way the CLI runs it: as the leading slash command.
+    const [first, ...rest] = commands
+    const extra = rest.length > 0 ? `\n\nAlso use these skills: ${rest.map((name) => `/${name}`).join(', ')}` : ''
+    text = `/${first ?? ''} ${text}${extra}`.trim()
+  }
+  const content: UserContentBlock[] = []
+  if (text.trim()) content.push({ type: 'text', text })
+  content.push(...images)
   if (content.length === 0) return null
   return {
     type: 'user',
@@ -583,19 +599,47 @@ function buildUserMessage(input: unknown, sessionId: string): SDKUserMessage | n
   }
 }
 
+function turnError(message: string) {
+  return { message, codexErrorInfo: null, additionalDetails: null }
+}
+
+function toCodexUsage(usage: ClaudeTokenUsage): Record<string, number> {
+  return { ...usage }
+}
+
+type QuestionRequest = {
+  pending: ClaudePendingServerRequest
+  questions: Array<{ id: string; text: string }>
+  resolve: (answers: Record<string, string> | null) => void
+}
+
 // ── Backend ─────────────────────────────────────────────────────────────
+
+export type ClaudeBackendOptions = {
+  /** Spawn Claude Code through a login-session host listening here. */
+  hostSocketPath?: string
+}
 
 export class ClaudeBackend {
   private sdkPromise: Promise<SdkModule> | null = null
   private readonly listeners = new Set<NotificationListener>()
-  private readonly liveTurns = new Map<string, LiveTurn>()
+  private readonly runners = new Map<string, SessionRunner>()
   private readonly store: ClaudeThreadStore
+  private readonly hostSocketPath: string
   private runtimeCache: { at: number; value: ClaudeRuntimeState } | null = null
+  private runtimePending: Promise<ClaudeRuntimeState> | null = null
   private usageCache: { at: number; value: ClaudeUsage } | null = null
+  private listCache: { at: number; key: string; value: Promise<SDKSessionInfo[]> } | null = null
+  private readonly commandsCache = new Map<string, { at: number; value: Promise<SlashCommand[]> }>()
+  private readonly transcriptPaths = new Map<string, string>()
+  private readonly transcriptCache = new Map<string, ParsedTranscript>()
+  private readonly questions = new Map<number, QuestionRequest>()
+  private nextRequestId = SERVER_REQUEST_ID_BASE
   private login: ClaudeLogin | null = null
 
-  constructor(storeFilePath: string) {
+  constructor(storeFilePath: string, options: ClaudeBackendOptions = {}) {
     this.store = new ClaudeThreadStore(storeFilePath)
+    this.hostSocketPath = options.hostSocketPath?.trim() ?? ''
   }
 
   private sdk(): Promise<SdkModule> {
@@ -603,31 +647,87 @@ export class ClaudeBackend {
     return this.sdkPromise
   }
 
-  private queryOptions(): Options {
-    return {
-      cwd: process.cwd(),
-      permissionMode: 'dontAsk',
+  // ── Processes ──
+
+  private spawnChild(command: string, args: string[], options: { cwd?: string; env: NodeJS.ProcessEnv; signal?: AbortSignal }): SpawnedChild {
+    if (this.hostSocketPath) {
+      return spawnThroughHost(this.hostSocketPath, {
+        command,
+        args,
+        cwd: options.cwd,
+        env: options.env as Record<string, string | undefined>,
+      }, options.signal)
+    }
+    return spawn(command, args, {
+      cwd: options.cwd,
+      env: options.env,
+      stdio: ['pipe', 'pipe', 'pipe'],
+      ...(options.signal ? { signal: options.signal } : {}),
+    })
+  }
+
+  private baseOptions(cwd?: string): Options {
+    const options: Options = {
+      cwd: cwd || homedir(),
+      env: getCodexUiChildEnv(),
       settingSources: ['user', 'project', 'local'],
       ...(process.env.CODEXUI_CLAUDE_PATH ? { pathToClaudeCodeExecutable: process.env.CODEXUI_CLAUDE_PATH } : {}),
     }
+    if (this.hostSocketPath) {
+      options.spawnClaudeCodeProcess = (spawnOptions: SpawnOptions): SpawnedProcess =>
+        spawnThroughHost(this.hostSocketPath, {
+          command: spawnOptions.command,
+          args: spawnOptions.args,
+          cwd: spawnOptions.cwd,
+          env: spawnOptions.env,
+        }, spawnOptions.signal) as unknown as SpawnedProcess
+    }
+    return options
   }
 
+  private async runClaudeCommand(args: string[]): Promise<void> {
+    const child = this.spawnChild(resolveClaudeExecutable(), args, { env: getCodexUiChildEnv() })
+    child.stdin.end()
+    await new Promise<void>((resolve, reject) => {
+      let errorText = ''
+      child.stderr.on('data', (chunk: Buffer) => { errorText += chunk.toString() })
+      child.once('error', reject)
+      child.once('close', (code) => {
+        if (code === 0) resolve()
+        else reject(new Error(errorText.trim() || `Claude command exited with code ${String(code)}`))
+      })
+    })
+  }
+
+  // ── Runtime metadata ──
+
   private async readRuntime(force = false): Promise<ClaudeRuntimeState> {
-    if (!force && this.runtimeCache && Date.now() - this.runtimeCache.at < RUNTIME_CACHE_MS) {
-      return this.runtimeCache.value
-    }
-    const { query } = await this.sdk()
-    const runtimeQuery = query({ prompt: emptyInput(), options: this.queryOptions() })
+    const cached = this.runtimeCache
+    if (!force && cached && Date.now() - cached.at < RUNTIME_CACHE_MS) return cached.value
+    if (this.runtimePending) return this.runtimePending
+    const pending = (async () => {
+      const { query } = await this.sdk()
+      const runtimeQuery = query({ prompt: emptyInput(), options: this.baseOptions() })
+      try {
+        const [models, account] = await Promise.race([
+          Promise.all([runtimeQuery.supportedModels(), runtimeQuery.accountInfo()]),
+          rejectAfter(45_000, 'Claude Code did not respond.'),
+        ])
+        const value = { account, connected: isClaudeConnected(account), models }
+        this.runtimeCache = { at: Date.now(), value }
+        return value
+      } finally {
+        runtimeQuery.close()
+      }
+    })()
+    this.runtimePending = pending
     try {
-      const [models, account] = await Promise.all([
-        runtimeQuery.supportedModels(),
-        runtimeQuery.accountInfo(),
-      ])
-      const value = { account, connected: isClaudeConnected(account), models }
-      this.runtimeCache = { at: Date.now(), value }
-      return value
+      return await pending
+    } catch (error) {
+      if (cached) return cached.value
+      throw error
     } finally {
-      runtimeQuery.close()
+      if (this.runtimePending === pending) this.runtimePending = null
     }
   }
 
@@ -648,19 +748,22 @@ export class ClaudeBackend {
   }
 
   async readUsage(force = false): Promise<ClaudeUsage | null> {
-    const runtime = await this.readRuntime(force)
+    const runtime = await this.readRuntime()
     if (!runtime.connected || runtime.account.apiProvider !== 'firstParty') return null
     if (!force && this.usageCache && Date.now() - this.usageCache.at < USAGE_CACHE_MS) {
       return this.usageCache.value
     }
     const { query } = await this.sdk()
-    const usageQuery = query({ prompt: emptyInput(), options: this.queryOptions() })
+    const usageQuery = query({ prompt: emptyInput(), options: this.baseOptions() })
     try {
-      const response = await usageQuery.usage_EXPERIMENTAL_MAY_CHANGE_DO_NOT_RELY_ON_THIS_API_YET({ skipBehaviors: true })
-      const value = normalizeClaudeUsage(response satisfies SDKControlGetUsageResponse, runtime.account.subscriptionType ?? null)
+      const response = await Promise.race([
+        usageQuery.usage_EXPERIMENTAL_MAY_CHANGE_DO_NOT_RELY_ON_THIS_API_YET({ skipBehaviors: true }),
+        rejectAfter(45_000, 'Claude usage did not respond.'),
+      ])
+      const value = normalizeClaudeUsage(response, runtime.account.subscriptionType ?? null)
       this.usageCache = { at: Date.now(), value }
       return value
-    } catch (error) {
+    } catch {
       if (this.usageCache) {
         const age = Math.max(1, Math.round((Date.now() - this.usageCache.at) / 60_000))
         return { ...this.usageCache.value, notice: `Claude usage refresh failed. Showing data from ${String(age)} min ago.` }
@@ -675,15 +778,55 @@ export class ClaudeBackend {
     }
   }
 
+  async listModels(): Promise<Record<string, unknown>[]> {
+    const runtime = await this.readRuntime()
+    return runtime.connected ? runtime.models.map(runtimeModel) : []
+  }
+
+  /** Claude Code's skills and slash commands for a folder, as composer skills. */
+  async listSkills(cwd: string): Promise<Record<string, unknown>> {
+    const key = cwd || homedir()
+    const cached = this.commandsCache.get(key)
+    let pending = cached && Date.now() - cached.at < COMMANDS_CACHE_MS ? cached.value : null
+    if (!pending) {
+      pending = (async () => {
+        const { query } = await this.sdk()
+        const commandsQuery = query({ prompt: emptyInput(), options: this.baseOptions(existsSync(key) ? key : undefined) })
+        try {
+          return await Promise.race([commandsQuery.supportedCommands(), rejectAfter(45_000, 'Claude Code did not list its commands.')])
+        } finally {
+          commandsQuery.close()
+        }
+      })()
+      this.commandsCache.set(key, { at: Date.now(), value: pending })
+      pending.catch(() => this.commandsCache.delete(key))
+    }
+    const commands = await pending
+    return {
+      data: [{
+        cwd: key,
+        skills: commands.map((command) => ({
+          name: command.name,
+          description: command.description || command.argumentHint || '',
+          shortDescription: command.description || '',
+          path: `${SKILL_PATH_PREFIX}${command.name}`,
+          scope: 'user',
+          enabled: true,
+        })),
+        errors: [],
+      }],
+    }
+  }
+
+  // ── Sign-in ──
+
   async startLogin(): Promise<{ loginId: string; authUrl: string }> {
     this.cancelLogin()
-    const command = process.env.CODEXUI_CLAUDE_PATH?.trim() || 'claude'
-    const child = spawn(command, ['auth', 'login', '--claudeai'], {
+    const child = this.spawnChild(resolveClaudeExecutable(), ['auth', 'login', '--claudeai'], {
       env: {
-        ...process.env,
+        ...getCodexUiChildEnv(),
         ...(process.platform === 'win32' ? {} : { BROWSER: '/usr/bin/false' }),
       },
-      stdio: ['pipe', 'pipe', 'pipe'],
     })
     let output = ''
     let resolveUrl: ((url: string) => void) | null = null
@@ -766,10 +909,12 @@ export class ClaudeBackend {
 
   async logout(): Promise<void> {
     this.cancelLogin()
-    await runClaudeCommand(['auth', 'logout'])
+    await this.runClaudeCommand(['auth', 'logout'])
     this.runtimeCache = null
     this.usageCache = null
   }
+
+  // ── Notifications ──
 
   onNotification(listener: NotificationListener): () => void {
     this.listeners.add(listener)
@@ -777,75 +922,245 @@ export class ClaudeBackend {
   }
 
   private emit(method: string, params: unknown): void {
-    for (const listener of this.listeners) listener({ method, params })
+    for (const listener of this.listeners) {
+      try {
+        listener({ method, params })
+      } catch (error) {
+        console.warn('[claude-backend] Notification listener failed:', error instanceof Error ? error.message : error)
+      }
+    }
   }
 
-  async listModels(): Promise<Record<string, unknown>[]> {
-    const runtime = await this.readRuntime()
-    return runtime.connected ? runtime.models.map(runtimeModel) : []
+  // ── Sessions and transcripts ──
+
+  private async listAllSessions(): Promise<SDKSessionInfo[]> {
+    const store = await this.store.read()
+    const key = String(Object.keys(store.threads).length)
+    if (this.listCache && this.listCache.key === key && Date.now() - this.listCache.at < LIST_CACHE_MS) {
+      return this.listCache.value
+    }
+    const value = (async () => {
+      const { listSessions } = await this.sdk()
+      // Match the CLI's own /resume list: interactive sessions, plus the
+      // programmatic sessions this app started. Other tools' headless runs stay out.
+      const [interactive, everything] = await Promise.all([
+        listSessions({ includeProgrammatic: false }),
+        listSessions({ includeProgrammatic: true }),
+      ])
+      const byId = new Map(interactive.map((info) => [info.sessionId, info]))
+      for (const info of everything) {
+        if (!byId.has(info.sessionId) && store.threads[info.sessionId]) byId.set(info.sessionId, info)
+      }
+      return [...byId.values()].sort((a, b) => b.lastModified - a.lastModified)
+    })()
+    this.listCache = { at: Date.now(), key, value }
+    value.catch(() => { if (this.listCache?.value === value) this.listCache = null })
+    return value
   }
 
-  private async toThread(sessionId: string, info: SDKSessionInfo | undefined, turns: unknown[] = []) {
-    const stored = await this.store.get(sessionId)
-    const name = info?.customTitle || info?.summary || ''
+  private invalidateList(): void {
+    this.listCache = null
+  }
+
+  /** Claude Code stores each chat as `<config>/projects/<encoded cwd>/<session id>.jsonl`. */
+  private async findTranscriptPath(sessionId: string, cwdHint = ''): Promise<string | null> {
+    const cached = this.transcriptPaths.get(sessionId)
+    if (cached && existsSync(cached)) return cached
+    const projectsDir = join(claudeConfigDir(), 'projects')
+    if (cwdHint) {
+      const direct = join(projectsDir, projectDirName(cwdHint), `${sessionId}.jsonl`)
+      if (existsSync(direct)) {
+        this.transcriptPaths.set(sessionId, direct)
+        return direct
+      }
+    }
+    const dirs = await readdir(projectsDir).catch(() => [] as string[])
+    for (const dir of dirs) {
+      const candidate = join(projectsDir, dir, `${sessionId}.jsonl`)
+      if (existsSync(candidate)) {
+        this.transcriptPaths.set(sessionId, candidate)
+        return candidate
+      }
+    }
+    return null
+  }
+
+  private async readTranscript(sessionId: string, cwdHint = ''): Promise<ParsedTranscript | null> {
+    const path = await this.findTranscriptPath(sessionId, cwdHint)
+    if (!path) return null
+    const info = await stat(path).catch(() => null)
+    if (!info) return null
+    const cached = this.transcriptCache.get(path)
+    if (cached && cached.mtimeMs === info.mtimeMs && cached.size === info.size) return cached
+    const entries = parseTranscript(await readFile(path, 'utf8'))
+    const { title, firstPrompt, createdAtMs } = readTitle(entries)
+    const parsed: ParsedTranscript = {
+      mtimeMs: info.mtimeMs,
+      size: info.size,
+      entries,
+      chain: resolveMainChain(entries),
+      title,
+      firstPrompt,
+      createdAtMs,
+    }
+    this.transcriptCache.set(path, parsed)
+    if (this.transcriptCache.size > 24) {
+      const oldest = this.transcriptCache.keys().next().value
+      if (oldest !== undefined) this.transcriptCache.delete(oldest)
+    }
+    return parsed
+  }
+
+  private liveTurnFor(sessionId: string): LiveTurn | null {
+    return this.runners.get(sessionId)?.activeTurn ?? null
+  }
+
+  private threadPayload(
+    sessionId: string,
+    meta: { name: string; preview: string; cwd: string; createdAtMs: number | null; updatedAtMs: number | null },
+    turns: unknown[] = [],
+  ): Record<string, unknown> {
     return {
       id: toThreadId(sessionId),
-      preview: info?.firstPrompt || name,
-      name: name || null,
+      preview: meta.preview || meta.name,
+      name: meta.name || null,
       modelProvider: MODEL_PROVIDER,
-      createdAt: toSeconds(info?.createdAt ?? stored?.createdAtMs ?? info?.lastModified),
-      updatedAt: toSeconds(info?.lastModified ?? stored?.createdAtMs),
+      createdAt: toSeconds(meta.createdAtMs ?? meta.updatedAtMs),
+      updatedAt: toSeconds(meta.updatedAtMs ?? meta.createdAtMs),
       path: null,
-      cwd: info?.cwd || stored?.cwd || '',
+      cwd: meta.cwd,
       cliVersion: 'claude-code',
       source: 'cli',
       gitInfo: null,
-      status: { type: this.liveTurns.has(sessionId) ? 'active' : 'idle' },
+      status: { type: this.liveTurnFor(sessionId) ? 'active' : 'idle' },
       turns,
     }
+  }
+
+  private async threadFromInfo(info: SDKSessionInfo): Promise<Record<string, unknown>> {
+    const stored = await this.store.get(info.sessionId)
+    const name = info.customTitle || info.summary || ''
+    return this.threadPayload(info.sessionId, {
+      name,
+      preview: info.firstPrompt || name,
+      cwd: info.cwd || stored?.cwd || '',
+      createdAtMs: info.createdAt ?? stored?.createdAtMs ?? null,
+      updatedAtMs: info.lastModified,
+    })
   }
 
   async listThreads(params: unknown): Promise<Record<string, unknown>[]> {
     const request = asRecord(params)
     const limit = typeof request?.limit === 'number' ? request.limit : 100
     const wantArchived = request?.archived === true
-    const { listSessions } = await this.sdk()
-    const [sessions, store] = await Promise.all([listSessions({ limit: limit * 2 }), this.store.read()])
-    const threads = []
+    const [sessions, store] = await Promise.all([this.listAllSessions(), this.store.read()])
+    const threads: Record<string, unknown>[] = []
+    const seen = new Set<string>()
     for (const info of sessions) {
       if ((store.threads[info.sessionId]?.archived === true) !== wantArchived) continue
-      threads.push(await this.toThread(info.sessionId, info))
+      seen.add(info.sessionId)
+      threads.push(await this.threadFromInfo(info))
       if (threads.length >= limit) break
+    }
+    // A chat started here has no transcript until Claude writes its first entry.
+    for (const [sessionId, stored] of Object.entries(store.threads)) {
+      if (seen.has(sessionId) || stored.archived === true || wantArchived || !this.liveTurnFor(sessionId)) continue
+      threads.push(this.threadPayload(sessionId, {
+        name: '', preview: '', cwd: stored.cwd, createdAtMs: stored.createdAtMs, updatedAtMs: Date.now(),
+      }))
     }
     return threads
   }
 
+  async searchThreads(params: unknown): Promise<Array<{ thread: Record<string, unknown>; snippet: string }>> {
+    const request = asRecord(params)
+    const term = readString(request?.searchTerm).trim().toLowerCase()
+    const limit = typeof request?.limit === 'number' ? request.limit : 50
+    if (!term) return []
+    const [sessions, store] = await Promise.all([this.listAllSessions(), this.store.read()])
+    const results: Array<{ thread: Record<string, unknown>; snippet: string }> = []
+    for (const info of sessions.slice(0, SEARCH_FILE_LIMIT)) {
+      if (store.threads[info.sessionId]?.archived === true) continue
+      const title = `${info.customTitle ?? ''} ${info.summary} ${info.firstPrompt ?? ''}`
+      let snippet = title.toLowerCase().includes(term) ? (info.firstPrompt || info.summary) : ''
+      if (!snippet) snippet = await this.searchTranscriptText(info, term)
+      if (!snippet) continue
+      results.push({ thread: await this.threadFromInfo(info), snippet })
+      if (results.length >= limit) break
+    }
+    return results
+  }
+
+  private async searchTranscriptText(info: SDKSessionInfo, term: string): Promise<string> {
+    if ((info.fileSize ?? 0) > SEARCH_MAX_BYTES) return ''
+    const path = await this.findTranscriptPath(info.sessionId, info.cwd ?? '')
+    if (!path) return ''
+    const raw = await readFile(path, 'utf8').catch(() => '')
+    if (!raw.toLowerCase().includes(term)) return ''
+    for (const entry of parseTranscript(raw)) {
+      if ((entry.type !== 'user' && entry.type !== 'assistant') || entry.isMeta === true) continue
+      const content = asRecord(entry.message)?.content
+      const text = typeof content === 'string'
+        ? content
+        : Array.isArray(content)
+          ? content.map((block) => {
+            const record = asRecord(block)
+            return record?.type === 'text' ? readString(record.text) : ''
+          }).join('\n')
+          : ''
+      const index = text.toLowerCase().indexOf(term)
+      if (index < 0) continue
+      const start = Math.max(0, index - 100)
+      return `${start > 0 ? '…' : ''}${text.slice(start, index + term.length + 160).replace(/\s+/gu, ' ').trim()}`
+    }
+    return ''
+  }
+
+  // ── RPC ──
+
   async rpc(method: string, params: unknown): Promise<unknown> {
     const request = asRecord(params) ?? {}
+    const threadId = readString(request.threadId)
     switch (method) {
       case 'thread/start':
         return this.startThread(request)
       case 'thread/read':
-        return { thread: await this.readThread(readString(request.threadId), request.includeTurns === true) }
+        return { thread: await this.readThread(threadId, request.includeTurns === true) }
+      case 'thread/turns/list':
+        return { data: asRecord(await this.readThread(threadId, true))?.turns ?? [], nextCursor: null }
       case 'thread/resume':
-        return this.resumeThread(readString(request.threadId))
+        return this.resumeThread(threadId)
       case 'turn/start':
       case 'turn/steer':
         return this.startTurn(request)
       case 'turn/interrupt':
-        return this.interrupt(readString(request.threadId))
+        return this.interrupt(threadId)
       case 'thread/name/set':
-        return this.setName(readString(request.threadId), readString(request.name))
+        return this.setName(threadId, readString(request.name))
       case 'thread/archive':
-        await this.store.update(toSessionId(readString(request.threadId)), { archived: true })
+        await this.store.update(toSessionId(threadId), { archived: true })
+        this.invalidateList()
+        this.emit('thread/archived', { threadId })
         return {}
       case 'thread/unarchive':
-        await this.store.update(toSessionId(readString(request.threadId)), { archived: false })
+        await this.store.update(toSessionId(threadId), { archived: false })
+        this.invalidateList()
+        this.emit('thread/unarchived', { threadId })
+        return {}
+      case 'thread/fork':
+        return this.forkThread(request)
+      case 'thread/rollback':
+        return this.rollbackThread(threadId, typeof request.numTurns === 'number' ? request.numTurns : 0)
+      case 'thread/unsubscribe':
         return {}
       case 'thread/goal/get':
-        return { goal: null }
+        return { goal: await this.readGoal(threadId) }
+      case 'thread/goal/set':
+        return { goal: await this.setGoal(threadId, request) }
+      case 'thread/goal/clear':
+        return { cleared: await this.clearGoal(threadId) }
       default:
-        throw new Error(`${method} is not available for Claude chats yet.`)
+        throw new Error(`${method} is not available for Claude chats.`)
     }
   }
 
@@ -872,13 +1187,10 @@ export class ClaudeBackend {
   private async startThread(request: Record<string, unknown>): Promise<unknown> {
     const sessionId = randomUUID()
     const { model, effort } = await this.executionSettings(request.model, request.effort)
-    const stored = await this.store.update(sessionId, {
-      cwd: readString(request.cwd) || process.cwd(),
-      model,
-      effort,
-      createdAtMs: Date.now(),
-    })
-    const thread = await this.toThread(sessionId, undefined)
+    const cwd = readString(request.cwd) || homedir()
+    const stored = await this.store.update(sessionId, { cwd, model, effort, createdAtMs: Date.now() })
+    this.invalidateList()
+    const thread = this.threadPayload(sessionId, { name: '', preview: '', cwd, createdAtMs: stored.createdAtMs, updatedAtMs: stored.createdAtMs })
     this.emit('thread/started', { thread })
     return this.threadConfigResponse(thread, stored)
   }
@@ -895,63 +1207,232 @@ export class ClaudeBackend {
     }
   }
 
-  private async readThread(threadId: string, includeTurns: boolean) {
+  private async readThread(threadId: string, includeTurns: boolean): Promise<Record<string, unknown>> {
     const sessionId = toSessionId(threadId)
-    const { getSessionInfo, getSessionMessages } = await this.sdk()
-    const info = await getSessionInfo(sessionId)
-    if (!info && !(await this.store.get(sessionId))) {
-      throw new Error(`Claude chat ${threadId} was not found.`)
+    const stored = await this.store.get(sessionId)
+    const transcript = await this.readTranscript(sessionId, stored?.cwd ?? '')
+    if (!transcript && !stored) throw new Error(`Claude chat ${threadId} was not found.`)
+    const live = this.liveTurnFor(sessionId)
+    const chain = transcript
+      ? (stored?.rewindAt ? truncateChain(transcript.chain, stored.rewindAt) : transcript.chain)
+      : []
+    const summary = buildTurnsFromChain(chain, stored?.cwd ?? '', { liveTurnId: live?.turnId ?? null })
+    const meta = {
+      name: transcript?.title ?? '',
+      preview: transcript?.firstPrompt ?? '',
+      cwd: summary.cwd || stored?.cwd || '',
+      createdAtMs: transcript?.createdAtMs ?? stored?.createdAtMs ?? null,
+      updatedAtMs: transcript?.mtimeMs ?? stored?.createdAtMs ?? null,
     }
-    if (!includeTurns || !info) return this.toThread(sessionId, info)
-
-    const cwd = info.cwd || (await this.store.get(sessionId))?.cwd || ''
-    const transcriptPath = await findTranscriptPath(sessionId)
-    const steers = transcriptPath
-      ? readSteerMessages(await readFile(transcriptPath, 'utf8').catch(() => ''))
-      : new Map<string, SteerMessage[]>()
-    const turns = buildTurnsFromTranscript(await getSessionMessages(sessionId), cwd, steers)
-    const live = this.liveTurns.get(sessionId)
-    const lastTurn = turns[turns.length - 1]
-    if (live && lastTurn) lastTurn.status = 'inProgress'
-    return this.toThread(sessionId, info, turns)
+    if (!includeTurns) return this.threadPayload(sessionId, meta)
+    const turns: ClaudeTurn[] = [...summary.turns]
+    if (live && !turns.some((turn) => turn.id === live.turnId)) {
+      // Claude has not written the new prompt yet; keep the turn visible as running.
+      const content = live.userMessage?.message.content
+      const text = typeof content === 'string'
+        ? content
+        : Array.isArray(content) ? content.map((block) => readString(asRecord(block)?.text)).join('\n') : ''
+      turns.push({
+        id: live.turnId,
+        items: text ? [{ type: 'userMessage', id: live.turnId, content: [{ type: 'text', text }] }] : [],
+        status: 'inProgress',
+        error: null,
+        startedAtMs: live.startedAtMs,
+        completedAtMs: null,
+      })
+    }
+    return this.threadPayload(sessionId, meta, turns.map(({ startedAtMs: _s, completedAtMs: _c, ...turn }) => turn))
   }
 
   private async resumeThread(threadId: string) {
     const sessionId = toSessionId(threadId)
-    const { getSessionInfo } = await this.sdk()
-    const thread = await this.toThread(sessionId, await getSessionInfo(sessionId))
-    return this.threadConfigResponse(thread, await this.store.get(sessionId))
+    const stored = await this.store.get(sessionId)
+    const thread = await this.readThread(threadId, false)
+    void this.publishTranscriptUsage(sessionId, stored)
+    return this.threadConfigResponse(thread, stored)
+  }
+
+  /** Context-window usage from history, so the composer meter shows before a reply. */
+  private async publishTranscriptUsage(sessionId: string, stored: StoredThread | undefined): Promise<void> {
+    try {
+      const transcript = await this.readTranscript(sessionId, stored?.cwd ?? '')
+      if (!transcript) return
+      const summary = buildTurnsFromChain(transcript.chain, stored?.cwd ?? '')
+      const last = summary.lastUsage
+      const lastTurn = summary.turns.at(-1)
+      if (!last || !lastTurn) return
+      const contextWindow = stored?.contextWindow
+        ?? (last.inputTokens > DEFAULT_CONTEXT_WINDOW || /\[1m\]/u.test(summary.model) ? 1_000_000 : DEFAULT_CONTEXT_WINDOW)
+      this.emit('thread/tokenUsage/updated', {
+        threadId: toThreadId(sessionId),
+        turnId: lastTurn.id,
+        tokenUsage: { total: toCodexUsage(summary.totalUsage), last: toCodexUsage(last), modelContextWindow: contextWindow },
+      })
+    } catch {
+      // Usage is informational.
+    }
   }
 
   private async setName(threadId: string, name: string) {
     const trimmed = name.trim()
     if (!trimmed) return {}
-    const { renameSession } = await this.sdk()
-    await renameSession(toSessionId(threadId), trimmed)
+    const sessionId = toSessionId(threadId)
+    if (await this.findTranscriptPath(sessionId, (await this.store.get(sessionId))?.cwd ?? '')) {
+      const { renameSession } = await this.sdk()
+      await renameSession(sessionId, trimmed)
+    }
+    this.invalidateList()
     this.emit('thread/name/updated', { threadId, threadName: trimmed })
     return {}
   }
 
-  private async interrupt(threadId: string) {
-    const live = this.liveTurns.get(toSessionId(threadId))
-    if (live) {
-      live.interrupted = true
-      await live.query.interrupt().catch(() => undefined)
+  private async forkThread(request: Record<string, unknown>) {
+    const sourceThreadId = readString(request.threadId)
+    const sourceSessionId = toSessionId(sourceThreadId)
+    const stored = await this.store.get(sourceSessionId)
+    const sourcePath = await this.findTranscriptPath(sourceSessionId, stored?.cwd ?? '')
+    if (!sourcePath) throw new Error('This Claude chat has no saved messages to continue from.')
+    const { forkSession } = await this.sdk()
+    const transcript = await this.readTranscript(sourceSessionId, stored?.cwd ?? '')
+    const upTo = stored?.rewindAt ?? undefined
+    const { sessionId } = await forkSession(sourceSessionId, {
+      ...(upTo ? { upToMessageId: upTo } : {}),
+      ...(transcript?.title ? { title: transcript.title } : {}),
+    })
+    const sourceCwd = stored?.cwd || buildTurnsFromChain(transcript?.chain ?? [], '').cwd
+    const cwd = readString(request.cwd) || sourceCwd
+    const forkedPath = await this.findTranscriptPath(sessionId, sourceCwd)
+    if (forkedPath && cwd && cwd !== sourceCwd) {
+      // Claude finds a session by its working folder, so a fork into a new
+      // worktree moves to that folder's project directory.
+      const targetDir = join(claudeConfigDir(), 'projects', projectDirName(cwd))
+      await mkdir(targetDir, { recursive: true })
+      const target = join(targetDir, `${sessionId}.jsonl`)
+      await rename(forkedPath, target)
+      this.transcriptPaths.set(sessionId, target)
     }
-    return {}
+    const next = await this.store.update(sessionId, {
+      cwd,
+      model: stored?.model ?? DEFAULT_MODEL_ID,
+      effort: stored?.effort ?? null,
+      createdAtMs: Date.now(),
+      rewindAt: null,
+      ...(stored?.contextWindow ? { contextWindow: stored.contextWindow } : {}),
+    })
+    this.invalidateList()
+    const thread = await this.readThread(toThreadId(sessionId), true)
+    this.emit('thread/started', { thread: { ...thread, turns: [] } })
+    return this.threadConfigResponse(thread, next)
   }
 
-  private async startTurn(request: Record<string, unknown>): Promise<unknown> {
+  private async rollbackThread(threadId: string, numTurns: number) {
+    const sessionId = toSessionId(threadId)
+    if (this.liveTurnFor(sessionId)) throw new Error('Stop the current Claude reply before rolling back.')
+    const stored = await this.store.get(sessionId)
+    const transcript = await this.readTranscript(sessionId, stored?.cwd ?? '')
+    if (!transcript) throw new Error('This Claude chat has no saved messages.')
+    const chain = stored?.rewindAt ? truncateChain(transcript.chain, stored.rewindAt) : transcript.chain
+    const summary = buildTurnsFromChain(chain, stored?.cwd ?? '')
+    const point = rewindPointForRollback(chain, summary.turns, Math.floor(numTurns))
+    if (!point) throw new Error('Claude chats keep their first message. Start a new chat to begin again.')
+    await this.store.update(sessionId, { rewindAt: point.resumeAt })
+    // The next reply must resume from the cut point, not the warm process.
+    this.closeRunner(sessionId)
+    return { thread: await this.readThread(threadId, true) }
+  }
+
+  // ── Goals ──
+
+  private goalPayload(threadId: string, goal: StoredGoal | null | undefined) {
+    return goal ? { threadId, ...goal } : null
+  }
+
+  private async readGoal(threadId: string) {
+    const stored = await this.store.get(toSessionId(threadId))
+    return this.goalPayload(threadId, stored?.goal)
+  }
+
+  private async setGoal(threadId: string, request: Record<string, unknown>) {
+    const sessionId = toSessionId(threadId)
+    const stored = await this.store.get(sessionId)
+    const now = toSeconds(Date.now())
+    const objective = readString(request.objective).trim() || stored?.goal?.objective || ''
+    if (!objective) throw new Error('Set a goal before changing its status.')
+    const status = typeof request.status === 'string' ? request.status as StoredGoal['status'] : (stored?.goal?.status ?? 'active')
+    const goal: StoredGoal = {
+      objective,
+      status,
+      tokenBudget: typeof request.tokenBudget === 'number' ? request.tokenBudget : stored?.goal?.tokenBudget ?? null,
+      tokensUsed: stored?.goal?.objective === objective ? stored.goal.tokensUsed : 0,
+      timeUsedSeconds: stored?.goal?.objective === objective ? stored.goal.timeUsedSeconds : 0,
+      createdAt: stored?.goal?.objective === objective ? stored.goal.createdAt : now,
+      updatedAt: now,
+    }
+    await this.store.update(sessionId, { goal })
+    const payload = this.goalPayload(threadId, goal)
+    this.emit('thread/goal/updated', { threadId, goal: payload })
+    if (goal.status === 'active' && !this.liveTurnFor(sessionId)) {
+      void this.continueGoal(threadId, goal).catch((error) => {
+        console.warn('[claude-backend] Could not continue the goal:', error instanceof Error ? error.message : error)
+      })
+    }
+    return payload
+  }
+
+  private async clearGoal(threadId: string): Promise<boolean> {
+    const sessionId = toSessionId(threadId)
+    const stored = await this.store.get(sessionId)
+    if (!stored?.goal) return false
+    await this.store.update(sessionId, { goal: null })
+    this.emit('thread/goal/cleared', { threadId })
+    return true
+  }
+
+  private async continueGoal(threadId: string, goal: StoredGoal): Promise<void> {
+    const text = [
+      GOAL_CONTINUATION_TAG,
+      `Keep working toward this goal: ${goal.objective}`,
+      '',
+      'Pick up where you left off. When the goal is fully achieved, end your final message with a line that says exactly "GOAL COMPLETE".',
+      'If you cannot continue without the user, end with a line "GOAL BLOCKED: <reason>".',
+    ].join('\n')
+    await this.startTurn({ threadId, input: [{ type: 'text', text }] }, { goalContinuation: true })
+  }
+
+  private async recordGoalProgress(turn: LiveTurn, status: string): Promise<void> {
+    const stored = await this.store.get(turn.sessionId)
+    const goal = stored?.goal
+    if (!goal || goal.status !== 'active') return
+    const next: StoredGoal = {
+      ...goal,
+      tokensUsed: goal.tokensUsed + turn.usage.totalTokens,
+      timeUsedSeconds: goal.timeUsedSeconds + Math.round((Date.now() - turn.startedAtMs) / 1000),
+      updatedAt: toSeconds(Date.now()),
+    }
+    const blocked = turn.lastAgentText.match(GOAL_BLOCKED_MARKER)
+    if (GOAL_COMPLETE_MARKER.test(turn.lastAgentText)) next.status = 'complete'
+    else if (blocked) next.status = 'blocked'
+    else if (status === 'interrupted') next.status = 'paused'
+    else if (status === 'failed') next.status = 'blocked'
+    else if (next.tokenBudget && next.tokensUsed >= next.tokenBudget) next.status = 'budgetLimited'
+    await this.store.update(turn.sessionId, { goal: next })
+    this.emit('thread/goal/updated', { threadId: turn.threadId, goal: this.goalPayload(turn.threadId, next) })
+  }
+
+  // ── Turns ──
+
+  private async startTurn(request: Record<string, unknown>, extra: { goalContinuation?: boolean } = {}): Promise<unknown> {
     const threadId = readString(request.threadId)
     const sessionId = toSessionId(threadId)
-    const userMessage = buildUserMessage(request.input, sessionId)
+    const userMessage = await buildUserMessage(request.input, sessionId)
     if (!userMessage) throw new Error('The message is empty.')
 
     // A reply is running: steer it. Claude reads the message at its next step.
-    const live = this.liveTurns.get(sessionId)
-    if (live) {
-      if (!live.push(userMessage)) throw new Error('The Claude reply just finished. Send the message again.')
-      return { turn: { id: live.turnId, items: [], status: 'inProgress', error: null } }
+    const running = this.runners.get(sessionId)
+    if (running?.activeTurn && !running.closed) {
+      if (!running.input.push(userMessage)) throw new Error('The Claude reply just finished. Send the message again.')
+      running.pushedCommands.set(readString(userMessage.uuid), userMessage)
+      return { turn: { id: running.activeTurn.turnId, items: [], status: 'inProgress', error: null } }
     }
 
     const existing = await this.store.get(sessionId)
@@ -963,140 +1444,491 @@ export class ClaudeBackend {
       model: requested.model,
       effort: requested.effort,
       ...(readString(request.cwd) ? { cwd: readString(request.cwd) } : {}),
+      ...(existing ? {} : { createdAtMs: Date.now() }),
     })
+    const cwd = stored.cwd || homedir()
+    const settingsKey = `${stored.model}|${stored.effort ?? ''}|${cwd}`
 
-    const { query, getSessionInfo } = await this.sdk()
-    const exists = Boolean(await getSessionInfo(sessionId))
-    const input = createInputStream(userMessage)
+    let runner = this.runners.get(sessionId)
+    if (runner && (runner.closed || runner.settingsKey !== settingsKey)) {
+      this.closeRunner(sessionId)
+      runner = undefined
+    }
+    if (!runner) runner = await this.createRunner(threadId, sessionId, stored, cwd, settingsKey)
+
+    const turn = this.beginTurn(runner, readString(userMessage.uuid), cwd, userMessage)
+    turn.goalContinuation = extra.goalContinuation === true
+    runner.pushedCommands.set(turn.turnId, userMessage)
+    if (!runner.input.push(userMessage)) {
+      this.finishTurn(runner, 'failed', 'Claude Code closed before the message was sent.')
+      throw new Error('Claude Code closed before the message was sent. Send it again.')
+    }
+    if (stored.rewindAt) await this.store.update(sessionId, { rewindAt: null })
+    return { turn: { id: turn.turnId, items: [], status: 'inProgress', error: null } }
+  }
+
+  private async createRunner(
+    threadId: string,
+    sessionId: string,
+    stored: StoredThread,
+    cwd: string,
+    settingsKey: string,
+  ): Promise<SessionRunner> {
+    const { query } = await this.sdk()
+    const runtime = await this.readRuntime().catch(() => null)
+    const modelInfo = runtime?.models.find((model) => model.value === toModelValue(stored.model))
+    const transcriptPath = await this.findTranscriptPath(sessionId, cwd)
+    const exists = Boolean(transcriptPath)
+    const transcript = exists ? await this.readTranscript(sessionId, cwd) : null
+    const history = transcript ? buildTurnsFromChain(transcript.chain, cwd) : null
+    const input = createInputStream()
+    const runner = {
+      sessionId,
+      threadId,
+      cwd,
+      settingsKey,
+      input,
+      activeTurn: null,
+      pushedCommands: new Map(),
+      idleTimer: null,
+      interruptTimer: null,
+      totalUsage: history?.totalUsage ?? emptyUsage(),
+      contextWindow: stored.contextWindow ?? DEFAULT_CONTEXT_WINDOW,
+      closed: false,
+    } as unknown as SessionRunner
+
+    const askQuestion: HookCallback = async (hookInput, toolUseId, { signal }) => {
+      const record = asRecord(hookInput)
+      const toolInput = asRecord(record?.tool_input) ?? {}
+      const answers = await this.askUser(runner, toolUseId ?? '', toolInput, signal)
+      if (!answers) {
+        return {
+          hookSpecificOutput: {
+            hookEventName: 'PreToolUse',
+            permissionDecision: 'deny',
+            permissionDecisionReason: 'The user did not answer the question.',
+          },
+        }
+      }
+      return {
+        hookSpecificOutput: {
+          hookEventName: 'PreToolUse',
+          permissionDecision: 'allow',
+          updatedInput: { ...toolInput, answers },
+        },
+      }
+    }
+
     const options: Options = {
-      cwd: stored.cwd || undefined,
+      ...this.baseOptions(cwd),
       model: toModelValue(stored.model),
       ...(stored.effort ? { effort: stored.effort } : {}),
       ...(exists ? { resume: sessionId } : { sessionId }),
+      ...(exists && stored.rewindAt ? { resumeSessionAt: stored.rewindAt } : {}),
       permissionMode: 'bypassPermissions',
       allowDangerouslySkipPermissions: true,
       includePartialMessages: true,
-      settingSources: ['user', 'project', 'local'],
-      ...(process.env.CODEXUI_CLAUDE_PATH ? { pathToClaudeCodeExecutable: process.env.CODEXUI_CLAUDE_PATH } : {}),
+      // Stream readable reasoning, as Codex does, where the model supports it.
+      ...(modelInfo?.supportsAdaptiveThinking ? { thinking: { type: 'adaptive' as const, display: 'summarized' as const } } : {}),
+      hooks: { PreToolUse: [{ matcher: 'AskUserQuestion', hooks: [askQuestion] }] },
     }
-
-    const turnId = readString(userMessage.uuid)
-    const turn: LiveTurn = {
-      turnId,
-      query: query({ prompt: input.stream, options }),
-      push: input.push,
-      release: input.release,
-      interrupted: false,
-    }
-    this.liveTurns.set(sessionId, turn)
-
-    const turnPayload = { id: turnId, items: [], status: 'inProgress', error: null }
-    this.emit('turn/started', { threadId, turn: turnPayload })
-    this.emit('thread/status/changed', { threadId, status: { type: 'active' } })
-    void this.runTurn(threadId, sessionId, turn, stored.cwd)
-    return { turn: turnPayload }
+    runner.query = query({ prompt: input.stream, options })
+    this.runners.set(sessionId, runner)
+    void this.consumeRunner(runner)
+    return runner
   }
 
-  private async runTurn(threadId: string, sessionId: string, turn: LiveTurn, cwd: string): Promise<void> {
-    const { turnId } = turn
-    const tools = new Map<string, ToolUse>()
-    const streamedTextCounts = new Map<string, number>()
-    const finalTextCounts = new Map<string, number>()
-    const blockItemIds = new Map<number, string>()
-    let currentMessageId = ''
-    let completion: { status: string; error: { message: string; codexErrorInfo: null; additionalDetails: null } | null } | null = null
-
-    const itemParams = (item: Record<string, unknown>) => ({ threadId, turnId, item })
-
-    const handle = (message: SDKMessage) => {
-      if ('parent_tool_use_id' in message && message.parent_tool_use_id) return
-
-      if (message.type === 'stream_event') {
-        const event = message.event
-        if (event.type === 'message_start') {
-          currentMessageId = event.message.id
-          blockItemIds.clear()
-        } else if (event.type === 'content_block_start' && event.content_block.type === 'text') {
-          const index = streamedTextCounts.get(currentMessageId) ?? 0
-          streamedTextCounts.set(currentMessageId, index + 1)
-          const itemId = textItemId(currentMessageId, index)
-          blockItemIds.set(event.index, itemId)
-          this.emit('item/started', itemParams({ type: 'agentMessage', id: itemId, text: '' }))
-        } else if (event.type === 'content_block_start' && event.content_block.type === 'thinking') {
-          this.emit('item/started', itemParams({ type: 'reasoning', id: `${currentMessageId}:reasoning:${String(event.index)}`, summary: [], content: [] }))
-        } else if (event.type === 'content_block_delta' && event.delta.type === 'text_delta') {
-          const itemId = blockItemIds.get(event.index)
-          if (itemId) this.emit('item/agentMessage/delta', { threadId, turnId, itemId, delta: event.delta.text })
-        }
-        return
-      }
-
-      if (message.type === 'assistant') {
-        const messageId = message.message.id
-        for (const block of message.message.content) {
-          if (block.type === 'text') {
-            const index = finalTextCounts.get(messageId) ?? 0
-            finalTextCounts.set(messageId, index + 1)
-            this.emit('item/completed', itemParams({ type: 'agentMessage', id: textItemId(messageId, index), text: block.text }))
-          } else if (block.type === 'tool_use') {
-            const tool: ToolUse = { id: block.id, name: block.name, input: asRecord(block.input) ?? {} }
-            tools.set(tool.id, tool)
-            this.emit('item/started', itemParams(toToolItem(tool, cwd, null)))
-          }
-        }
-        return
-      }
-
-      if (message.type === 'user' && Array.isArray(message.message.content)) {
-        for (const block of message.message.content) {
-          const record = asRecord(block)
-          if (record?.type !== 'tool_result') continue
-          const tool = tools.get(readString(record.tool_use_id))
-          if (!tool) continue
-          const result = { text: stringifyToolResult(record.content), isError: record.is_error === true }
-          this.emit('item/completed', itemParams(toToolItem(tool, cwd, result)))
-        }
-        return
-      }
-
-      if (message.type === 'result') {
-        if (turn.interrupted) {
-          completion = { status: 'interrupted', error: null }
-        } else if (message.subtype === 'success' && !message.is_error) {
-          completion = { status: 'completed', error: null }
-        } else {
-          const detail = message.subtype === 'success' ? message.result : message.errors.join('\n')
-          completion = { status: 'failed', error: { message: detail || 'Claude stopped with an error.', codexErrorInfo: null, additionalDetails: null } }
-        }
-        // One reply per query: closing the input lets the Claude process exit.
-        turn.release()
-      }
+  private beginTurn(runner: SessionRunner, turnId: string, cwd: string, userMessage: SDKUserMessage | null): LiveTurn {
+    if (runner.idleTimer) clearTimeout(runner.idleTimer)
+    runner.idleTimer = null
+    const turn: LiveTurn = {
+      turnId,
+      threadId: runner.threadId,
+      sessionId: runner.sessionId,
+      cwd,
+      startedAtMs: Date.now(),
+      interrupted: false,
+      userMessage,
+      tools: new Map(),
+      textCounts: new Map(),
+      reasoningCounts: new Map(),
+      streamItems: new Map(),
+      finalCounts: new Map(),
+      usageMessageIds: new Set(),
+      currentMessageId: '',
+      lastAgentText: '',
+      lastAgentItemId: '',
+      usage: emptyUsage(),
+      goalContinuation: false,
+      settled: false,
     }
+    runner.activeTurn = turn
+    const turnPayload = { id: turnId, items: [], status: 'inProgress', error: null, startedAt: new Date(turn.startedAtMs).toISOString() }
+    this.emit('turn/started', { threadId: runner.threadId, turn: turnPayload })
+    this.emit('thread/status/changed', { threadId: runner.threadId, status: { type: 'active' } })
+    this.invalidateList()
+    return turn
+  }
 
+  private finishTurn(runner: SessionRunner, status: 'completed' | 'interrupted' | 'failed', errorMessage = ''): void {
+    const turn = runner.activeTurn
+    if (!turn || turn.settled) return
+    turn.settled = true
+    runner.activeTurn = null
+    if (runner.interruptTimer) clearTimeout(runner.interruptTimer)
+    runner.interruptTimer = null
+    const completedAtMs = Date.now()
+    const durationMs = Math.max(0, completedAtMs - turn.startedAtMs)
+    const items = turn.lastAgentText
+      ? [{ type: 'agentMessage', id: turn.lastAgentItemId, text: turn.lastAgentText, phase: 'final_answer' }]
+      : []
+    const threadTitle = this.titleFor(turn.sessionId)
+    this.emit('turn/completed', {
+      threadId: turn.threadId,
+      ...(threadTitle ? { threadTitle } : {}),
+      durationMs,
+      turn: {
+        id: turn.turnId,
+        items,
+        status,
+        error: status === 'failed' ? turnError(errorMessage || 'Claude stopped with an error.') : null,
+        startedAt: new Date(turn.startedAtMs).toISOString(),
+        completedAt: new Date(completedAtMs).toISOString(),
+        durationMs,
+      },
+    })
+    this.emit('thread/status/changed', { threadId: turn.threadId, status: { type: 'idle' } })
+    this.invalidateList()
+    void this.recordGoalProgress(turn, status).catch(() => undefined)
+    this.cancelQuestions(turn.turnId)
+    if (!runner.closed) {
+      runner.idleTimer = setTimeout(() => this.closeRunner(runner.sessionId, runner), RUNNER_IDLE_MS)
+      runner.idleTimer.unref?.()
+    }
+  }
+
+  private titleFor(sessionId: string): string {
+    for (const [path, transcript] of this.transcriptCache) {
+      if (path.endsWith(`${sessionId}.jsonl`)) return transcript.title || transcript.firstPrompt.slice(0, 80)
+    }
+    return ''
+  }
+
+  private closeRunner(sessionId: string, expected?: SessionRunner): void {
+    const runner = this.runners.get(sessionId)
+    if (!runner || (expected && runner !== expected)) return
+    if (runner.idleTimer) clearTimeout(runner.idleTimer)
+    runner.idleTimer = null
+    runner.closed = true
+    this.runners.delete(sessionId)
+    runner.input.release()
+    if (runner.activeTurn) {
+      runner.activeTurn.interrupted = true
+      void runner.query.interrupt().catch(() => undefined)
+    }
+    // Closing the input ends Claude Code; close() also stops a stuck process.
+    const timer = setTimeout(() => {
+      try {
+        runner.query.close()
+      } catch {
+        // already closed
+      }
+    }, 10_000)
+    timer.unref?.()
+  }
+
+  private async consumeRunner(runner: SessionRunner): Promise<void> {
+    let failure = ''
     try {
-      for await (const message of turn.query) handle(message)
+      for await (const message of runner.query) this.handleMessage(runner, message)
     } catch (error) {
-      if (!completion) {
-        completion = turn.interrupted
-          ? { status: 'interrupted', error: null }
-          : { status: 'failed', error: { message: error instanceof Error ? error.message : String(error), codexErrorInfo: null, additionalDetails: null } }
-      }
+      failure = error instanceof Error ? error.message : String(error)
     } finally {
-      turn.release()
-      this.liveTurns.delete(sessionId)
-      const final = completion ?? { status: turn.interrupted ? 'interrupted' : 'failed', error: null }
-      this.emit('turn/completed', { threadId, turn: { id: turnId, items: [], ...final } })
-      this.emit('thread/status/changed', { threadId, status: { type: 'idle' } })
+      runner.closed = true
+      if (this.runners.get(runner.sessionId) === runner) this.runners.delete(runner.sessionId)
+      if (runner.idleTimer) clearTimeout(runner.idleTimer)
+      const turn = runner.activeTurn
+      if (turn) {
+        this.finishTurn(runner, turn.interrupted ? 'interrupted' : 'failed', failure || 'Claude Code stopped unexpectedly.')
+      }
+      if (failure && !turn?.interrupted) {
+        console.warn(`[claude-backend] Claude session ${runner.sessionId} ended: ${failure}`)
+      }
     }
+  }
+
+  private turnFor(runner: SessionRunner, commandUuid = ''): LiveTurn {
+    if (runner.activeTurn) return runner.activeTurn
+    // A message queued as the previous reply ended starts its own turn.
+    const userMessage = commandUuid ? runner.pushedCommands.get(commandUuid) ?? null : null
+    return this.beginTurn(runner, commandUuid || randomUUID(), runner.cwd, userMessage)
+  }
+
+  private handleMessage(runner: SessionRunner, message: SDKMessage): void {
+    const record = message as unknown as Record<string, unknown>
+    if (typeof record.parent_tool_use_id === 'string' && record.parent_tool_use_id) return
+
+    if (record.type === 'command_lifecycle') {
+      const commandUuid = readString(record.command_uuid)
+      if (record.state === 'started' && !runner.activeTurn && runner.pushedCommands.has(commandUuid)) {
+        this.turnFor(runner, commandUuid)
+      }
+      if (record.state === 'completed') runner.pushedCommands.delete(commandUuid)
+      return
+    }
+
+    if (message.type === 'rate_limit_event') {
+      this.usageCache = null
+      return
+    }
+
+    if (message.type === 'stream_event') {
+      const turn = this.turnFor(runner)
+      const event = message.event
+      const itemParams = (item: ThreadItem) => ({ threadId: turn.threadId, turnId: turn.turnId, item })
+      if (event.type === 'message_start') {
+        turn.currentMessageId = event.message.id
+        turn.streamItems.clear()
+      } else if (event.type === 'content_block_start' && event.content_block.type === 'text') {
+        const index = turn.textCounts.get(turn.currentMessageId) ?? 0
+        turn.textCounts.set(turn.currentMessageId, index + 1)
+        const itemId = textItemId(turn.currentMessageId, index)
+        turn.streamItems.set(event.index, { type: 'text', itemId })
+        this.emit('item/started', itemParams({ type: 'agentMessage', id: itemId, text: '' }))
+      } else if (event.type === 'content_block_start' && (event.content_block.type === 'thinking' || event.content_block.type === 'redacted_thinking')) {
+        const index = turn.reasoningCounts.get(turn.currentMessageId) ?? 0
+        turn.reasoningCounts.set(turn.currentMessageId, index + 1)
+        const itemId = reasoningItemId(turn.currentMessageId, index)
+        turn.streamItems.set(event.index, { type: 'thinking', itemId })
+        this.emit('item/started', itemParams({ type: 'reasoning', id: itemId, summary: [], content: [] }))
+      } else if (event.type === 'content_block_delta') {
+        const block = turn.streamItems.get(event.index)
+        if (!block) return
+        if (event.delta.type === 'text_delta' && block.type === 'text') {
+          this.emit('item/agentMessage/delta', { threadId: turn.threadId, turnId: turn.turnId, itemId: block.itemId, delta: event.delta.text })
+        } else if (event.delta.type === 'thinking_delta' && block.type === 'thinking') {
+          this.emit('item/reasoning/summaryTextDelta', {
+            threadId: turn.threadId, turnId: turn.turnId, itemId: block.itemId, delta: event.delta.thinking, summaryIndex: 0,
+          })
+        }
+      }
+      return
+    }
+
+    if (message.type === 'assistant') {
+      const turn = this.turnFor(runner)
+      const itemParams = (item: ThreadItem) => ({ threadId: turn.threadId, turnId: turn.turnId, item })
+      const messageId = message.message.id
+      const usage = readApiUsage(message.message.usage)
+      if (usage) this.publishLiveUsage(runner, turn, usage, messageId)
+      for (const block of message.message.content) {
+        if (block.type === 'text') {
+          const itemId = this.claimItemId(turn, messageId, 'text')
+          if (!block.text.trim()) continue
+          turn.lastAgentText = block.text
+          turn.lastAgentItemId = itemId
+          this.emit('item/completed', itemParams({ type: 'agentMessage', id: itemId, text: block.text }))
+        } else if (block.type === 'thinking') {
+          const itemId = this.claimItemId(turn, messageId, 'thinking')
+          this.emit('item/completed', itemParams({ type: 'reasoning', id: itemId, summary: block.thinking ? [block.thinking] : [], content: [] }))
+        } else if (block.type === 'tool_use') {
+          const tool: ClaudeToolUse = { id: block.id, name: block.name, input: asRecord(block.input) ?? {} }
+          turn.tools.set(tool.id, tool)
+          this.emit('item/started', itemParams(toolUseItem(tool, turn.cwd, null)))
+        }
+      }
+      return
+    }
+
+    if (message.type === 'user') {
+      const content = message.message.content
+      if (!Array.isArray(content)) return
+      const turn = runner.activeTurn
+      if (!turn) return
+      for (const block of content) {
+        const result = asRecord(block)
+        if (result?.type !== 'tool_result') continue
+        const tool = turn.tools.get(readString(result.tool_use_id))
+        if (!tool) continue
+        const outcome = {
+          text: stringifyToolResult(result.content),
+          isError: result.is_error === true,
+          structured: (message as { tool_use_result?: unknown }).tool_use_result,
+        }
+        this.emit('item/completed', { threadId: turn.threadId, turnId: turn.turnId, item: toolUseItem(tool, turn.cwd, outcome) })
+      }
+      return
+    }
+
+    if (message.type === 'system') {
+      const turn = runner.activeTurn
+      if (record.subtype === 'compact_boundary' && turn) {
+        const item = { type: 'contextCompaction', id: readString(record.uuid) || randomUUID() }
+        this.emit('item/started', { threadId: turn.threadId, turnId: turn.turnId, item })
+        this.emit('item/completed', { threadId: turn.threadId, turnId: turn.turnId, item })
+      }
+      return
+    }
+
+    if (message.type === 'result') {
+      const turn = runner.activeTurn
+      const contextWindow = Object.values(message.modelUsage ?? {})
+        .map((usage) => usage.contextWindow)
+        .find((value) => typeof value === 'number' && value > 0)
+      if (contextWindow && contextWindow !== runner.contextWindow) {
+        runner.contextWindow = contextWindow
+        void this.store.update(runner.sessionId, { contextWindow })
+      }
+      if (!turn) return
+      if (turn.interrupted) {
+        this.finishTurn(runner, 'interrupted')
+      } else if (message.subtype === 'success' && !message.is_error) {
+        this.finishTurn(runner, 'completed')
+      } else {
+        const detail = message.subtype === 'success' ? message.result : message.errors.join('\n')
+        this.finishTurn(runner, 'failed', detail)
+      }
+    }
+  }
+
+  /**
+   * Claude Code emits one final message per content block, in stream order,
+   * so the n-th final text block of a message is the n-th streamed one.
+   */
+  private claimItemId(turn: LiveTurn, messageId: string, type: 'text' | 'thinking'): string {
+    const key = `${type}:${messageId}`
+    const index = turn.finalCounts.get(key) ?? 0
+    turn.finalCounts.set(key, index + 1)
+    const streamCounts = type === 'text' ? turn.textCounts : turn.reasoningCounts
+    if (index >= (streamCounts.get(messageId) ?? 0)) streamCounts.set(messageId, index + 1)
+    return type === 'text' ? textItemId(messageId, index) : reasoningItemId(messageId, index)
+  }
+
+  private publishLiveUsage(runner: SessionRunner, turn: LiveTurn, usage: ClaudeTokenUsage, messageId: string): void {
+    // Each content block repeats its message's usage; count a message once.
+    if (turn.usageMessageIds.has(messageId)) return
+    turn.usageMessageIds.add(messageId)
+    turn.usage = addUsage(turn.usage, usage)
+    runner.totalUsage = addUsage(runner.totalUsage, usage)
+    this.emit('thread/tokenUsage/updated', {
+      threadId: turn.threadId,
+      turnId: turn.turnId,
+      tokenUsage: {
+        total: toCodexUsage(runner.totalUsage),
+        last: toCodexUsage(usage),
+        modelContextWindow: runner.contextWindow,
+      },
+    })
+  }
+
+  private async interrupt(threadId: string) {
+    const sessionId = toSessionId(threadId)
+    const runner = this.runners.get(sessionId)
+    const turn = runner?.activeTurn
+    if (!runner || !turn) return {}
+    turn.interrupted = true
+    this.cancelQuestions(turn.turnId)
+    await runner.query.interrupt().catch(() => undefined)
+    // Claude Code normally ends the turn with a result; do not wait forever.
+    runner.interruptTimer = setTimeout(() => {
+      if (runner.activeTurn === turn) {
+        this.finishTurn(runner, 'interrupted')
+        this.closeRunner(sessionId, runner)
+      }
+    }, INTERRUPT_SETTLE_MS)
+    runner.interruptTimer.unref?.()
+    return {}
+  }
+
+  // ── Questions (AskUserQuestion) ──
+
+  private async askUser(
+    runner: SessionRunner,
+    toolUseId: string,
+    input: Record<string, unknown>,
+    signal: AbortSignal,
+  ): Promise<Record<string, string> | null> {
+    const turn = runner.activeTurn
+    const rawQuestions = Array.isArray(input.questions) ? input.questions.map(asRecord).filter(Boolean) as Array<Record<string, unknown>> : []
+    if (!turn || rawQuestions.length === 0 || signal.aborted) return null
+    const questions = rawQuestions.map((question, index) => ({ id: `q${String(index)}`, text: readString(question.question) }))
+    const id = ++this.nextRequestId
+    const pending: ClaudePendingServerRequest = {
+      id,
+      method: 'item/tool/requestUserInput',
+      receivedAtIso: new Date().toISOString(),
+      params: {
+        threadId: turn.threadId,
+        turnId: turn.turnId,
+        itemId: toolUseId,
+        questions: rawQuestions.map((question, index) => ({
+          id: `q${String(index)}`,
+          header: readString(question.header),
+          question: readString(question.question),
+          isOther: true,
+          isSecret: false,
+          options: (Array.isArray(question.options) ? question.options : []).map(asRecord).filter(Boolean).map((option) => ({
+            label: readString(option?.label),
+            description: readString(option?.description),
+          })),
+        })),
+      },
+    }
+    const answers = await new Promise<Record<string, string> | null>((resolve) => {
+      this.questions.set(id, { pending, questions, resolve })
+      signal.addEventListener('abort', () => resolve(null), { once: true })
+      this.emit('server/request', pending)
+    })
+    if (this.questions.delete(id)) {
+      this.emit('server/request/resolved', {
+        id, method: pending.method, threadId: turn.threadId, mode: answers ? 'manual' : 'cancelled', resolvedAtIso: new Date().toISOString(),
+      })
+    }
+    return answers
+  }
+
+  private cancelQuestions(turnId: string): void {
+    for (const [id, request] of this.questions) {
+      if (asRecord(request.pending.params)?.turnId !== turnId) continue
+      request.resolve(null)
+      if (this.questions.delete(id)) {
+        this.emit('server/request/resolved', {
+          id, method: request.pending.method, threadId: readString(asRecord(request.pending.params)?.threadId),
+          mode: 'cancelled', resolvedAtIso: new Date().toISOString(),
+        })
+      }
+    }
+  }
+
+  listPendingServerRequests(): ClaudePendingServerRequest[] {
+    return [...this.questions.values()].map((request) => request.pending)
+  }
+
+  ownsServerRequest(id: unknown): boolean {
+    return typeof id === 'number' && this.questions.has(id)
+  }
+
+  async respondToServerRequest(payload: unknown): Promise<void> {
+    const body = asRecord(payload)
+    const id = body?.id
+    const request = typeof id === 'number' ? this.questions.get(id) : undefined
+    if (!request || typeof id !== 'number') throw new Error('This Claude question is no longer waiting for an answer.')
+    if (asRecord(body?.error)) {
+      request.resolve(null)
+      return
+    }
+    const rawAnswers = asRecord(asRecord(body?.result)?.answers) ?? {}
+    const answers: Record<string, string> = {}
+    for (const question of request.questions) {
+      const values = asRecord(rawAnswers[question.id])?.answers
+      const text = Array.isArray(values) ? values.filter((value): value is string => typeof value === 'string').join(', ') : ''
+      if (question.text) answers[question.text] = text
+    }
+    request.resolve(answers)
   }
 
   dispose(): void {
     this.cancelLogin()
-    for (const turn of this.liveTurns.values()) {
-      turn.interrupted = true
-      turn.release()
-      void turn.query.interrupt().catch(() => undefined)
-    }
-    this.liveTurns.clear()
+    for (const sessionId of [...this.runners.keys()]) this.closeRunner(sessionId)
   }
 }

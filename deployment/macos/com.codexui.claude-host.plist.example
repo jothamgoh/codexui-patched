@@ -1,0 +1,49 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  Starts Claude Code for a CodexUI service from the signed-in user's login session.
+
+  Install as a LaunchAgent (not a LaunchDaemon) so Claude Code can read the
+  Claude sign-in kept in the login keychain:
+    ~/Library/LaunchAgents/com.codexui.claude-host.USER.plist
+    launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.codexui.claude-host.USER.plist
+
+  Then point the CodexUI service at the same socket in its private env file:
+    CODEXUI_CLAUDE_HOST_SOCKET=/Users/USER/.config/codexui/claude-host.sock
+-->
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>com.codexui.claude-host.USER</string>
+
+  <key>WorkingDirectory</key>
+  <string>/Users/USER</string>
+
+  <key>ProgramArguments</key>
+  <array>
+    <string>/opt/homebrew/bin/node</string>
+    <string>/Users/USER/workspace/repos/codexui/dist-cli/index.js</string>
+    <string>claude-host</string>
+    <string>--socket</string>
+    <string>/Users/USER/.config/codexui/claude-host.sock</string>
+  </array>
+
+  <key>EnvironmentVariables</key>
+  <dict>
+    <key>HOME</key>
+    <string>/Users/USER</string>
+    <key>PATH</key>
+    <string>/Users/USER/.local/bin:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin</string>
+  </dict>
+
+  <key>RunAtLoad</key>
+  <true/>
+  <key>KeepAlive</key>
+  <true/>
+
+  <key>StandardOutPath</key>
+  <string>/Users/USER/Library/Logs/CodexUI/claude-host.log</string>
+  <key>StandardErrorPath</key>
+  <string>/Users/USER/Library/Logs/CodexUI/claude-host.log</string>
+</dict>
+</plist>

@@ -27,6 +27,15 @@ Node.js / Express bridge
 newline-delimited JSON-RPC over stdin/stdout
 ```
 
+Claude Code chats share the same protocol. A router in front of both backends
+sends requests about `claude-<session id>` chats, and new chats started with a
+Claude model, to a Claude backend built on the Claude Agent SDK; chat lists,
+search and model lists merge both. The Claude backend keeps one Claude Code
+process per active chat, maps Claude's stream and transcripts onto Codex turn
+and item notifications, and reads history from Claude Code's own session files.
+A macOS LaunchDaemon can start Claude Code through a login-session host so the
+CLI's keychain sign-in stays available.
+
 The bridge multiplexes browser RPC calls through the child process. It also
 forwards Codex notifications and server-initiated approval requests to connected
 browsers. A singleton bridge is reused during Vite hot reloads in development.

@@ -65,6 +65,33 @@ of your computer to this repository.
   adapt to smaller screens.
 - **Choose how Codex thinks.** Pick the model and reasoning effort for each
   chat.
+- **Use Claude Code too.** Start Claude chats from the same composer, with
+  the same conversation view, steering, questions, review cards, search, pins,
+  goals and notifications. They are ordinary Claude Code sessions, so chats
+  from the terminal or Remote Control appear here as well.
+
+## Claude Code chats
+
+CodexUI can also run [Claude Code](https://code.claude.com/docs) chats. Install
+the Claude CLI on the host and sign in once:
+
+```bash
+claude auth login
+```
+
+Pick a Claude model in the composer to start a Claude chat. Each chat keeps its
+provider: Claude chats offer Claude models, effort levels and skills, and Codex
+chats offer Codex ones. Claude chats run with Claude Code's
+`bypassPermissions` mode, matching the full-access Codex setup, and are stored
+by Claude Code itself under `~/.claude/projects`, so the CLI can resume them
+too. The sidebar lists interactive Claude sessions and the ones started here,
+not other tools' headless runs.
+
+On macOS, Claude Code keeps its sign-in in the login keychain, which a
+LaunchDaemon cannot read. If CodexUI runs as a LaunchDaemon, also install the
+[Claude host LaunchAgent](deployment/macos/com.codexui.claude-host.plist.example)
+and set `CODEXUI_CLAUDE_HOST_SOCKET` in the private env file. The host only
+starts the Claude CLI and listens on a socket readable only by that user.
 
 ## Is it only for Mac?
 

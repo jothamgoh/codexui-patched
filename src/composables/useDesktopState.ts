@@ -83,6 +83,7 @@ import { compactNotificationText } from '../utils/notificationText'
 import type { CodexThreadAudience } from '../utils/codexThreadSource'
 import { MAX_THREAD_REFERENCE_COUNT } from '../utils/threadReferences'
 import { insertTurnSummaryMessages, sortMessagesByOrder } from '../utils/conversationMessages'
+import { providerForModelId, providerForThreadId, type ChatProvider } from '../utils/chatProvider'
 
 function flattenThreads(groups: UiProjectGroup[]): UiThread[] {
   return groups.flatMap((group) => group.threads)
@@ -1257,8 +1258,9 @@ export function useDesktopState() {
   const threadTitleById = ref<Record<string, string>>({})
 
   const installedSkills = ref<SkillInfo[]>([])
-  let pendingSkills: { cwd: string; promise: Promise<void> } | null = null
+  let pendingSkills: { key: string; promise: Promise<void> } | null = null
   let lastSkillsCwd = ''
+  let lastSkillsProvider: ChatProvider = 'openai'
 
   const isLoadingThreads = ref(false)
   const isLoadingMessages = ref(false)
@@ -1583,9 +1585,10 @@ export function useDesktopState() {
   }
 
   function buildPendingTurnDetails(modelId: string, effort: ReasoningEffort | ''): string[] {
-    const modelLabel = modelId.trim() || 'default'
+    const model = availableModels.value.find((candidate) => candidate.id === modelId.trim())
+    const modelLabel = model?.label || modelId.trim() || 'default'
     const effortLabel = effort || 'default'
-    return [`Model: ${modelLabel}`, `Thinking: ${effortLabel}`]
+    return [`Model: ${modelLabel}`, `${model?.provider === 'anthropic' ? 'Effort' : 'Thinking'}: ${effortLabel}`]
   }
 
   async function refreshModelPreferences(): Promise<void> {
@@ -4204,15 +4207,26 @@ export function useDesktopState() {
     }
   }
 
-  async function refreshSkills(cwd = selectedThread.value?.cwd ?? lastSkillsCwd): Promise<void> {
+  function currentComposerProvider(): ChatProvider {
+    return selectedThreadId.value
+      ? providerForThreadId(selectedThreadId.value)
+      : providerForModelId(selectedModelId.value, availableModels.value)
+  }
+
+  async function refreshSkills(
+    cwd = selectedThread.value?.cwd ?? lastSkillsCwd,
+    provider: ChatProvider = currentComposerProvider(),
+  ): Promise<void> {
     const targetCwd = cwd.trim()
     lastSkillsCwd = targetCwd
-    if (pendingSkills?.cwd === targetCwd) return pendingSkills.promise
-    const pending = { cwd: targetCwd, promise: Promise.resolve() }
+    lastSkillsProvider = provider
+    const key = `${provider}:${targetCwd}`
+    if (pendingSkills?.key === key) return pendingSkills.promise
+    const pending = { key, promise: Promise.resolve() }
     pendingSkills = pending
     pending.promise = (async () => {
       try {
-        const skills = await getSkillsList(targetCwd ? [targetCwd] : undefined)
+        const skills = await getSkillsList(targetCwd ? [targetCwd] : undefined, provider)
         if (pendingSkills === pending) installedSkills.value = skills
       } catch {
         // Keep previous skills on failure.
@@ -5080,7 +5094,7 @@ export function useDesktopState() {
           try {
             await loadThreads()
             void refreshModelPreferences()
-            void refreshSkills()
+            void refreshSkills(lastSkillsCwd, lastSkillsProvider)
             void refreshAccountRateLimits()
 
             const threadId = selectedThreadId.value

@@ -704,6 +704,12 @@ export class ClaudeBackend {
   private async readRuntime(force = false): Promise<ClaudeRuntimeState> {
     const cached = this.runtimeCache
     if (!force && cached && Date.now() - cached.at < RUNTIME_CACHE_MS) return cached.value
+    if (!force && cached?.value.connected) {
+      // Serve the known catalog now and refresh it in the background, so a
+      // turn after a quiet spell does not wait for a metadata process.
+      if (!this.runtimePending) void this.readRuntime(true).catch(() => undefined)
+      return cached.value
+    }
     if (this.runtimePending) return this.runtimePending
     const pending = (async () => {
       const { query } = await this.sdk()

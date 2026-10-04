@@ -264,7 +264,7 @@
               :error="automationError"
               :threads="notificationThreads"
               :default-cwd="newThreadCwd"
-              :models="availableModelIds"
+              :models="codexModelIds"
               :current-thread-id="selectedThreadId"
               @create="onCreateAutomation"
               @update="onUpdateAutomation"
@@ -302,7 +302,7 @@
 
               <ThreadComposer ref="threadComposerRef" :active-thread-id="composerThreadContextId"
                 :cwd="composerCwd"
-                :models="availableModelIds" :model-options="availableModels" :selected-model="selectedModelId"
+                :models="availableModelIds" :model-options="availableModels" :provider="composerProvider" :selected-model="selectedModelId"
                 :selected-reasoning-effort="selectedReasoningEffort" :skills="installedSkills"
                 :threads="composerThreadMentions"
                 :thread-token-usage="null"
@@ -401,8 +401,9 @@
                   :send-disabled="Boolean(selectedChatBoard) && boardChatSendDisabled"
                   :hide-model-settings="Boolean(selectedChatBoard)"
                   :cwd="composerCwd"
-                  :models="availableModelIds"
+                  :models="composerModelIds"
                   :model-options="availableModels"
+                  :provider="composerProvider"
                   :selected-model="selectedModelId" :selected-reasoning-effort="selectedReasoningEffort"
                   :skills="installedSkills"
                   :threads="composerThreadMentions"
@@ -471,6 +472,7 @@ import Button from './components/ui/button/Button.vue'
 import { Popover, PopoverContent, PopoverTrigger } from './components/ui/popover'
 import ChatSearchDialog from './components/content/ChatSearchDialog.vue'
 import UnifiedProviderStatus from './components/content/UnifiedProviderStatus.vue'
+import { providerForModelId, providerForThreadId, type ChatProvider } from './utils/chatProvider'
 import ThemeToggleButton from './components/content/ThemeToggleButton.vue'
 import UiFontSizeControl from './components/content/UiFontSizeControl.vue'
 import SpeedSettingControl from './components/content/SpeedSettingControl.vue'
@@ -966,6 +968,15 @@ const composerCwd = computed(() => {
   if (isHomeRoute.value) return newThreadCwd.value.trim()
   return selectedThread.value?.cwd?.trim() ?? ''
 })
+// A chat keeps its provider: Codex chats offer Codex models, Claude chats Claude models.
+const composerProvider = computed<ChatProvider>(() => (isHomeRoute.value || !selectedThreadId.value)
+  ? providerForModelId(selectedModelId.value, availableModels.value)
+  : providerForThreadId(selectedThreadId.value))
+const composerModelIds = computed(() => (isHomeRoute.value || !selectedThreadId.value)
+  ? availableModelIds.value
+  : availableModelIds.value.filter((id) => providerForModelId(id, availableModels.value) === composerProvider.value))
+const codexModelIds = computed(() =>
+  availableModelIds.value.filter((id) => providerForModelId(id, availableModels.value) === 'openai'))
 const composerThreadMentions = computed<ThreadMentionParam[]>(() => {
   const mentions: ThreadMentionParam[] = []
   const seen = new Set<string>()
@@ -1075,11 +1086,11 @@ function onAppResume(): void {
 }
 
 function onSkillsChanged(): void {
-  void refreshSkills(composerCwd.value)
+  void refreshSkills(composerCwd.value, composerProvider.value)
 }
 
 function onPluginsChanged(): void {
-  void refreshSkills(composerCwd.value)
+  void refreshSkills(composerCwd.value, composerProvider.value)
 }
 
 function onProvidersChanged(): void {
@@ -1888,8 +1899,8 @@ async function syncThreadSelectionWithRoute(loadInitialMessages = false): Promis
 }
 
 watch(
-  () => [hasInitialized.value, composerCwd.value] as const,
-  ([initialized, cwd]) => { if (initialized) void refreshSkills(cwd) },
+  () => [hasInitialized.value, composerCwd.value, composerProvider.value] as const,
+  ([initialized, cwd, provider]) => { if (initialized) void refreshSkills(cwd, provider) },
 )
 
 watch(

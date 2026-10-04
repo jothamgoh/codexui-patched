@@ -1758,10 +1758,11 @@ type SkillsListResponseEntry = {
   errors: unknown[]
 }
 
-export async function getSkillsList(cwds?: string[]): Promise<SkillInfo[]> {
+export async function getSkillsList(cwds?: string[], provider: 'openai' | 'anthropic' = 'openai'): Promise<SkillInfo[]> {
   try {
     const params: Record<string, unknown> = {}
     if (cwds && cwds.length > 0) params.cwds = cwds
+    if (provider === 'anthropic') params.provider = 'claude'
     const payload = await callRpc<{ data: SkillsListResponseEntry[] }>('skills/list', params)
     const skills: SkillInfo[] = []
     const seen = new Set<string>()

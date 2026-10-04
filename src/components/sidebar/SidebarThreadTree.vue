@@ -41,6 +41,7 @@
             <button v-else class="thread-main-button" :class="{ 'thread-main-button--board': boardThreads?.[thread.id] }" type="button" :title="getThreadTitleTooltip(thread)" @click="onSelect(thread.id)" @keydown="onThreadKeyDown($event, thread.id, 'pinned', '')">
               <span class="thread-row-title-wrap">
                 <span class="thread-row-title">{{ getThreadDisplayTitle(thread) }}</span>
+                <span v-if="isClaudeThreadId(thread.id)" class="thread-row-provider" title="Claude Code chat">Claude</span>
                 <FolderKanban v-if="boardThreads?.[thread.id]" class="thread-row-board-icon" aria-hidden="true" />
                 <IconTablerGitFork v-if="thread.hasWorktree" class="thread-row-worktree-icon" title="Worktree thread" />
               </span>
@@ -182,6 +183,7 @@
           <button v-else class="thread-main-button" :class="{ 'thread-main-button--board': boardThreads?.[thread.id] }" type="button" :title="getThreadTitleTooltip(thread)" @click="onSelect(thread.id)" @keydown="onThreadKeyDown($event, thread.id, 'global', '')">
             <span class="thread-row-title-wrap">
               <span class="thread-row-title">{{ getThreadDisplayTitle(thread) }}</span>
+                <span v-if="isClaudeThreadId(thread.id)" class="thread-row-provider" title="Claude Code chat">Claude</span>
               <FolderKanban v-if="boardThreads?.[thread.id]" class="thread-row-board-icon" aria-hidden="true" />
               <IconTablerGitFork v-if="thread.hasWorktree" class="thread-row-worktree-icon" title="Worktree thread" />
             </span>
@@ -350,6 +352,7 @@
                 <button v-else class="thread-main-button" :class="{ 'thread-main-button--board': boardThreads?.[thread.id] }" type="button" :title="getThreadTitleTooltip(thread)" @click="onSelect(thread.id)" @keydown="onThreadKeyDown($event, thread.id, 'project', group.projectName)">
                   <span class="thread-row-title-wrap">
                     <span class="thread-row-title">{{ getThreadDisplayTitle(thread) }}</span>
+                <span v-if="isClaudeThreadId(thread.id)" class="thread-row-provider" title="Claude Code chat">Claude</span>
                     <FolderKanban v-if="boardThreads?.[thread.id]" class="thread-row-board-icon" aria-hidden="true" />
                     <IconTablerGitFork v-if="thread.hasWorktree" class="thread-row-worktree-icon" title="Worktree thread" />
                   </span>
@@ -426,6 +429,7 @@ import IconTablerFolderOpen from '../icons/IconTablerFolderOpen.vue'
 import IconTablerGitFork from '../icons/IconTablerGitFork.vue'
 import IconTablerPin from '../icons/IconTablerPin.vue'
 import SidebarMenuRow from './SidebarMenuRow.vue'
+import { isClaudeThreadId } from '../../utils/chatProvider'
 
 const props = defineProps<{
   groups: UiProjectGroup[]
@@ -1967,6 +1971,12 @@ onBeforeUnmount(() => {
 
 .thread-row-worktree-icon {
   @apply w-3 h-3 text-zinc-500 shrink-0;
+}
+
+.thread-row-provider {
+  @apply shrink-0 rounded px-1 text-[9px] leading-[14px] font-medium uppercase tracking-wide;
+  color: var(--text-muted);
+  border: 1px solid var(--border-subtle);
 }
 
 .thread-status-indicator {

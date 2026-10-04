@@ -2067,8 +2067,9 @@ export function createCodexBridgeMiddleware(): CodexBridgeMiddleware {
       if (req.method === 'GET' && url.pathname === '/codex-api/project-board-models') {
         const sourceThreadId = url.searchParams.get('sourceThreadId')?.trim()
         const [catalog, inherited] = await Promise.all([
-          readProjectBoardModels((method, params) => appServer.rpc(method, params)),
-          sourceThreadId ? readProjectBoardThreadSettings((method, params) => appServer.rpc(method, params), sourceThreadId) : undefined,
+          // Boards run on Codex, so they offer Codex models only.
+          readProjectBoardModels((method, params) => shared.appServer.rpc(method, params)),
+          sourceThreadId ? readProjectBoardThreadSettings((method, params) => shared.appServer.rpc(method, params), sourceThreadId) : undefined,
         ])
         setJson(res, 200, { data: { ...catalog, defaultModel: inherited?.model || catalog.defaultModel,
           defaultReasoningEffort: inherited?.reasoningEffort || catalog.defaultReasoningEffort } })

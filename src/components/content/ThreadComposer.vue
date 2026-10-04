@@ -167,7 +167,7 @@
             v-model="goalDraft"
             class="thread-composer-goal-input"
             rows="3"
-            placeholder="Set a goal Codex should keep working on..."
+            placeholder="Set a goal this chat should keep working on..."
             :disabled="isInteractionDisabled"
             @keydown="onGoalInputKeydown"
           />
@@ -561,6 +561,7 @@ const props = defineProps<{
   cwd?: string
   models: string[]
   modelOptions?: AvailableModel[]
+  provider?: 'openai' | 'anthropic'
   selectedModel: string
   selectedReasoningEffort: ReasoningEffort | ''
   skills?: SkillItem[]
@@ -716,8 +717,8 @@ const reasoningPlaceholder = computed(() =>
 const goalSlashCommand = computed<SkillItem>(() => ({
   name: 'Goal',
   description: props.goal
-    ? 'Edit the goal Codex keeps working toward'
-    : 'Set a goal Codex will keep working toward',
+    ? 'Edit the goal this chat keeps working toward'
+    : 'Set a goal this chat will keep working toward',
   path: GOAL_SLASH_COMMAND_PATH,
 }))
 const skillOptions = computed<SkillItem[]>(() => [...(props.submitMessage ? [] : [goalSlashCommand.value]), ...(props.skills ?? [])])
@@ -735,6 +736,8 @@ const skillDropdownOptions = computed(() =>
   })),
 )
 const pluginMentionSuggestions = computed(() => {
+  // Codex plugins are not available to Claude Code chats.
+  if (props.provider === 'anthropic') return []
   const query = mentionQuery.value.trim().toLocaleLowerCase()
   const matches = query
     ? installedPlugins.value.filter((plugin) =>

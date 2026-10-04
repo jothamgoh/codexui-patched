@@ -634,6 +634,8 @@ export class ClaudeBackend {
   private readonly transcriptPaths = new Map<string, string>()
   private readonly transcriptCache = new Map<string, ParsedTranscript>()
   private readonly questions = new Map<number, QuestionRequest>()
+  /** Best-known chat names, for notification titles. */
+  private readonly sessionTitles = new Map<string, string>()
   private nextRequestId = SERVER_REQUEST_ID_BASE
   private login: ClaudeLogin | null = null
 
@@ -1046,6 +1048,7 @@ export class ClaudeBackend {
   private async threadFromInfo(info: SDKSessionInfo): Promise<Record<string, unknown>> {
     const stored = await this.store.get(info.sessionId)
     const name = info.customTitle || info.summary || ''
+    if (name) this.sessionTitles.set(info.sessionId, name)
     return this.threadPayload(info.sessionId, {
       name,
       preview: info.firstPrompt || name,
@@ -1223,6 +1226,7 @@ export class ClaudeBackend {
       ? (stored?.rewindAt ? truncateChain(transcript.chain, stored.rewindAt) : transcript.chain)
       : []
     const summary = buildTurnsFromChain(chain, stored?.cwd ?? '', { liveTurnId: live?.turnId ?? null })
+    if (transcript?.title) this.sessionTitles.set(sessionId, transcript.title)
     const meta = {
       name: transcript?.title ?? '',
       preview: transcript?.firstPrompt ?? '',
@@ -1288,6 +1292,7 @@ export class ClaudeBackend {
       await renameSession(sessionId, trimmed)
     }
     this.invalidateList()
+    this.sessionTitles.set(sessionId, trimmed)
     this.emit('thread/name/updated', { threadId, threadName: trimmed })
     return {}
   }
@@ -1537,6 +1542,18 @@ export class ClaudeBackend {
       // Stream readable reasoning, as Codex does, where the model supports it.
       ...(modelInfo?.supportsAdaptiveThinking ? { thinking: { type: 'adaptive' as const, display: 'summarized' as const } } : {}),
       hooks: { PreToolUse: [{ matcher: 'AskUserQuestion', hooks: [askQuestion] }] },
+      // Headless Claude Code offers AskUserQuestion only when the host can
+      // answer permission prompts. Bypass mode still approves every other
+      // tool without asking; the hook above supplies the answers.
+      canUseTool: async (toolName, toolInput, { signal, toolUseID }) => {
+        if (toolName !== 'AskUserQuestion' || asRecord(toolInput.answers)) {
+          return { behavior: 'allow', updatedInput: toolInput }
+        }
+        const answers = await this.askUser(runner, toolUseID, toolInput, signal)
+        return answers
+          ? { behavior: 'allow', updatedInput: { ...toolInput, answers } }
+          : { behavior: 'deny', message: 'The user did not answer the question.' }
+      },
     }
     runner.query = query({ prompt: input.stream, options })
     this.runners.set(sessionId, runner)
@@ -1614,6 +1631,8 @@ export class ClaudeBackend {
   }
 
   private titleFor(sessionId: string): string {
+    const known = this.sessionTitles.get(sessionId)
+    if (known) return known
     for (const [path, transcript] of this.transcriptCache) {
       if (path.endsWith(`${sessionId}.jsonl`)) return transcript.title || transcript.firstPrompt.slice(0, 80)
     }

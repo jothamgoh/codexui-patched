@@ -184,6 +184,7 @@ function commandItem(tool: ClaudeToolUse, cwd: string, outcome: ClaudeToolOutcom
   } else if (outcome) {
     aggregatedOutput = outcome.text
     exitCode = outcome.isError ? exitCodeFrom(outcome.text) ?? 1 : 0
+    if (outcome.isError && /interrupted by user/iu.test(outcome.text)) status = 'interrupted'
   }
   return {
     type: 'commandExecution',

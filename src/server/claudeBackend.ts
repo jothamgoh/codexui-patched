@@ -77,6 +77,10 @@ const SEARCH_FILE_LIMIT = 300
 const SEARCH_MAX_BYTES = 40 * 1024 * 1024
 const DEFAULT_CONTEXT_WINDOW = 200_000
 const TRANSCRIPT_CACHE_BYTES = 96 * 1024 * 1024
+/** A transcript written this recently by another Claude Code process is busy. */
+const EXTERNAL_ACTIVITY_MS = 30_000
+/** Writes this soon after CodexUI's own activity (titles, hooks) are its own. */
+const OWN_WRITE_SLACK_MS = 10_000
 const SERVER_REQUEST_ID_BASE = 1_700_000_000
 const GOAL_COMPLETE_MARKER = /^\s*GOAL COMPLETE\s*$/mu
 const GOAL_BLOCKED_MARKER = /^\s*GOAL BLOCKED:?\s*(.*)$/mu
@@ -670,6 +674,8 @@ export class ClaudeBackend {
   private readonly questions = new Map<number, QuestionRequest>()
   /** Best-known chat names, for notification titles. */
   private readonly sessionTitles = new Map<string, string>()
+  /** When CodexUI last saw its own Claude process write each session. */
+  private readonly ownActivityMs = new Map<string, number>()
   private nextRequestId = SERVER_REQUEST_ID_BASE
   private login: ClaudeLogin | null = null
 
@@ -1342,6 +1348,7 @@ export class ClaudeBackend {
     if (await this.findTranscriptPath(sessionId, (await this.store.get(sessionId))?.cwd ?? '')) {
       const { renameSession } = await this.sdk()
       await renameSession(sessionId, trimmed)
+      this.ownActivityMs.set(sessionId, Date.now())
     }
     this.invalidateList()
     this.sessionTitles.set(sessionId, trimmed)
@@ -1513,7 +1520,12 @@ export class ClaudeBackend {
     const settingsKey = `${stored.model}|${stored.effort ?? ''}|${cwd}`
 
     let runner = this.runners.get(sessionId)
-    if (runner && (runner.closed || runner.settingsKey !== settingsKey)) {
+    const external = await this.externalActivity(sessionId, cwd)
+    if (external.recent && !runner) {
+      throw new Error('This Claude session is active in another app, such as a terminal or Remote Control. Continue it there, or send again once it has been idle for half a minute.')
+    }
+    // A chat continued elsewhere since this process last ran must reload its history.
+    if (runner && (runner.closed || runner.settingsKey !== settingsKey || external.since)) {
       this.closeRunner(sessionId)
       runner = undefined
     }
@@ -1528,6 +1540,16 @@ export class ClaudeBackend {
     }
     if (stored.rewindAt) await this.store.update(sessionId, { rewindAt: null })
     return { turn: { id: turn.turnId, items: [], status: 'inProgress', error: null } }
+  }
+
+  /** Whether another Claude Code process has written this session. */
+  private async externalActivity(sessionId: string, cwd: string): Promise<{ since: boolean; recent: boolean }> {
+    const path = await this.findTranscriptPath(sessionId, cwd)
+    const info = path ? await stat(path).catch(() => null) : null
+    if (!info) return { since: false, recent: false }
+    const own = this.ownActivityMs.get(sessionId) ?? 0
+    const since = info.mtimeMs > own + OWN_WRITE_SLACK_MS
+    return { since, recent: since && Date.now() - info.mtimeMs < EXTERNAL_ACTIVITY_MS }
   }
 
   private async createRunner(
@@ -1759,6 +1781,7 @@ export class ClaudeBackend {
   }
 
   private handleMessage(runner: SessionRunner, message: SDKMessage): void {
+    this.ownActivityMs.set(runner.sessionId, Date.now())
     const record = message as unknown as Record<string, unknown>
     if (typeof record.parent_tool_use_id === 'string' && record.parent_tool_use_id) return
 

@@ -231,6 +231,28 @@ test('reads a growing transcript incrementally and waits for half-written lines'
   }
 })
 
+test('refuses to send to a session another Claude app is writing', async () => {
+  const configDir = await mkdtemp(join(tmpdir(), 'codexui-claude-config-'))
+  const previous = process.env.CLAUDE_CONFIG_DIR
+  process.env.CLAUDE_CONFIG_DIR = configDir
+  try {
+    const sessionId = '66666666-7777-8888-9999-000000000000'
+    const projectDir = join(configDir, 'projects', '-work-project')
+    await mkdir(projectDir, { recursive: true })
+    await writeFile(join(projectDir, `${sessionId}.jsonl`), fixture.slice(0, 2).map((entry) => JSON.stringify(entry)).join('\n') + '\n')
+    const backend = new ClaudeBackend(join(configDir, 'threads.json'))
+    backend.readRuntime = async () => ({ account: { email: 'a@b.c' }, connected: true, models: [] })
+    await assert.rejects(
+      backend.rpc('turn/start', { threadId: `claude-${sessionId}`, input: [{ type: 'text', text: 'hi' }] }),
+      /active in another app/u,
+    )
+  } finally {
+    if (previous === undefined) delete process.env.CLAUDE_CONFIG_DIR
+    else process.env.CLAUDE_CONFIG_DIR = previous
+    await rm(configDir, { recursive: true, force: true })
+  }
+})
+
 // ── Backend helpers ──────────────────────────────────────────────────────
 
 test('recognizes both stable and runtime-generated Claude model ids', () => {

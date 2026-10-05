@@ -81,6 +81,7 @@ const TRANSCRIPT_CACHE_BYTES = 96 * 1024 * 1024
 const EXTERNAL_ACTIVITY_MS = 30_000
 /** Writes this soon after CodexUI's own activity (titles, hooks) are its own. */
 const OWN_WRITE_SLACK_MS = 10_000
+const HUMAN_PROMPT_SCAN_BYTES = 256 * 1024
 const SERVER_REQUEST_ID_BASE = 1_700_000_000
 const GOAL_COMPLETE_MARKER = /^\s*GOAL COMPLETE\s*$/mu
 const GOAL_BLOCKED_MARKER = /^\s*GOAL BLOCKED:?\s*(.*)$/mu
@@ -674,6 +675,7 @@ export class ClaudeBackend {
   private readonly questions = new Map<number, QuestionRequest>()
   /** Best-known chat names, for notification titles. */
   private readonly sessionTitles = new Map<string, string>()
+  private readonly humanSessions = new Map<string, { human: boolean; lastModified: number }>()
   /** When CodexUI last saw its own Claude process write each session. */
   private readonly ownActivityMs = new Map<string, number>()
   private nextRequestId = SERVER_REQUEST_ID_BASE
@@ -998,13 +1000,40 @@ export class ClaudeBackend {
       ])
       const byId = new Map(interactive.map((info) => [info.sessionId, info]))
       for (const info of everything) {
-        if (!byId.has(info.sessionId) && store.threads[info.sessionId]) byId.set(info.sessionId, info)
+        if (byId.has(info.sessionId)) continue
+        // Remote Control and phone chats are recorded like headless runs;
+        // what sets them apart is that a person typed the prompts.
+        if (store.threads[info.sessionId] || await this.hasHumanPrompt(info)) byId.set(info.sessionId, info)
       }
-      return [...byId.values()].sort((a, b) => b.lastModified - a.lastModified)
+      // A Remote Control terminal writes a session before anyone chats in it;
+      // sessions without a prompt have nothing to show.
+      return [...byId.values()]
+        .filter((info) => Boolean(info.firstPrompt?.trim()))
+        .sort((a, b) => b.lastModified - a.lastModified)
     })()
     this.listCache = { at: Date.now(), key, value }
     value.catch(() => { if (this.listCache?.value === value) this.listCache = null })
     return value
+  }
+
+  /** Whether a person typed in this session, as opposed to a script or tool. */
+  private async hasHumanPrompt(info: SDKSessionInfo): Promise<boolean> {
+    const known = this.humanSessions.get(info.sessionId)
+    if (known && (known.human || known.lastModified === info.lastModified)) return known.human
+    const path = await this.findTranscriptPath(info.sessionId, info.cwd ?? '')
+    if (!path) return false
+    const handle = await open(path, 'r').catch(() => null)
+    if (!handle) return false
+    try {
+      const buffer = Buffer.alloc(HUMAN_PROMPT_SCAN_BYTES)
+      const { bytesRead } = await handle.read(buffer, 0, buffer.length, 0)
+      const head = buffer.subarray(0, bytesRead).toString('utf8')
+      const human = head.includes('"turnOrigin":"human"') || head.includes('"origin":{"kind":"human"}')
+      this.humanSessions.set(info.sessionId, { human, lastModified: info.lastModified })
+      return human
+    } finally {
+      await handle.close()
+    }
   }
 
   private invalidateList(): void {

@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict'
-import { chmod, mkdtemp, rm, writeFile } from 'node:fs/promises'
+import { appendFile, chmod, mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { pathToFileURL } from 'node:url'
@@ -193,6 +193,38 @@ test('maps Claude tools onto the closest Codex item', () => {
   assert.equal(mcp.tool, 'browser_navigate')
   assert.deepEqual(mcp.error, { message: 'boom' })
   assert.equal(item('ExitPlanMode', { plan: '1. Do it' }).type, 'plan')
+})
+
+test('reads a growing transcript incrementally and waits for half-written lines', async () => {
+  const configDir = await mkdtemp(join(tmpdir(), 'codexui-claude-config-'))
+  const previous = process.env.CLAUDE_CONFIG_DIR
+  process.env.CLAUDE_CONFIG_DIR = configDir
+  try {
+    const sessionId = '11111111-2222-3333-4444-555555555555'
+    const projectDir = join(configDir, 'projects', '-work-project')
+    await mkdir(projectDir, { recursive: true })
+    const file = join(projectDir, `${sessionId}.jsonl`)
+    const line = (value) => `${JSON.stringify(value)}\n`
+    await writeFile(file, fixture.slice(0, 2).map(line).join(''))
+    const backend = new ClaudeBackend(join(configDir, 'threads.json'))
+    const read = async () => (await backend.rpc('thread/read', { threadId: `claude-${sessionId}`, includeTurns: true })).thread.turns
+    assert.equal((await read()).length, 1)
+
+    const rest = fixture.slice(2, 15).map(line).join('')
+    const second = line(fixture[15])
+    await appendFile(file, `${rest}${second.slice(0, 20)}`)
+    const partial = await read()
+    assert.equal(partial.length, 1, 'half-written prompt is not parsed yet')
+    assert.equal(partial[0].items.at(-1).id, 'msg_4:text:0')
+
+    await appendFile(file, second.slice(20))
+    const complete = await read()
+    assert.deepEqual(complete.map((turn) => turn.id), ['u1', 'u2'])
+  } finally {
+    if (previous === undefined) delete process.env.CLAUDE_CONFIG_DIR
+    else process.env.CLAUDE_CONFIG_DIR = previous
+    await rm(configDir, { recursive: true, force: true })
+  }
 })
 
 // ── Backend helpers ──────────────────────────────────────────────────────

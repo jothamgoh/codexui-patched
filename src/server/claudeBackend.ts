@@ -1,7 +1,7 @@
 import { randomUUID } from 'node:crypto'
 import { spawn } from 'node:child_process'
 import { existsSync, statSync } from 'node:fs'
-import { mkdir, readdir, readFile, rename, stat, writeFile } from 'node:fs/promises'
+import { mkdir, open, readdir, readFile, rename, stat, writeFile } from 'node:fs/promises'
 import { createRequire } from 'node:module'
 import { homedir } from 'node:os'
 import { delimiter, dirname, join } from 'node:path'
@@ -25,6 +25,7 @@ import {
   addUsage,
   asRecord,
   buildTurnsFromChain,
+  capToolOutput,
   emptyUsage,
   GOAL_CONTINUATION_TAG,
   MY_REQUEST_MARKER,
@@ -75,6 +76,7 @@ const INTERRUPT_SETTLE_MS = 8_000
 const SEARCH_FILE_LIMIT = 300
 const SEARCH_MAX_BYTES = 40 * 1024 * 1024
 const DEFAULT_CONTEXT_WINDOW = 200_000
+const TRANSCRIPT_CACHE_BYTES = 96 * 1024 * 1024
 const SERVER_REQUEST_ID_BASE = 1_700_000_000
 const GOAL_COMPLETE_MARKER = /^\s*GOAL COMPLETE\s*$/mu
 const GOAL_BLOCKED_MARKER = /^\s*GOAL BLOCKED:?\s*(.*)$/mu
@@ -413,7 +415,10 @@ class ClaudeThreadStore {
 
 type ParsedTranscript = {
   mtimeMs: number
+  /** File size when last read. */
   size: number
+  /** Bytes parsed so far: everything up to the last complete line. */
+  consumed: number
   entries: TranscriptEntry[]
   chain: TranscriptEntry[]
   title: string
@@ -446,6 +451,21 @@ function readTitle(entries: TranscriptEntry[]): { title: string; firstPrompt: st
     }
   }
   return { title: customTitle || aiTitle, firstPrompt, createdAtMs }
+}
+
+/** Complete lines between two byte offsets; a partly written last line waits. */
+async function readAppendedLines(path: string, from: number, to: number): Promise<{ text: string; bytes: number } | null> {
+  if (to <= from) return { text: '', bytes: 0 }
+  const handle = await open(path, 'r').catch(() => null)
+  if (!handle) return null
+  try {
+    const buffer = Buffer.alloc(to - from)
+    const { bytesRead } = await handle.read(buffer, 0, buffer.length, from)
+    const end = buffer.subarray(0, bytesRead).lastIndexOf(0x0a) + 1
+    return { text: buffer.subarray(0, end).toString('utf8'), bytes: end }
+  } finally {
+    await handle.close()
+  }
 }
 
 // ── Live turns ──────────────────────────────────────────────────────────
@@ -999,22 +1019,39 @@ export class ClaudeBackend {
     const info = await stat(path).catch(() => null)
     if (!info) return null
     const cached = this.transcriptCache.get(path)
-    if (cached && cached.mtimeMs === info.mtimeMs && cached.size === info.size) return cached
-    const entries = parseTranscript(await readFile(path, 'utf8'))
+    if (cached && cached.mtimeMs === info.mtimeMs && cached.size === info.size) {
+      this.transcriptCache.delete(path)
+      this.transcriptCache.set(path, cached)
+      return cached
+    }
+    // Transcripts only grow: while Claude replies, parse just the new lines.
+    const appended = cached && info.size >= cached.consumed
+      ? await readAppendedLines(path, cached.consumed, info.size)
+      : null
+    const full = appended ? null : await readAppendedLines(path, 0, info.size)
+    const delta = appended ?? full
+    if (!delta) return cached ?? null
+    const entries = appended && cached ? [...cached.entries, ...parseTranscript(delta.text)] : parseTranscript(delta.text)
+    const consumed = (appended && cached ? cached.consumed : 0) + delta.bytes
     const { title, firstPrompt, createdAtMs } = readTitle(entries)
     const parsed: ParsedTranscript = {
       mtimeMs: info.mtimeMs,
       size: info.size,
+      consumed,
       entries,
       chain: resolveMainChain(entries),
       title,
       firstPrompt,
       createdAtMs,
     }
+    this.transcriptCache.delete(path)
     this.transcriptCache.set(path, parsed)
-    if (this.transcriptCache.size > 24) {
-      const oldest = this.transcriptCache.keys().next().value
-      if (oldest !== undefined) this.transcriptCache.delete(oldest)
+    // Keep recently read chats by source size, not count: one long session
+    // can be tens of megabytes.
+    let cachedBytes = 0
+    for (const [cachedPath, cachedTranscript] of [...this.transcriptCache].reverse()) {
+      cachedBytes += cachedTranscript.size
+      if (cachedBytes > TRANSCRIPT_CACHE_BYTES && cachedPath !== path) this.transcriptCache.delete(cachedPath)
     }
     return parsed
   }
@@ -1776,7 +1813,7 @@ export class ClaudeBackend {
         const tool = turn.tools.get(readString(result.tool_use_id))
         if (!tool) continue
         const outcome = {
-          text: stringifyToolResult(result.content),
+          text: capToolOutput(stringifyToolResult(result.content)),
           isError: result.is_error === true,
           structured: (message as { tool_use_result?: unknown }).tool_use_result,
         }

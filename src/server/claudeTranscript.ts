@@ -413,13 +413,61 @@ function userMessageItem(id: string, content: UserContent): ThreadItem {
 
 export type TranscriptEntry = Record<string, unknown>
 
+const MAX_TOOL_OUTPUT_CHARS = 64 * 1024
+
+/** Command output and tool errors the conversation shows, bounded like Codex's. */
+export function capToolOutput(text: string): string {
+  return text.length > MAX_TOOL_OUTPUT_CHARS
+    ? `${text.slice(0, MAX_TOOL_OUTPUT_CHARS)}\n… (output truncated)`
+    : text
+}
+
+/**
+ * Drop what the conversation never renders: whole original files kept for
+ * Claude's own undo, file contents returned by Read, and system-prompt
+ * snapshots. Large chats otherwise hold hundreds of megabytes in memory.
+ */
+function pruneEntry(entry: TranscriptEntry): TranscriptEntry {
+  const result = asRecord(entry.toolUseResult)
+  if (result) {
+    const kept: Record<string, unknown> = {}
+    for (const key of ['type', 'filePath', 'structuredPatch', 'stdout', 'stderr', 'interrupted', 'staged']) {
+      if (key in result) kept[key] = result[key]
+    }
+    if (result.type === 'create' && typeof result.content === 'string') kept.content = result.content
+    if (typeof kept.stdout === 'string') kept.stdout = capToolOutput(kept.stdout)
+    if (typeof kept.stderr === 'string') kept.stderr = capToolOutput(kept.stderr)
+    entry.toolUseResult = kept
+  }
+  const attachment = asRecord(entry.attachment)
+  if (attachment && attachment.type !== 'queued_command') entry.attachment = { type: attachment.type }
+  const message = asRecord(entry.message)
+  if (message && Array.isArray(message.content)) {
+    message.content = message.content.map((raw) => {
+      const block = asRecord(raw)
+      if (block?.type === 'tool_result') {
+        return { ...block, content: capToolOutput(stringifyToolResult(block.content)) }
+      }
+      if (block?.type === 'tool_use' && EDIT_TOOLS.has(readString(block.name))) {
+        // Edits render from their recorded patch; the request bodies are not shown.
+        const input = asRecord(block.input) ?? {}
+        return { ...block, input: { file_path: input.file_path, notebook_path: input.notebook_path } }
+      }
+      return raw
+    })
+  }
+  return entry
+}
+
+const EDIT_TOOLS = new Set(['Edit', 'MultiEdit', 'Write', 'NotebookEdit'])
+
 export function parseTranscript(raw: string): TranscriptEntry[] {
   const entries: TranscriptEntry[] = []
   for (const line of raw.split('\n')) {
     if (!line.trim()) continue
     try {
       const entry = asRecord(JSON.parse(line))
-      if (entry) entries.push(entry)
+      if (entry) entries.push(pruneEntry(entry))
     } catch {
       // A partially written last line is normal while Claude is replying.
     }
@@ -486,7 +534,7 @@ export function buildTurnsFromChain(
       const block = asRecord(raw)
       if (block?.type !== 'tool_result') continue
       outcomes.set(readString(block.tool_use_id), {
-        text: stringifyToolResult(block.content),
+        text: capToolOutput(stringifyToolResult(block.content)),
         isError: block.is_error === true,
         structured: entry.toolUseResult,
       })

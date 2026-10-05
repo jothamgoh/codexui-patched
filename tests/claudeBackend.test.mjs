@@ -451,6 +451,26 @@ test('merges chat search results from both backends by recency', async () => {
   assert.deepEqual(result.data.map((row) => row.thread.id), ['claude-new', 'codex-old'])
 })
 
+test('offers GPT-6.1 Sol until the local runtime advertises it itself', async () => {
+  const baseModel = { id: 'gpt-6-astra', model: 'gpt-6-astra', isDefault: true }
+  const claudeModel = { id: 'claude-default', modelProvider: 'anthropic' }
+  const { codex, claude } = createBackends(async () => ({ data: [baseModel] }), {
+    listModels: async () => [claudeModel],
+  })
+  const fallback = await new BackendRouter(codex, claude).rpc('model/list', {})
+  assert.deepEqual(fallback.data.map((model) => model.id), ['gpt-6-astra', 'gpt-6.1-sol', 'claude-default'])
+  assert.deepEqual(
+    fallback.data[1].supportedReasoningEfforts.map((entry) => entry.reasoningEffort),
+    ['low', 'medium', 'high', 'xhigh', 'max'],
+  )
+  assert.equal(fallback.data[1].defaultReasoningEffort, 'medium')
+
+  codex.rpc = async () => ({ data: [baseModel, { ...fallback.data[1], displayName: 'Runtime GPT-6.1 Sol' }] })
+  const advertised = await new BackendRouter(codex, claude).rpc('model/list', {})
+  assert.deepEqual(advertised.data.map((model) => model.id), ['gpt-6-astra', 'gpt-6.1-sol', 'claude-default'])
+  assert.equal(advertised.data[1].displayName, 'Runtime GPT-6.1 Sol', 'runtime metadata replaces the compatibility entry')
+})
+
 test('routes question answers to the backend that asked', async () => {
   const answered = []
   const { codex, claude } = createBackends(async () => ({}), {

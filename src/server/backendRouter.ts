@@ -39,6 +39,17 @@ function readUpdatedAt(thread: unknown): number {
   return typeof value === 'number' ? value : 0
 }
 
+const GPT_6_1_SOL_MODEL = {
+  id: 'gpt-6.1-sol',
+  model: 'gpt-6.1-sol',
+  displayName: 'GPT-6.1-Sol',
+  description: 'Near-Astra performance for complex work at a lower cost.',
+  modelProvider: 'openai',
+  isDefault: false,
+  supportedReasoningEfforts: ['low', 'medium', 'high', 'xhigh', 'max'].map((reasoningEffort) => ({ reasoningEffort })),
+  defaultReasoningEffort: 'medium',
+}
+
 /**
  * Sends each request to Codex or Claude. Requests about a `claude-` chat, and
  * new chats started with a Claude model, go to Claude; chat lists, search and
@@ -130,7 +141,14 @@ export class BackendRouter<PendingRequest> implements CodexBackend<PendingReques
       }),
     ])
     const codexModels = Array.isArray(codexResult.data) ? codexResult.data : []
-    return { ...codexResult, data: [...codexModels, ...claudeModels] }
+    const hasGpt61Sol = codexModels.some((model) => {
+      const record = asRecord(model)
+      return record?.id === GPT_6_1_SOL_MODEL.id || record?.model === GPT_6_1_SOL_MODEL.model
+    })
+    return {
+      ...codexResult,
+      data: [...codexModels, ...(hasGpt61Sol ? [] : [GPT_6_1_SOL_MODEL]), ...claudeModels],
+    }
   }
 
   onNotification(listener: NotificationListener): () => void {

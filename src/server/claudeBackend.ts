@@ -1594,18 +1594,10 @@ export class ClaudeBackend {
       // Stream readable reasoning, as Codex does, where the model supports it.
       ...(modelInfo?.supportsAdaptiveThinking ? { thinking: { type: 'adaptive' as const, display: 'summarized' as const } } : {}),
       hooks: { PreToolUse: [{ matcher: 'AskUserQuestion', hooks: [askQuestion] }] },
-      // Headless Claude Code offers AskUserQuestion only when the host can
-      // answer permission prompts. Bypass mode still approves every other
-      // tool without asking; the hook above supplies the answers.
-      canUseTool: async (toolName, toolInput, { signal, toolUseID }) => {
-        if (toolName !== 'AskUserQuestion' || asRecord(toolInput.answers)) {
-          return { behavior: 'allow', updatedInput: toolInput }
-        }
-        const answers = await this.askUser(runner, toolUseID, toolInput, signal)
-        return answers
-          ? { behavior: 'allow', updatedInput: { ...toolInput, answers } }
-          : { behavior: 'deny', message: 'The user did not answer the question.' }
-      },
+      // Headless Claude Code offers AskUserQuestion only when its host can
+      // answer permission prompts. Bypass mode never prompts for other tools,
+      // and the hook above answers the question before any prompt would.
+      permissionPromptToolName: 'stdio',
     }
     if (this.tools.length > 0) {
       const { createSdkMcpServer, tool } = await this.sdk()

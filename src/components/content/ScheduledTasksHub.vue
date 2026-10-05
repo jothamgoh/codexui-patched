@@ -351,7 +351,7 @@
               <span>Model</span>
               <select v-model="draft.model">
                 <option value="">Use current default</option>
-                <option v-for="model in models" :key="model" :value="model">{{ model }}</option>
+                <option v-for="model in models" :key="model" :value="model">{{ modelLabels?.[model] || model }}</option>
               </select>
             </label>
             <label>
@@ -440,6 +440,7 @@ const props = defineProps<{
   threads: UiThread[]
   defaultCwd: string
   models: string[]
+  modelLabels?: Record<string, string>
   currentThreadId: string
 }>()
 

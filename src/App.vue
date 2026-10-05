@@ -264,7 +264,8 @@
               :error="automationError"
               :threads="notificationThreads"
               :default-cwd="newThreadCwd"
-              :models="codexModelIds"
+              :models="availableModelIds"
+              :model-labels="modelLabelsById"
               :current-thread-id="selectedThreadId"
               @create="onCreateAutomation"
               @update="onUpdateAutomation"
@@ -975,8 +976,8 @@ const composerProvider = computed<ChatProvider>(() => (isHomeRoute.value || !sel
 const composerModelIds = computed(() => (isHomeRoute.value || !selectedThreadId.value)
   ? availableModelIds.value
   : availableModelIds.value.filter((id) => providerForModelId(id, availableModels.value) === composerProvider.value))
-const codexModelIds = computed(() =>
-  availableModelIds.value.filter((id) => providerForModelId(id, availableModels.value) === 'openai'))
+const modelLabelsById = computed(() =>
+  Object.fromEntries(availableModels.value.map((model) => [model.id, model.label])))
 const composerThreadMentions = computed<ThreadMentionParam[]>(() => {
   const mentions: ThreadMentionParam[] = []
   const seen = new Set<string>()

@@ -12,5 +12,5 @@ export default defineConfig({
   banner: {
     js: '#!/usr/bin/env node',
   },
-  external: ['express', 'commander', '@anthropic-ai/claude-agent-sdk'],
+  external: ['express', 'commander', '@anthropic-ai/claude-agent-sdk', 'zod'],
 })

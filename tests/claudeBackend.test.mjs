@@ -6,7 +6,10 @@ import { pathToFileURL } from 'node:url'
 import test from 'node:test'
 import { build } from 'esbuild'
 
-const bundleDir = await mkdtemp(join(tmpdir(), 'codexui-claude-test-'))
+// Inside the checkout, so external packages resolve from its node_modules.
+const cacheDir = new URL('../node_modules/.cache/', import.meta.url).pathname
+await mkdir(cacheDir, { recursive: true })
+const bundleDir = await mkdtemp(join(cacheDir, 'codexui-claude-test-'))
 test.after(() => rm(bundleDir, { recursive: true, force: true }))
 
 /** Bundle a TypeScript module and its relative imports for Node's test runner. */
@@ -19,7 +22,7 @@ async function loadModule(relativePath) {
     platform: 'node',
     format: 'esm',
     target: 'node18',
-    external: ['@anthropic-ai/claude-agent-sdk'],
+    external: ['@anthropic-ai/claude-agent-sdk', 'zod'],
     logLevel: 'silent',
   })
   return import(pathToFileURL(outfile).href)
@@ -30,6 +33,7 @@ const { BackendRouter } = await loadModule('../src/server/backendRouter.ts')
 const transcript = await loadModule('../src/server/claudeTranscript.ts')
 const { startClaudeProcessHost, spawnThroughHost } = await loadModule('../src/server/claudeProcessHost.ts')
 const { buildReviewChanges } = await loadModule('../src/utils/reviewDiff.ts')
+const { createClaudeAutomationTool } = await loadModule('../src/server/claudeAutomationTool.ts')
 
 function createBackends(rpc, claudeOverrides = {}) {
   const codex = {
@@ -350,6 +354,25 @@ test('reports a missing host instead of hanging', async () => {
   const child = spawnThroughHost(join(tmpdir(), `missing-${Date.now()}.sock`), { command: '/usr/bin/claude', args: [], env: {} })
   const failure = await new Promise((resolve) => child.once('error', resolve))
   assert.match(failure.message, /session host is not running/u)
+})
+
+test('gives Claude chats the scheduled-task tool with their own model for new chats', async () => {
+  const calls = []
+  const tool = createClaudeAutomationTool(() => async (params) => {
+    calls.push(params)
+    return { contentItems: [{ type: 'inputText', text: 'Created scheduled task "Digest".' }], success: true }
+  })
+  assert.equal(tool.name, 'automation_update')
+  const context = { threadId: 'claude-s1', turnId: 'turn-1', model: 'claude-opus' }
+  const text = await tool.handler(context, { action: 'create', task: { kind: 'cron', cwd: '/work', prompt: 'Digest' } })
+  assert.equal(text, 'Created scheduled task "Digest".')
+  assert.deepEqual(calls[0], {
+    threadId: 'claude-s1',
+    turnId: 'turn-1',
+    arguments: { action: 'create', task: { kind: 'cron', cwd: '/work', prompt: 'Digest', model: 'claude-opus' } },
+  })
+  await tool.handler(context, { action: 'create', task: { kind: 'heartbeat', prompt: 'Check in' } })
+  assert.equal(calls[1].arguments.task.model, undefined)
 })
 
 // ── Router ───────────────────────────────────────────────────────────────

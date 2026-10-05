@@ -46,6 +46,7 @@ import {
 import { ReviewMutationConflictError, ReviewMutationGate } from './reviewMutationGate'
 import { BackendRouter } from './backendRouter'
 import { ClaudeBackend } from './claudeBackend'
+import { createClaudeAutomationTool } from './claudeAutomationTool'
 import { readReviewClientScope, reviewScopeMatches } from './reviewScope'
 import {
   GitWorkspaceRequestError,
@@ -1626,13 +1627,24 @@ function getSharedBridgeState(): SharedBridgeState {
   if (existing) return existing
 
   const appServer = new AppServerProcess()
+  let automationService: AutomationService | null = null
+  const claude = new ClaudeBackend(join(getCodexHomeDir(), 'codexui-claude-threads.json'), {
+    // A LaunchDaemon cannot read the login keychain where Claude keeps its
+    // sign-in; a host in the login session starts Claude Code instead.
+    hostSocketPath: process.env.CODEXUI_CLAUDE_HOST_SOCKET,
+    tools: [createClaudeAutomationTool(() => (params) => {
+      if (!automationService) throw new Error('Scheduled tasks are still starting.')
+      return automationService.handleDynamicToolCall(params)
+    })],
+  })
   const automationStore = new AutomationStore({
     stateFilePath: join(getCodexHomeDir(), 'codexui-automations.json'),
     sessionsDirectoryPath: join(getCodexHomeDir(), 'sessions'),
   })
-  const automationService = new AutomationService({
+  automationService = new AutomationService({
     store: automationStore,
-    appServer,
+    // Scheduled tasks can run in Codex or Claude chats.
+    appServer: new BackendRouter(appServer, claude),
     createWorktree: createManagedWorktree,
     dynamicToolSpec: AUTOMATION_DYNAMIC_TOOL_SPEC,
   })
@@ -1672,13 +1684,18 @@ function getSharedBridgeState(): SharedBridgeState {
     'project_board_update',
     (params) => projectBoardService.handleDynamicToolCall(params),
   )
+  const scheduledTasks = automationService
+  // Registered before any browser listener so run metadata is attached first.
+  claude.onNotification((notification) => {
+    void scheduledTasks.handleNotification(notification)
+  })
   appServer.onNotification((notification) => {
-    void automationService.handleNotification(notification)
+    void scheduledTasks.handleNotification(notification)
     void projectBoardService.handleNotification(notification).catch((error) => {
       console.warn('[project-boards] Failed to handle lifecycle notification:', getErrorMessage(error, 'Unknown project-board error'))
     })
   })
-  void automationService.start().catch((error) => {
+  void scheduledTasks.start().catch((error) => {
     console.warn('[automations] Failed to start scheduler:', getErrorMessage(error, 'Unknown scheduler error'))
   })
   const projectBoardRecoveryBaseline = projectBoardStore.read()
@@ -1689,14 +1706,10 @@ function getSharedBridgeState(): SharedBridgeState {
 
   const created: SharedBridgeState = {
     appServer,
-    claude: new ClaudeBackend(join(getCodexHomeDir(), 'codexui-claude-threads.json'), {
-      // A LaunchDaemon cannot read the login keychain where Claude keeps its
-      // sign-in; a host in the login session starts Claude Code instead.
-      hostSocketPath: process.env.CODEXUI_CLAUDE_HOST_SOCKET,
-    }),
+    claude,
     threadTitleGenerator: new ThreadTitleGenerator(),
     methodCatalog: new MethodCatalog(),
-    automationService,
+    automationService: scheduledTasks,
     projectBoardService,
     projectBoardRecoveryBaseline,
   }

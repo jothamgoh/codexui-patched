@@ -635,9 +635,22 @@ type QuestionRequest = {
 
 // ── Backend ─────────────────────────────────────────────────────────────
 
+/** A CodexUI capability offered to Claude chats as an in-process MCP tool. */
+export type ClaudeHostTool = {
+  name: string
+  description: string
+  /** A zod raw shape describing the tool input. */
+  shape: Record<string, unknown>
+  handler: (
+    context: { threadId: string; turnId: string; model: string },
+    args: Record<string, unknown>,
+  ) => Promise<string>
+}
+
 export type ClaudeBackendOptions = {
   /** Spawn Claude Code through a login-session host listening here. */
   hostSocketPath?: string
+  tools?: ClaudeHostTool[]
 }
 
 export class ClaudeBackend {
@@ -646,6 +659,7 @@ export class ClaudeBackend {
   private readonly runners = new Map<string, SessionRunner>()
   private readonly store: ClaudeThreadStore
   private readonly hostSocketPath: string
+  private readonly tools: ClaudeHostTool[]
   private runtimeCache: { at: number; value: ClaudeRuntimeState } | null = null
   private runtimePending: Promise<ClaudeRuntimeState> | null = null
   private usageCache: { at: number; value: ClaudeUsage } | null = null
@@ -662,6 +676,7 @@ export class ClaudeBackend {
   constructor(storeFilePath: string, options: ClaudeBackendOptions = {}) {
     this.store = new ClaudeThreadStore(storeFilePath)
     this.hostSocketPath = options.hostSocketPath?.trim() ?? ''
+    this.tools = options.tools ?? []
   }
 
   private sdk(): Promise<SdkModule> {
@@ -1591,6 +1606,31 @@ export class ClaudeBackend {
           ? { behavior: 'allow', updatedInput: { ...toolInput, answers } }
           : { behavior: 'deny', message: 'The user did not answer the question.' }
       },
+    }
+    if (this.tools.length > 0) {
+      const { createSdkMcpServer, tool } = await this.sdk()
+      options.mcpServers = {
+        codexui: createSdkMcpServer({
+          name: 'codexui',
+          version: '1.0.0',
+          tools: this.tools.map((hostTool) => tool(
+            hostTool.name,
+            hostTool.description,
+            hostTool.shape as Parameters<typeof tool>[2],
+            async (args) => {
+              try {
+                const text = await hostTool.handler(
+                  { threadId, turnId: runner.activeTurn?.turnId ?? '', model: stored.model },
+                  asRecord(args) ?? {},
+                )
+                return { content: [{ type: 'text' as const, text: text || 'Done.' }] }
+              } catch (error) {
+                return { content: [{ type: 'text' as const, text: error instanceof Error ? error.message : String(error) }], isError: true }
+              }
+            },
+          )),
+        }),
+      }
     }
     runner.query = query({ prompt: input.stream, options })
     this.runners.set(sessionId, runner)

@@ -254,7 +254,7 @@ export class AutomationService {
     const snapshot = await this.store.updateRun(runId, {
       status: succeeded ? 'succeeded' : 'failed',
       finishedAtIso: this.now().toISOString(),
-      error: succeeded ? '' : `Codex turn ended with status ${status}.`,
+      error: succeeded ? '' : `The scheduled turn ended with status ${status}.`,
       unread: true,
     })
     const run = snapshot.runs.find((entry) => entry.id === runId)

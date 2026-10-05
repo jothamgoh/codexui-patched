@@ -14,6 +14,15 @@ export type ProjectBoardActivity = {
   summary: string
 }
 
+/**
+ * A live Lead may exist briefly before thread/list catches up. Completed and
+ * paused work must come from the authoritative chat catalog; otherwise stale
+ * board metadata can create a sidebar row whose transcript no longer exists.
+ */
+export function shouldSurfaceUnlistedBoardActivity(activity: ProjectBoardActivity): boolean {
+  return activity.status === 'running' || activity.status === 'needs_input'
+}
+
 /** Board state remains discoverable even before its Lead reaches the chat list. */
 export function collectProjectBoardActivity(snapshot: ProjectBoardSnapshot): ProjectBoardActivity[] {
   const boards = new Map(snapshot.boards.map((board) => [board.id, board]))

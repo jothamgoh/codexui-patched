@@ -38,7 +38,7 @@ async function importModule(path, replacements = []) {
 }
 
 const { collectProjectBoardNotifications, projectBoardThreadIds } = await importModule('../src/server/projectBoardNotificationEvents.ts')
-const { collectProjectBoardActivity } = await importModule('../src/utils/projectBoardActivity.ts')
+const { collectProjectBoardActivity, shouldSurfaceUnlistedBoardActivity } = await importModule('../src/utils/projectBoardActivity.ts')
 const { collectThreadHelpers } = await importModule('../src/utils/threadHelpers.ts')
 
 test('helpers follow native ancestry across nested and unlisted parents without guessing from names or folders', () => {
@@ -131,6 +131,15 @@ test('board activity shows an unlisted Lead and planning run once, preserving ex
   assert.equal(stopped[1].threadId, 'planning-chat', 'Completed planning chats remain linked in the project')
   assert.equal(stopped[0].status, 'paused')
   assert.equal(stopped[0].summary, 'The server restarted')
+})
+
+test('only live unlisted board chats receive temporary sidebar rows', () => {
+  const activity = (status) => ({ status })
+  assert.equal(shouldSurfaceUnlistedBoardActivity(activity('running')), true)
+  assert.equal(shouldSurfaceUnlistedBoardActivity(activity('needs_input')), true)
+  for (const status of ['review', 'blocked', 'paused', 'done', 'backlog']) {
+    assert.equal(shouldSurfaceUnlistedBoardActivity(activity(status)), false, `${status} must come from the real chat catalog`)
+  }
 })
 
 test('planner conversations finish without review attention while newly requested cards remain reviewable', () => {

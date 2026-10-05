@@ -1382,3 +1382,9 @@ After each feature implementation session that uses this skill:
 - Native model controls consume each model's advertised `supportedReasoningEfforts`. Claude Code exposes its current alias-to-version labels and effort levels at runtime, so display those values instead of hardcoding an Opus version or applying Codex's global thinking choices to Claude.
 - A disconnected provider should not contribute selectable models or usage cards. Keep the account row visible so the user can sign in, then refresh model metadata and limits after authentication changes.
 - Codex state-database listings may include a saved thread that is absent from the app-server's in-memory registry. Match the native resume flow by retrying `thread/read` only after a targeted `thread/resume`; do not suppress unrelated read failures.
+
+## Findings: Authoritative sidebar chats and board metadata (2026-10-05)
+
+- The integrated ChatGPT/Codex renderer `26.924.22138` builds recent chat rows from `thread/list`; it has no durable-board equivalent that invents completed chat rows outside that catalog.
+- CodexUI may temporarily surface an unlisted board Lead while it is running or waiting for input because `thread/list` can lag thread creation. Once work is no longer live, the authoritative Codex/Claude catalog must own sidebar visibility.
+- Do not synthesize completed, paused, blocked, review, or backlog rows from board metadata alone. Their stored thread IDs can outlive deleted rollout transcripts and create blank sidebar destinations.

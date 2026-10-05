@@ -461,7 +461,7 @@ import ThreadConversation from './components/content/ThreadConversation.vue'
 import ThreadComposer, { type SubmitPayload } from './components/content/ThreadComposer.vue'
 import TrackFeatureDialog from './components/content/TrackFeatureDialog.vue'
 import { useComposerDraftStore } from './stores/composerDrafts'
-import { collectProjectBoardActivity } from './utils/projectBoardActivity'
+import { collectProjectBoardActivity, shouldSurfaceUnlistedBoardActivity } from './utils/projectBoardActivity'
 import { collectThreadHelpers } from './utils/threadHelpers'
 import { useThreadHelperActivity } from './composables/useThreadHelperActivity'
 import QueuedMessages from './components/content/QueuedMessages.vue'
@@ -667,6 +667,7 @@ const sidebarProjectGroups = computed<UiProjectGroup[]>(() => {
   const known = new Set(groups.flatMap((group) => group.threads.map((thread) => thread.id)))
   for (const activity of boardActivity.value) {
     if (!activity.threadId || known.has(activity.threadId)) continue
+    if (!shouldSurfaceUnlistedBoardActivity(activity)) continue
     const board = projectBoardSnapshot.value.boards.find((entry) => entry.id === activity.boardId)
     if (!board) continue
     let group = groups.find((entry) => entry.threads.some((thread) => thread.cwd === board.projectPath) || entry.projectName === board.projectName)

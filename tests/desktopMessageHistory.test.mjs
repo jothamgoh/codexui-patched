@@ -291,12 +291,35 @@ test('selected history loads while startup metadata is pending and overlapping l
   await flush()
   assert.equal(starts.length, 0, 'Sending waits for preferences without delaying readable history')
   await f.state.setSelectedModelId('another-model')
-  finishModels({ ids: ['fixture-model', 'another-model'], fastServiceTierByModel: { 'fixture-model': 'priority' } })
+  finishModels({ ids: ['fixture-model', 'another-model'], defaultModelId: 'another-model', fastServiceTierByModel: { 'fixture-model': 'priority' } })
   limits.forEach((resolve) => resolve(null))
   await send
   assert.equal(starts[0][1], 'fixture-model', 'A pending send retains the model chosen at submission')
   assert.equal(starts[0][2], 'priority')
   assert.equal(f.state.selectedReasoningEffort.value, 'high', 'A choice made while metadata loaded is preserved')
+})
+
+test('new chats follow the latest OpenAI default advertised by the runtime', async (t) => {
+  const persisted = []
+  const f = fixture(t, {
+    getAvailableModelCatalog: async () => ({
+      ids: ['older-model', 'new-model', 'claude-default'],
+      defaultModelId: 'new-model',
+      models: [
+        { id: 'older-model', label: 'Older', provider: 'openai', reasoningEfforts: ['high'], defaultReasoningEffort: 'high' },
+        { id: 'new-model', label: 'New', provider: 'openai', reasoningEfforts: ['high'], defaultReasoningEffort: 'high' },
+        { id: 'claude-default', label: 'Claude', provider: 'anthropic', reasoningEfforts: ['high'], defaultReasoningEffort: 'high' },
+      ],
+      fastServiceTierByModel: {},
+    }),
+    getCurrentModelConfig: async () => ({ model: 'older-model', reasoningEffort: 'high', fastModeEnabled: false }),
+    getCodexUiRuntimeConfig: async () => ({ defaultReasoningEffort: 'high' }),
+    setDefaultModel: async (...args) => { persisted.push(args) },
+    getAccountRateLimits: async () => null,
+  })
+  await f.state.refreshAll({ loadSelectedThread: false })
+  assert.equal(f.state.selectedModelId.value, 'new-model')
+  assert.deepEqual(persisted, [['new-model', 'high']])
 })
 
 test('concurrent cold selection shares resume but keeps independently ordered history reads', async (t) => {

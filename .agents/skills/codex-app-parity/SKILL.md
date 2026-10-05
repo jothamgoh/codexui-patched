@@ -1388,3 +1388,9 @@ After each feature implementation session that uses this skill:
 - The integrated ChatGPT/Codex renderer `26.924.22138` builds recent chat rows from `thread/list`; it has no durable-board equivalent that invents completed chat rows outside that catalog.
 - CodexUI may temporarily surface an unlisted board Lead while it is running or waiting for input because `thread/list` can lag thread creation. Once work is no longer live, the authoritative Codex/Claude catalog must own sidebar visibility.
 - Do not synthesize completed, paused, blocked, review, or backlog rows from board metadata alone. Their stored thread IDs can outlive deleted rollout transcripts and create blank sidebar destinations.
+
+## Findings: Runtime-advertised GPT-6 defaults (2026-10-05)
+
+- The integrated ChatGPT/Codex renderer `26.924.22138` contains first-party `gpt-6-astra` handling and selects from host-advertised model metadata rather than a fixed web catalog.
+- The local app-server currently advertises GPT-6 Astra as its OpenAI default, followed by GPT-6 Sol and GPT-6 Luna, while Claude exposes a separate provider default in the merged CodexUI catalog.
+- In a unified picker, choose the first `isDefault` OpenAI model and ignore the Claude default for new Codex chats. Keep the full list runtime-driven so later models appear without another frontend release.

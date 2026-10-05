@@ -76,6 +76,7 @@ export type ThreadModelConfig = {
 export type AvailableModelCatalog = {
   ids: string[]
   models: AvailableModel[]
+  defaultModelId: string
   fastServiceTierByModel: FastServiceTierByModel
 }
 
@@ -1192,6 +1193,7 @@ export async function getAvailableModelCatalog(): Promise<AvailableModelCatalog>
   const models: unknown[] = [...payload.data, ...extendedPayload.data]
   const ids: string[] = []
   const modelOptions: AvailableModel[] = []
+  let defaultModelId = ''
   for (const row of models) {
     const record = asRecord(row)
     const candidate = readString(record?.id) || readString(record?.model)
@@ -1202,13 +1204,15 @@ export async function getAvailableModelCatalog(): Promise<AvailableModelCatalog>
         .map((entry) => normalizeReasoningEffort(asRecord(entry)?.reasoningEffort))
         .filter((effort): effort is ReasoningEffort => Boolean(effort))
       : []
+    const provider = readString(record?.modelProvider) === 'anthropic' || candidate.startsWith('claude-')
+      ? 'anthropic'
+      : 'openai'
+    if (!defaultModelId && provider === 'openai' && record?.isDefault === true) defaultModelId = candidate
     modelOptions.push({
       id: candidate,
       label: readString(record?.displayName) || candidate,
       description: readString(record?.description),
-      provider: readString(record?.modelProvider) === 'anthropic' || candidate.startsWith('claude-')
-        ? 'anthropic'
-        : 'openai',
+      provider,
       reasoningEfforts: supported,
       defaultReasoningEffort: normalizeReasoningEffort(record?.defaultReasoningEffort),
     })
@@ -1217,6 +1221,7 @@ export async function getAvailableModelCatalog(): Promise<AvailableModelCatalog>
   return {
     ids,
     models: modelOptions,
+    defaultModelId,
     fastServiceTierByModel: readFastServiceTierByModel(models),
   }
 }

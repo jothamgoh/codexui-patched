@@ -100,7 +100,7 @@ const TURN_SUMMARY_STORAGE_KEY = 'codex-web-local.thread-turn-summary.v1'
 const THREAD_MODEL_CONFIG_STORAGE_KEY = 'codex-web-local.thread-model-config.v1'
 const NEW_THREAD_MODEL_CONFIG_STORAGE_KEY = 'codex-web-local.new-thread-model-config.v1'
 const EVENT_SYNC_DEBOUNCE_MS = 220
-const PREFERRED_DEFAULT_MODEL_ID = 'gpt-5.6-sol'
+const FALLBACK_DEFAULT_MODEL_ID = 'gpt-6-astra'
 const DEFAULT_REASONING_EFFORT: ReasoningEffort = 'xhigh'
 const REASONING_EFFORT_OPTIONS: ReasoningEffort[] = ['none', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max', 'ultra']
 const GLOBAL_SERVER_REQUEST_SCOPE = '__global__'
@@ -235,8 +235,9 @@ function clamp(value: number, minValue: number, maxValue: number): number {
   return Math.min(Math.max(value, minValue), maxValue)
 }
 
-function pickDefaultModelId(modelIds: string[]): string {
-  if (modelIds.includes(PREFERRED_DEFAULT_MODEL_ID)) return PREFERRED_DEFAULT_MODEL_ID
+function pickDefaultModelId(modelIds: string[], advertisedDefaultModelId = ''): string {
+  if (advertisedDefaultModelId && modelIds.includes(advertisedDefaultModelId)) return advertisedDefaultModelId
+  if (modelIds.includes(FALLBACK_DEFAULT_MODEL_ID)) return FALLBACK_DEFAULT_MODEL_ID
   return modelIds[0] ?? ''
 }
 
@@ -420,7 +421,7 @@ function saveThreadModelConfigMap(state: Record<string, ThreadModelConfig>): voi
 
 function loadNewThreadModelConfig(): ThreadModelConfig {
   const fallback: ThreadModelConfig = {
-    model: PREFERRED_DEFAULT_MODEL_ID,
+    model: FALLBACK_DEFAULT_MODEL_ID,
     reasoningEffort: DEFAULT_REASONING_EFFORT,
   }
   if (typeof window === 'undefined') return fallback
@@ -1215,7 +1216,7 @@ export function useDesktopState() {
   const manuallyRenamedThreadIds = new Set<string>()
   const availableModelIds = ref<string[]>([])
   const availableModels = ref<AvailableModel[]>([])
-  const defaultModelId = ref(PREFERRED_DEFAULT_MODEL_ID)
+  const defaultModelId = ref(FALLBACK_DEFAULT_MODEL_ID)
   const defaultReasoningEffort = ref<ReasoningEffort | ''>(DEFAULT_REASONING_EFFORT)
   const fastServiceTierByModel = ref<FastServiceTierByModel>({})
   const fastModeEnabled = ref(false)
@@ -1620,9 +1621,9 @@ export function useDesktopState() {
         fastModeError.value = ''
       }
 
-      defaultModelId.value = modelIds.length === 0 || modelIds.includes(PREFERRED_DEFAULT_MODEL_ID)
-        ? PREFERRED_DEFAULT_MODEL_ID
-        : pickDefaultModelId(modelIds)
+      defaultModelId.value = modelIds.length === 0
+        ? FALLBACK_DEFAULT_MODEL_ID
+        : pickDefaultModelId(modelIds, modelCatalog.defaultModelId)
 
       const configuredDefaultReasoningEffort =
         runtimeConfig.defaultReasoningEffort || DEFAULT_REASONING_EFFORT

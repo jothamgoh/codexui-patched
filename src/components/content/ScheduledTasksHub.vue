@@ -191,7 +191,7 @@
           </Button>
         </header>
 
-        <form class="scheduled-form" @submit.prevent="void saveTask">
+        <form class="scheduled-form" @submit.prevent="void saveTask()">
           <label>
             <span>Name</span>
             <Input v-model="draft.name" required placeholder="Daily project check" />
@@ -386,7 +386,7 @@
         <p>Past run chats remain available, but this schedule cannot be recovered.</p>
         <footer>
           <Button type="button" variant="ghost" @click="confirmDeleteTask = null">Cancel</Button>
-          <Button type="button" variant="destructive" :disabled="isSaving" @click="void deleteTask">Delete</Button>
+          <Button type="button" variant="destructive" :disabled="isSaving" @click="void deleteTask()">Delete</Button>
         </footer>
       </section>
     </div>

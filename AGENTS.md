@@ -29,8 +29,10 @@ and `deployment/macos/restart-codexui.command.example` as the public-safe one-sh
 template.
 
 The compiled service runs from `dist/` and `dist-cli/`, so always run `npm run build` before
-deploying a source change. Do not use Playwright or E2E testing unless the user specifically
-asks for it.
+deploying a source change. To prove a user-visible change works, use the project `verify` skill
+(`.claude/skills/verify/SKILL.md`). It drives an isolated dev instance on port 5181 with
+Playwright and never touches the production service. The `tests/*.e2e.mjs` scripts are also
+fine to run.
 
 Never wrap a service restart or health check in `launchctl submit`, a `KeepAlive` helper,
 a scheduler, or a retry loop. Launchd can reschedule a short-lived submitted job, turning a

@@ -29,10 +29,11 @@ async function fixture(options = {}) {
   let accounts = rows()
   let now = Date.now()
   const calls = []
+  let keepBusy = false
   const run = async (_command, args) => {
     calls.push(args)
     if (args[0] === 'list') return { code: 0, stdout: JSON.stringify({ schemaVersion: 1, accounts: accounts.map((row) => ({ ...row, active: row.number === active })) }) }
-    assert.equal(busy, false, 'must never change credentials during an active reply')
+    assert.equal(busy && !keepBusy, false, 'only a hard-limit recovery may change credentials during an active reply')
     if (args[0] === 'switch') active = Number(args[1])
     if (args[0] === 'auto') active = 2
     if (args[0] === 'remove') accounts = accounts.filter((account) => account.number !== Number(args[1]))
@@ -40,7 +41,7 @@ async function fixture(options = {}) {
     if (args[0] === 'enable') accounts = accounts.map((account) => account.number === Number(args[1]) ? { ...account, disabled: false } : account)
     return { code: 0, stdout: '{}' }
   }
-  const manager = new ClaudeAccountSwitcher({ stateFilePath: join(scratch, 'settings.json'), executable: '/fixture/cswap', run, isBusy: () => busy, isAuthenticating: () => authenticating, prepareSwitch: async () => calls.push(['prepare']), accountChanged: () => calls.push(['changed']), now: () => now, ...options })
+  const manager = new ClaudeAccountSwitcher({ stateFilePath: join(scratch, 'settings.json'), executable: '/fixture/cswap', run, isBusy: () => busy, isAuthenticating: () => authenticating, prepareSwitch: async (prepare) => { keepBusy = Boolean(prepare?.keepBusy); calls.push(keepBusy ? ['prepare', 'keepBusy'] : ['prepare']) }, accountChanged: () => calls.push(['changed']), now: () => now, ...options })
   return { manager, scratch, calls, run, advance: (ms) => { now += ms }, setBusy: (next) => { busy = next }, setAuthenticating: (next) => { authenticating = next }, setRows: (next) => { accounts = next } }
 }
 
@@ -95,22 +96,40 @@ test('a hard limit switches to the enabled account with the most quota', async (
   ])
   const recovery = await f.manager.recoverFromLimit(1, [1])
   assert.deepEqual(recovery, { kind: 'ready', accountNumber: 3 })
-  assert.deepEqual(f.calls.filter((args) => ['prepare', 'switch', 'changed'].includes(args[0])), [['prepare'], ['switch', '3', '--json'], ['changed']])
+  assert.deepEqual(f.calls.filter((args) => ['prepare', 'switch', 'changed'].includes(args[0])), [['prepare', 'keepBusy'], ['switch', '3', '--json'], ['changed']])
   assert.match((await f.manager.snapshot()).notice, /continuing the reply/u)
   f.manager.dispose()
 })
 
-test('hard-limit recovery waits for other Claude work, then switches and resolves', async () => {
+test('hard-limit recovery switches even while other Claude work, such as a background task, is running', { timeout: 5000 }, async () => {
   const f = await fixture()
   f.setRows(rows(1, 100))
   f.setBusy(true)
+  assert.deepEqual(await f.manager.recoverFromLimit(1, [1]), { kind: 'ready', accountNumber: 2 })
+  assert.deepEqual(f.calls.filter((args) => args[0] === 'prepare'), [['prepare', 'keepBusy']], 'busy Claude processes are kept, not refused or killed')
+  f.manager.dispose()
+})
+
+test('hard-limit recovery still waits for a Claude sign-in to finish', async () => {
+  const f = await fixture()
+  f.setRows(rows(1, 100))
+  f.setAuthenticating(true)
   const recovery = f.manager.recoverFromLimit(1, [1])
   await new Promise((resolve) => setImmediate(resolve))
   assert.equal(f.calls.some((args) => args[0] === 'switch'), false)
-  assert.match((await f.manager.snapshot()).notice, /waiting for other Claude work/u)
-  f.setBusy(false)
+  assert.match((await f.manager.snapshot()).notice, /waiting for Claude sign-in/u)
+  f.setAuthenticating(false)
   await f.manager.tick()
   assert.deepEqual(await recovery, { kind: 'ready', accountNumber: 2 })
+  f.manager.dispose()
+})
+
+test('a queued manual switch is applied during hard-limit recovery despite busy work', async () => {
+  const f = await fixture()
+  f.setRows(rows(1, 100))
+  f.setBusy(true)
+  assert.equal((await f.manager.requestSwitch(3)).pendingAccountNumber, 3)
+  assert.deepEqual(await f.manager.recoverFromLimit(1, [1]), { kind: 'ready', accountNumber: 3 })
   f.manager.dispose()
 })
 
@@ -445,6 +464,46 @@ test('a hard-limit result retires its background work, switches accounts, and co
   assert.equal(closes, 1)
   assert.equal(releases, 1)
   assert.deepEqual(f.calls.find((args) => args[0] === 'switch'), ['switch', '2', '--json'])
+  backend.dispose(); f.manager.dispose()
+})
+
+test('a limit switch keeps busy Claude chats running and blames their later limit on their own account', async () => {
+  const f = await fixture()
+  const backend = new ClaudeBackend(join(f.scratch, 'threads.json'), {
+    accountSwitcherPath: '/fixture/cswap',
+    claudeConfigDir: join(f.scratch, 'claude'),
+  })
+  const closed = []
+  const runnerFor = (session, extra) => ({
+    sessionId: session, threadId: `claude-${session}`, cwd: '/work/project', accountNumber: 1,
+    activeTurn: null, pushedCommands: new Map(), backgroundTasks: [], idleTimer: null, closed: false,
+    totalUsage: {}, contextWindow: 200000, input: { release: () => {} },
+    query: { close: () => closed.push(session), interrupt: async () => {} },
+    ...extra,
+  })
+  const withBackgroundTask = runnerFor('with-background-task', { backgroundTasks: [{ id: 'task-1', description: 'long build' }] })
+  const idle = runnerFor('idle')
+  backend.runners.set(withBackgroundTask.sessionId, withBackgroundTask)
+  backend.runners.set(idle.sessionId, idle)
+  backend.refreshClaudeSessionStates = async () => ({ uncertain: false, states: new Map() })
+
+  await assert.rejects(backend.prepareAccountChange(), /Wait for Claude replies/u, 'ordinary switches still wait')
+  await backend.prepareAccountChange({ keepBusy: true })
+  assert.equal(backend.runners.has('with-background-task'), true, 'the background task keeps running')
+  assert.equal(backend.runners.has('idle'), false, 'idle processes restart on the new login')
+  assert.deepEqual(closed, ['idle'])
+
+  backend.accounts.activeAccountNumber = () => 2
+  backend.accounts.tick = async () => {}
+  const exhausted = new Promise((resolve) => {
+    backend.accounts.recoverFromLimit = async (accountNumber) => {
+      resolve(accountNumber)
+      return { kind: 'blocked', reason: 'no-account' }
+    }
+  })
+  const turn = backend.beginTurn(withBackgroundTask, 'turn-on-old-login', withBackgroundTask.cwd, null)
+  backend.failTurn(withBackgroundTask, turn, "You've hit your session limit · resets 2:30am")
+  assert.equal(await exhausted, 1, 'the old login is the exhausted one, not the newly active account 2')
   backend.dispose(); f.manager.dispose()
 })
 

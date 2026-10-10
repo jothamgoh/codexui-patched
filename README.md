@@ -164,9 +164,13 @@ Control replies stay marked as running here while they are busy or waiting for
 input. A manual selection takes priority and holds for at least five minutes. If
 every account is unavailable, the UI says so. Failed replies are never
 automatically replayed, except when Claude returns its explicit session-limit
-error. CodexUI then selects the enabled account with the most available quota,
-switches after other Claude work becomes idle, and sends a visible continue
-message in the same chat. Accounts that fail during that recovery are skipped
+error. CodexUI then selects the enabled account with the most available quota
+and switches at once, without waiting for other Claude work such as background
+tasks: every Claude process shares the exhausted login, so waiting cannot help.
+Only an in-progress Claude sign-in delays the switch. Idle Claude processes
+restart on the new login; busy ones keep running, and if they later hit the
+limit on the old login they recover the same way. CodexUI then sends a visible
+continue message in the same chat. Accounts that fail during that recovery are skipped
 for the rest of its retry chain. Existing idle terminal or Remote Control
 processes may observe the new shared login shortly after a switch; CodexUI does
 not stop them.

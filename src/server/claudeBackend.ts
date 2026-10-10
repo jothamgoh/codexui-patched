@@ -510,6 +510,10 @@ type StartTurnExtra = {
   limitRecoveryAccountNumbers?: readonly number[]
 }
 
+function runnerIsBusy(runner: SessionRunner): boolean {
+  return Boolean(runner.activeTurn) || runner.pushedCommands.size > 0 || runner.backgroundTasks.length > 0
+}
+
 export function isClaudeHardLimitError(message: string): boolean {
   return /(?:you(?:'|’)ve\s+)?hit\s+your\s+(?:session|usage|weekly)\s+limit|(?:session|usage|weekly)\s+limit\s+(?:has\s+been\s+)?reached/iu.test(message)
 }
@@ -558,6 +562,8 @@ function createInputStream(): InputStream {
 
 type SessionRunner = {
   sessionId: string
+  /** Saved account active when this Claude process started; null if unknown. */
+  accountNumber: number | null
   threadId: string
   cwd: string
   settingsKey: string
@@ -745,7 +751,7 @@ export class ClaudeBackend {
       run: (command, args) => this.runAccountCommand(command, args),
       isBusy: () => this.isClaudeBusy(),
       isAuthenticating: () => Boolean(this.login) || this.changingAccount,
-      prepareSwitch: () => this.prepareAccountChange(),
+      prepareSwitch: (options) => this.prepareAccountChange(options),
       accountChanged: () => this.accountChanged(),
     })
     this.accounts.start()
@@ -844,8 +850,8 @@ export class ClaudeBackend {
     })
   }
 
-  private async prepareAccountChange(): Promise<void> {
-    if (await this.isClaudeBusy()) {
+  private async prepareAccountChange(options: { keepBusy?: boolean } = {}): Promise<void> {
+    if (!options.keepBusy && await this.isClaudeBusy()) {
       throw new Error('Wait for Claude replies to finish before changing accounts.')
     }
     this.changingAccount = true
@@ -853,6 +859,9 @@ export class ClaudeBackend {
     for (const query of this.metadataQueries) query.close()
     this.metadataQueries.clear()
     for (const runner of [...this.runners.values()]) {
+      // A kept runner finishes on the login it started with; its next limit
+      // error is attributed to that account, then recovered in a fresh process.
+      if (options.keepBusy && runnerIsBusy(runner)) continue
       this.closeRunner(runner.sessionId, { expected: runner })
       runner.query.close()
     }
@@ -1269,7 +1278,7 @@ export class ClaudeBackend {
   }
 
   private async isClaudeBusy(): Promise<boolean> {
-    if (this.login || [...this.runners.values()].some((runner) => Boolean(runner.activeTurn) || runner.pushedCommands.size > 0 || runner.backgroundTasks.length > 0)) return true
+    if (this.login || [...this.runners.values()].some(runnerIsBusy)) return true
     const scan = await this.refreshClaudeSessionStates()
     return scan.uncertain || [...scan.states.values()].some(isClaudeSessionActive)
   }
@@ -1874,6 +1883,7 @@ export class ClaudeBackend {
     const input = createInputStream()
     const runner = {
       sessionId,
+      accountNumber: this.accounts.activeAccountNumber(),
       threadId,
       cwd,
       settingsKey,
@@ -2077,7 +2087,7 @@ export class ClaudeBackend {
 
   private failTurn(runner: SessionRunner, turn: LiveTurn, errorMessage: string): void {
     const hardLimit = isClaudeHardLimitError(errorMessage)
-    const exhaustedAccountNumber = hardLimit ? this.accounts.activeAccountNumber() : null
+    const exhaustedAccountNumber = hardLimit ? runner.accountNumber ?? this.accounts.activeAccountNumber() : null
     this.finishTurn(runner, 'failed', errorMessage, { checkAccounts: !hardLimit })
     if (hardLimit) {
       // This process cannot continue on the exhausted account. Retire it before

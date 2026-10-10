@@ -12,7 +12,8 @@ type Options = {
   run: (command: string, args: string[]) => Promise<CSwapResult>
   isBusy: () => boolean | Promise<boolean>
   isAuthenticating?: () => boolean
-  prepareSwitch: () => Promise<void>
+  /** `keepBusy` leaves working Claude processes running instead of refusing the change. */
+  prepareSwitch: (options?: { keepBusy?: boolean }) => Promise<void>
   accountChanged: () => void
   now?: () => number
 }
@@ -213,12 +214,12 @@ export class ClaudeAccountSwitcher {
     return this.snapshot()
   }
 
-  private async mutate(args: string[]): Promise<CSwapResult> {
+  private async mutate(args: string[], prepare?: { keepBusy?: boolean }): Promise<CSwapResult> {
     this.switching = true
     try {
       // Drain a list read before changing the same account's token or Keychain entry.
       if (this.reading) await this.reading.catch(() => undefined)
-      await this.options.prepareSwitch()
+      await this.options.prepareSwitch(prepare)
       return await this.command(args)
     } finally {
       this.options.accountChanged()
@@ -246,10 +247,11 @@ export class ClaudeAccountSwitcher {
     }
   }
 
-  private async applyPending(): Promise<void> {
-    if (this.pending === null || await this.options.isBusy() || this.disposed) return
+  private async applyPending(options: { keepBusy?: boolean } = {}): Promise<void> {
+    if (this.pending === null || this.disposed) return
+    if (!options.keepBusy && await this.options.isBusy()) return
     const number = this.pending
-    const result = await this.mutate(['switch', String(number), '--json'])
+    const result = await this.mutate(['switch', String(number), '--json'], options)
     if (result.code !== 0) {
       this.pending = null
       throw new Error('Could not switch accounts. Sign into that account again on the host, then save it.')
@@ -297,11 +299,13 @@ export class ClaudeAccountSwitcher {
       this.resolveLimitRecoveries({ kind: 'blocked', reason: 'disabled' })
       return
     }
-    if (await this.options.isBusy()) {
-      this.notice = 'Claude reached its limit. Account recovery is waiting for other Claude work to finish.'
+    // Every Claude process shares the exhausted login, so waiting for other work
+    // (often long background tasks) cannot help. Only a sign-in must finish first.
+    if (this.options.isAuthenticating?.()) {
+      this.notice = 'Claude reached its limit. Account recovery is waiting for Claude sign-in to finish.'
       return
     }
-    if (this.pending !== null) await this.applyPending()
+    if (this.pending !== null) await this.applyPending({ keepBusy: true })
     if (this.pending !== null) return
 
     try {
@@ -339,7 +343,7 @@ export class ClaudeAccountSwitcher {
     }
 
     try {
-      const result = await this.mutate(['switch', String(target.number), '--json'])
+      const result = await this.mutate(['switch', String(target.number), '--json'], { keepBusy: true })
       if (result.code !== 0) throw new Error('switch failed')
       await this.refresh(true)
       if (this.cached?.active !== target.number) throw new Error('switch was not confirmed')

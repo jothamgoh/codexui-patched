@@ -390,7 +390,9 @@ test('loads guarded Mac control for Claude runners and waits for approval', asyn
     },
   }))
   const previous = process.env.CODEXUI_CLAUDE_COMPUTER_USE_MCP_FILE
+  const previousApproval = process.env.CODEXUI_CLAUDE_COMPUTER_USE_APPROVAL
   process.env.CODEXUI_CLAUDE_COMPUTER_USE_MCP_FILE = configPath
+  process.env.CODEXUI_CLAUDE_COMPUTER_USE_APPROVAL = 'ask'
   const backend = new ClaudeBackend(join(directory, 'threads.json'), { accountSwitcherPath: null, claudeConfigDir: directory })
   let runnerOptions
   let releaseQuery
@@ -461,6 +463,8 @@ test('loads guarded Mac control for Claude runners and waits for approval', asyn
     backend.dispose()
     if (previous === undefined) delete process.env.CODEXUI_CLAUDE_COMPUTER_USE_MCP_FILE
     else process.env.CODEXUI_CLAUDE_COMPUTER_USE_MCP_FILE = previous
+    if (previousApproval === undefined) delete process.env.CODEXUI_CLAUDE_COMPUTER_USE_APPROVAL
+    else process.env.CODEXUI_CLAUDE_COMPUTER_USE_APPROVAL = previousApproval
     await rm(directory, { recursive: true, force: true })
   }
 })
@@ -515,7 +519,7 @@ test('gives Claude unattended Mac control when approval is set to never', async 
 })
 
 test('starts a Claude chat without Mac control when the computer-use plugin is broken', async () => {
-  await withComputerUseRunner({ CODEXUI_CLAUDE_COMPUTER_USE_MCP_FILE: '/missing/computer-use.mcp.json' }, async ({ runnerOptions }) => {
+  await withComputerUseRunner({ CODEXUI_CLAUDE_COMPUTER_USE_MCP_FILE: '/missing/computer-use.mcp.json', CODEXUI_CLAUDE_COMPUTER_USE_APPROVAL: 'ask' }, async ({ runnerOptions }) => {
     assert.ok(runnerOptions, 'the runner must still start')
     assert.equal(runnerOptions.mcpServers?.cua_repl, undefined)
     assert.equal(runnerOptions.onElicitation, undefined)

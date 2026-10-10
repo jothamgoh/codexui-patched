@@ -48,6 +48,7 @@ import { BackendRouter } from './backendRouter'
 import { ClaudeBackend } from './claudeBackend'
 import { createClaudeAutomationTool } from './claudeAutomationTool'
 import { readReviewClientScope, reviewScopeMatches } from './reviewScope'
+import { ActiveTurnTracker, continueInterruptedTurns, recordInterruptedTurns, takeInterruptedTurns } from './restartResume'
 import {
   GitWorkspaceRequestError,
   readGitWorkspaceReview,
@@ -1613,8 +1614,14 @@ type SharedBridgeState = {
   automationService: AutomationService
   projectBoardService: ProjectBoardService
   projectBoardRecoveryBaseline: Promise<ProjectBoardSnapshot> | null
+  activeTurns: ActiveTurnTracker
   localPort?: number
 }
+
+/** Chats mid-reply at shutdown, continued once after the next start. */
+const INTERRUPTED_TURNS_FILE = 'codexui-interrupted-turns.json'
+/** Claude refuses a send within 30 s of another process writing the chat; the old one just stopped. */
+const RESTART_CONTINUE_DELAY_MS = 35_000
 
 const SHARED_BRIDGE_KEY = '__codexRemoteSharedBridge__'
 
@@ -1704,6 +1711,22 @@ function getSharedBridgeState(): SharedBridgeState {
     console.warn('[project-boards] Failed to start service:', getErrorMessage(error, 'Unknown project-board error'))
   })
 
+  const activeTurns = new ActiveTurnTracker()
+  claude.onNotification((notification) => activeTurns.observe(notification))
+  appServer.onNotification((notification) => activeTurns.observe(notification))
+  const interrupted = takeInterruptedTurns(join(getCodexHomeDir(), INTERRUPTED_TURNS_FILE))
+  if (interrupted.length > 0) {
+    console.log(`[restart-resume] Continuing ${String(interrupted.length)} chat(s) stopped by the last restart.`)
+    const router = new BackendRouter(appServer, claude)
+    setTimeout(() => {
+      void continueInterruptedTurns(
+        interrupted,
+        (method, params) => router.rpc(method, params),
+        (threadId) => projectBoardService.isManagedThread(threadId),
+      ).then((result) => console.log('[restart-resume]', JSON.stringify(result)))
+    }, RESTART_CONTINUE_DELAY_MS).unref()
+  }
+
   const created: SharedBridgeState = {
     appServer,
     claude,
@@ -1712,6 +1735,7 @@ function getSharedBridgeState(): SharedBridgeState {
     automationService: scheduledTasks,
     projectBoardService,
     projectBoardRecoveryBaseline,
+    activeTurns,
   }
   globalScope[SHARED_BRIDGE_KEY] = created
   return created
@@ -1769,6 +1793,11 @@ export function createCodexBridgeMiddleware(): CodexBridgeMiddleware {
       if (req.socket.localPort) shared.localPort = req.socket.localPort
 
       const url = new URL(req.url, 'http://localhost')
+
+      if (req.method === 'GET' && url.pathname === '/codex-api/active-turns') {
+        setJson(res, 200, { data: shared.activeTurns.threadIds() })
+        return
+      }
 
       if (req.method === 'GET' && url.pathname === '/codex-api/runtime-config') {
         setJson(res, 200, { data: readCodexUiRuntimeConfig() })
@@ -2846,6 +2875,11 @@ export function createCodexBridgeMiddleware(): CodexBridgeMiddleware {
   }
 
   middleware.dispose = () => {
+    try {
+      recordInterruptedTurns(join(getCodexHomeDir(), INTERRUPTED_TURNS_FILE), shared.activeTurns.threadIds())
+    } catch (error) {
+      console.warn('[restart-resume] Could not record interrupted chats:', getErrorMessage(error, 'unknown error'))
+    }
     appServer.dispose()
     threadTitleGenerator.dispose()
   }

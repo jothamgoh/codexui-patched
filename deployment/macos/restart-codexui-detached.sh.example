@@ -1,21 +1,58 @@
 #!/bin/zsh
 # One-shot CodexUI restart that a Claude chat inside CodexUI may start itself.
-# Claude chats run under the claude-host LaunchAgent, not the CodexUI daemon, so this
-# detached process survives the restart it triggers. Exactly one kickstart, no retries.
-# Started from a Claude chat (CLAUDE_CODE_SESSION_ID set), it waits until that chat's reply
-# has finished, then restarts 2 seconds later. Otherwise it waits a fixed delay.
-set -eu
+# Claude chats run under the Claude host LaunchAgent, not the CodexUI daemon, so the
+# detached copy of this script survives the restart it triggers.
+#
+# 1. Waits until the calling Claude chat's reply has finished (CLAUDE_CODE_SESSION_ID),
+#    or a fixed delay outside a Claude chat (first argument, default 20 s).
+# 2. Waits up to 3 minutes for every other chat to finish its reply.
+# 3. Runs exactly one kickstart and one health check. No retries.
+# Chats still mid-reply are recorded at shutdown and continued by CodexUI after it starts.
+set -u
 
 # Copy this file outside the repository, then replace the service label placeholder.
 
 label="com.codexui.USER"
-health="http://127.0.0.1:5999/codex-api/meta/methods"
-rpc="http://127.0.0.1:5999/codex-api/rpc"
+base="http://127.0.0.1:5999"
 log="$HOME/Library/Logs/codexui-restart.log"
 stamp="$HOME/.config/codexui/.last-restart"
-delay="${1:-20}"
-thread="${CLAUDE_CODE_SESSION_ID:+claude-$CLAUDE_CODE_SESSION_ID}"
-wait_limit=900
+
+if [[ "${1:-}" == "--run" ]]; then
+  thread="${2:-}"
+  delay="${3:-20}"
+  caller_busy() {
+    /usr/bin/curl --silent --max-time 5 -X POST -H 'content-type: application/json' \
+      -d "{\"method\":\"thread/read\",\"params\":{\"threadId\":\"$thread\",\"includeTurns\":false}}" \
+      "$base/codex-api/rpc" | /usr/bin/grep -q '"status":{"type":"active"}'
+  }
+  others_busy() {
+    local out
+    out=$(/usr/bin/curl --silent --fail --max-time 5 "$base/codex-api/active-turns") || return 1
+    [[ "$out" == *'"data":['* && "$out" != *'"data":[]'* ]]
+  }
+  if [[ -n "$thread" ]]; then
+    waited=0
+    while caller_busy; do
+      if (( waited >= 900 )); then echo "$(/bin/date) calling chat still busy after 15 min; restart cancelled"; exit 1; fi
+      /bin/sleep 1; (( waited += 1 ))
+    done
+    /bin/sleep 2
+  else
+    /bin/sleep "$delay"
+  fi
+  waited=0
+  while others_busy && (( waited < 180 )); do /bin/sleep 2; (( waited += 2 )); done
+  if others_busy; then echo "$(/bin/date) other chats still replying; they will be continued after the restart"; fi
+  echo "$(/bin/date) restarting $label"
+  /usr/bin/sudo -n /bin/launchctl kickstart -k "system/$label"
+  /bin/sleep 8
+  if /usr/bin/curl --fail --silent --output /dev/null "$base/codex-api/meta/methods"; then
+    echo "$(/bin/date) CodexUI is back"
+  else
+    echo "$(/bin/date) health check FAILED"
+  fi
+  exit 0
+fi
 
 if [[ "$label" == *USER* ]]; then
   echo "Replace the label placeholder before running this script."
@@ -30,27 +67,12 @@ if (( now - last < 180 )); then
 fi
 echo "$now" > "$stamp"
 
-if [[ -n "$thread" ]]; then
-  # Poll this chat's status (a wait, not a retry): restart once it is idle, give up after 15 min.
-  wait_step="body='{\"method\":\"thread/read\",\"params\":{\"threadId\":\"$thread\",\"includeTurns\":false}}'
-waited=0
-while /usr/bin/curl --silent --max-time 5 -X POST -H 'content-type: application/json' -d \"\$body\" $rpc | /usr/bin/grep -q '\"status\":{\"type\":\"active\"}'; do
-  if (( waited >= $wait_limit )); then echo \"\$(/bin/date) chat still busy after ${wait_limit}s; restart cancelled\"; exit 1; fi
-  /bin/sleep 1; waited=\$(( waited + 1 ))
-done
-/bin/sleep 2"
-  when="as soon as this reply finishes"
-else
-  wait_step="/bin/sleep $delay"
-  when="in ${delay}s"
-fi
-
+thread="${CLAUDE_CODE_SESSION_ID:+claude-$CLAUDE_CODE_SESSION_ID}"
 /usr/bin/nohup /usr/bin/perl -MPOSIX -e 'POSIX::setsid() or die "setsid: $!"; exec @ARGV' \
-  /bin/zsh -c "$wait_step
-echo \"\$(/bin/date) restarting $label\"
-/usr/bin/sudo -n /bin/launchctl kickstart -k system/$label
-/bin/sleep 8
-if /usr/bin/curl --fail --silent --output /dev/null $health; then echo \"\$(/bin/date) CodexUI is back\"; else echo \"\$(/bin/date) health check FAILED\"; fi" \
-  >>"$log" 2>&1 </dev/null &!
+  /bin/zsh "${0:A}" --run "$thread" "${1:-20}" >>"$log" 2>&1 </dev/null &!
 
-echo "CodexUI restarts $when. Log: $log"
+if [[ -n "$thread" ]]; then
+  echo "CodexUI restarts once this reply and other running chats finish (at most 3 extra minutes). Log: $log"
+else
+  echo "CodexUI restarts in ${1:-20}s, after running chats finish (at most 3 extra minutes). Log: $log"
+fi

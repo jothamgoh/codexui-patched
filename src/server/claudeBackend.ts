@@ -721,6 +721,7 @@ export class ClaudeBackend {
   private readonly transcriptCache = new Map<string, ParsedTranscript>()
   private readonly questions = new Map<number, QuestionRequest>()
   private readonly permissions = new Map<number, PermissionRequest>()
+  private readonly computerUseAllowedThreads = new Set<string>()
   /** Best-known chat names, for notification titles. */
   private readonly sessionTitles = new Map<string, string>()
   private readonly humanSessions = new Map<string, { human: boolean; lastModified: number }>()
@@ -2441,6 +2442,7 @@ export class ClaudeBackend {
   ): Promise<boolean> {
     const turn = runner.activeTurn
     if (!turn || signal.aborted) return false
+    if (this.computerUseAllowedThreads.has(turn.threadId)) return true
     const id = ++this.nextRequestId
     const pending: ClaudePendingServerRequest = {
       id,
@@ -2453,7 +2455,7 @@ export class ClaudeBackend {
         title,
         reason,
         permissionKind: 'computerUse',
-        availableDecisions: ['accept', 'decline'],
+        availableDecisions: ['accept', 'acceptForSession', 'decline'],
       },
     }
     const accepted = await new Promise<boolean>((resolve) => {
@@ -2505,7 +2507,10 @@ export class ClaudeBackend {
     const id = body?.id
     const permission = typeof id === 'number' ? this.permissions.get(id) : undefined
     if (permission && typeof id === 'number') {
-      permission.resolve(readString(asRecord(body?.result)?.decision) === 'accept')
+      const decision = readString(asRecord(body?.result)?.decision)
+      const threadId = readString(asRecord(permission.pending.params)?.threadId)
+      if (decision === 'acceptForSession' && threadId) this.computerUseAllowedThreads.add(threadId)
+      permission.resolve(decision === 'accept' || decision === 'acceptForSession')
       return
     }
     const request = typeof id === 'number' ? this.questions.get(id) : undefined

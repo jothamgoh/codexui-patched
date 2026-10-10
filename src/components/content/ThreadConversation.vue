@@ -336,7 +336,7 @@
 
               <section v-else-if="request.method === 'item/fileChange/requestApproval' || request.method === 'item/permissions/requestApproval'" class="request-actions">
                 <button type="button" class="request-button request-button-primary" v-if="requestAllowsDecision(request, 'accept')" @click="onRespondApproval(request.id, 'accept')">Accept</button>
-                <button type="button" class="request-button" v-if="requestAllowsDecision(request, 'acceptForSession')" @click="onRespondApproval(request.id, 'acceptForSession')">Accept for Session</button>
+                <button type="button" class="request-button" v-if="requestAllowsDecision(request, 'acceptForSession')" @click="onRespondApproval(request.id, 'acceptForSession')">{{ asRecord(request.params)?.permissionKind === 'computerUse' ? 'Allow for this chat' : 'Accept for Session' }}</button>
                 <button type="button" class="request-button" v-if="requestAllowsDecision(request, 'decline')" @click="onRespondApproval(request.id, 'decline')">Decline</button>
                 <button type="button" class="request-button" v-if="requestAllowsDecision(request, 'cancel')" @click="onRespondApproval(request.id, 'cancel')">Cancel</button>
               </section>

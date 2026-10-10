@@ -431,9 +431,32 @@ test('loads guarded Mac control for Claude runners and waits for approval', asyn
     const [pending] = backend.listPendingServerRequests()
     assert.equal(pending.method, 'item/permissions/requestApproval')
     assert.equal(pending.params.permissionKind, 'computerUse')
-    assert.deepEqual(pending.params.availableDecisions, ['accept', 'decline'])
+    assert.deepEqual(pending.params.availableDecisions, ['accept', 'acceptForSession', 'decline'])
     await backend.respondToServerRequest({ id: pending.id, result: { decision: 'accept' } })
     assert.equal((await hookResult).hookSpecificOutput.permissionDecision, 'allow')
+
+    const callHook = (toolUseId) => computerHook(
+      { hook_event_name: 'PreToolUse', tool_name: 'mcp__cua_repl__js', tool_input: { code: 'await cua.getState()' } },
+      toolUseId,
+      { signal: new AbortController().signal },
+    )
+    const second = callHook('tool-2')
+    await new Promise((resolve) => setImmediate(resolve))
+    const [askedAgain] = backend.listPendingServerRequests()
+    assert.ok(askedAgain, 'a one-time Accept must not cover the next call')
+    await backend.respondToServerRequest({ id: askedAgain.id, result: { decision: 'acceptForSession' } })
+    assert.equal((await second).hookSpecificOutput.permissionDecision, 'allow')
+
+    assert.equal((await callHook('tool-3')).hookSpecificOutput.permissionDecision, 'allow')
+    assert.deepEqual(backend.listPendingServerRequests(), [])
+
+    runner.activeTurn.threadId = 'claude-other-chat'
+    const otherChat = callHook('tool-4')
+    await new Promise((resolve) => setImmediate(resolve))
+    const [otherPending] = backend.listPendingServerRequests()
+    assert.ok(otherPending, 'approval for one chat must not cover another chat')
+    await backend.respondToServerRequest({ id: otherPending.id, result: { decision: 'decline' } })
+    assert.equal((await otherChat).hookSpecificOutput.permissionDecision, 'deny')
   } finally {
     backend.dispose()
     if (previous === undefined) delete process.env.CODEXUI_CLAUDE_COMPUTER_USE_MCP_FILE

@@ -14,7 +14,7 @@ import {createPinia} from 'pinia';
 import {createRouter,createMemoryHistory} from 'vue-router';
 import Conversation from '/src/components/content/ThreadConversation.vue';
 import '/src/style.css';
-const state=reactive({pending:[{id:901,method:'item/permissions/requestApproval',threadId:'claude-fixture',turnId:'turn-1',itemId:'tool-1',receivedAtIso:new Date().toISOString(),params:{threadId:'claude-fixture',turnId:'turn-1',itemId:'tool-1',title:'Allow Claude to control this Mac?',reason:'Claude requested a Computer Use action. Review the current task before allowing it.',permissionKind:'computerUse',availableDecisions:['accept','decline']}}],replies:[]});
+const state=reactive({pending:[{id:901,method:'item/permissions/requestApproval',threadId:'claude-fixture',turnId:'turn-1',itemId:'tool-1',receivedAtIso:new Date().toISOString(),params:{threadId:'claude-fixture',turnId:'turn-1',itemId:'tool-1',title:'Allow Claude to control this Mac?',reason:'Claude requested a Computer Use action. Review the current task before allowing it.',permissionKind:'computerUse',availableDecisions:['accept','acceptForSession','decline']}}],replies:[]});
 window.fixture=state;
 const router=createRouter({history:createMemoryHistory(),routes:[{path:'/',component:{render:()=>null}}]});
 createApp({setup(){const respond=(payload)=>{state.replies.push(payload);state.pending=[]};return()=>h('main',{style:'height:100dvh;display:flex;flex-direction:column'},[h(Conversation,{messages:[{id:'user',role:'user',text:'Open System Settings and check the display options.'}],pendingRequests:state.pending,activeThreadId:'claude-fixture',isLoading:false,scrollState:null,liveOverlay:null,automationProposals:[],automationTasks:[],onRespondServerRequest:respond})])}}).use(createPinia()).use(router).mount('#app');`)
@@ -38,15 +38,16 @@ try {
   await page.getByText('Permission to control this Mac', { exact: true }).waitFor()
   await page.getByText('Claude requested a Computer Use action. Review the current task before allowing it.', { exact: true }).waitFor()
   assert.equal(await page.getByRole('button', { name: 'Accept', exact: true }).count(), 1)
+  assert.equal(await page.getByRole('button', { name: 'Allow for this chat', exact: true }).count(), 1)
   assert.equal(await page.getByRole('button', { name: 'Decline', exact: true }).count(), 1)
   await page.screenshot({ path: `${output}/desktop.png` })
   await page.setViewportSize({ width: 390, height: 844 })
   await page.screenshot({ path: `${output}/mobile.png` })
   assert.equal(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth), true)
-  await page.getByRole('button', { name: 'Accept', exact: true }).click()
-  assert.deepEqual(await page.evaluate(() => fixture.replies), [{ id: 901, result: { decision: 'accept' } }])
+  await page.getByRole('button', { name: 'Allow for this chat', exact: true }).click()
+  assert.deepEqual(await page.evaluate(() => fixture.replies), [{ id: 901, result: { decision: 'acceptForSession' } }])
   assert.deepEqual(errors, [])
-  console.log(JSON.stringify({ approvalCard: true, acceptDeclineOnly: true, mobileOverflow: false }))
+  console.log(JSON.stringify({ approvalCard: true, allowForChat: true, mobileOverflow: false }))
 } finally {
   await browser.close()
   await server.close()

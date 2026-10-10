@@ -174,7 +174,9 @@ automatically replayed, except when Claude returns its explicit session-limit
 error. CodexUI then selects the enabled account with the most available quota
 and switches at once, without waiting for other Claude work such as background
 tasks: every Claude process shares the exhausted login, so waiting cannot help.
-Only an in-progress Claude sign-in delays the switch. Idle Claude processes
+Only an in-progress Claude sign-in delays the switch. The same immediate switch
+happens when fresh usage shows the active account at 100%, even if no reply has
+failed yet, such as while a chat only runs background tasks. Idle Claude processes
 restart on the new login; busy ones keep running, and if they later hit the
 limit on the old login they recover the same way. CodexUI then sends a visible
 continue message in the same chat. Accounts that fail during that recovery are skipped

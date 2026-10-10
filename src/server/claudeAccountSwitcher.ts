@@ -266,6 +266,13 @@ export class ClaudeAccountSwitcher {
     this.notice = `Switched to account ${number}. Your chats and folders are unchanged.`
   }
 
+  /** The active account when fresh usage shows it fully used, so every Claude process on it is stopped. */
+  private exhaustedActiveAccount(): number | null {
+    const active = this.cached?.accounts.find((account) => account.active)
+    if (!active || active.usageStatus !== 'ok' || active.usageIsStale || active.limits.length === 0) return null
+    return Math.max(...active.limits.map((limit) => limit.usedPercent)) >= 100 ? active.number : null
+  }
+
   private bestRecoveryAccount(excludedAccountNumbers: ReadonlySet<number>): ClaudeSavedAccount | null {
     const candidates = (this.cached?.accounts ?? []).flatMap((account) => {
       if (
@@ -484,6 +491,17 @@ export class ClaudeAccountSwitcher {
       if (this.limitRecoveries.length > 0) {
         await this.applyLimitRecovery()
         return
+      }
+      if (this.enabled) {
+        // Read usage even while busy: a chat that only runs background tasks
+        // never sends a request, so no limit error would ever start recovery.
+        await this.refresh()
+        const exhausted = this.exhaustedActiveAccount()
+        if (exhausted !== null) {
+          this.limitRecoveries.push({ exhaustedAccountNumber: exhausted, excludedAccountNumbers: new Set(), resolve: () => {} })
+          await this.applyLimitRecovery()
+          return
+        }
       }
       if (await this.options.isBusy()) return
       if (this.pending !== null) { await this.applyPending(); return }

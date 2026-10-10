@@ -110,6 +110,30 @@ test('hard-limit recovery switches even while other Claude work, such as a backg
   f.manager.dispose()
 })
 
+test('an account at 100% is switched even while a background chat keeps Claude busy', { timeout: 5000 }, async () => {
+  const f = await fixture()
+  f.setRows(rows(1, 100))
+  f.setBusy(true)
+  await f.manager.tick()
+  assert.deepEqual(f.calls.filter((args) => ['prepare', 'switch'].includes(args[0])), [['prepare', 'keepBusy'], ['switch', '2', '--json']])
+  assert.equal((await f.manager.snapshot()).activeAccountNumber, 2)
+  f.manager.dispose()
+})
+
+test('a busy account below 100% or with stale usage is left for the normal idle switch', { timeout: 5000 }, async () => {
+  for (const setup of [
+    (f) => f.setRows(rows(1, 99)),
+    (f) => f.setRows(rows(1, 100).map((row) => row.number === 1 ? { ...row, usageStatus: 'unavailable' } : row)),
+  ]) {
+    const f = await fixture()
+    setup(f)
+    f.setBusy(true)
+    await f.manager.tick()
+    assert.equal(f.calls.some((args) => args[0] === 'switch' || args[0] === 'auto'), false)
+    f.manager.dispose()
+  }
+})
+
 test('hard-limit recovery still waits for a Claude sign-in to finish', async () => {
   const f = await fixture()
   f.setRows(rows(1, 100))
@@ -137,7 +161,7 @@ test('auto delegates quota and unknown-usage decisions to cswap only when idle a
   const f = await fixture()
   f.setBusy(true)
   await f.manager.tick()
-  assert.equal(f.calls.length, 0)
+  assert.deepEqual(f.calls.filter((args) => args[0] !== 'list'), [], 'busy work only lets usage be read, below 100%')
   f.setBusy(false)
   f.setRows(rows().map((row) => ({ ...row, usageStatus: 'unavailable' })))
   await f.manager.tick()

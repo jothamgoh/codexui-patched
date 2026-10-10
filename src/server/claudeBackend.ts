@@ -852,7 +852,7 @@ export class ClaudeBackend {
     for (const query of this.metadataQueries) query.close()
     this.metadataQueries.clear()
     for (const runner of [...this.runners.values()]) {
-      this.closeRunner(runner.sessionId, runner)
+      this.closeRunner(runner.sessionId, { expected: runner })
       runner.query.close()
     }
     if (this.runtimePending) await this.runtimePending.catch(() => undefined)
@@ -2027,7 +2027,12 @@ export class ClaudeBackend {
     return turn
   }
 
-  private finishTurn(runner: SessionRunner, status: 'completed' | 'interrupted' | 'failed', errorMessage = ''): void {
+  private finishTurn(
+    runner: SessionRunner,
+    status: 'completed' | 'interrupted' | 'failed',
+    errorMessage = '',
+    options: { checkAccounts?: boolean } = {},
+  ): void {
     const turn = runner.activeTurn
     if (!turn || turn.settled) return
     turn.settled = true
@@ -2060,14 +2065,20 @@ export class ClaudeBackend {
     void this.recordGoalProgress(turn, status).catch(() => undefined)
     this.cancelRequests(turn.turnId)
     this.scheduleIdleClose(runner)
-    void this.accounts.tick()
+    if (options.checkAccounts !== false) void this.accounts.tick()
   }
 
   private failTurn(runner: SessionRunner, turn: LiveTurn, errorMessage: string): void {
     const hardLimit = isClaudeHardLimitError(errorMessage)
     const exhaustedAccountNumber = hardLimit ? this.accounts.activeAccountNumber() : null
-    this.finishTurn(runner, 'failed', errorMessage)
-    if (hardLimit) void this.recoverLimitedTurn(turn, exhaustedAccountNumber)
+    this.finishTurn(runner, 'failed', errorMessage, { checkAccounts: !hardLimit })
+    if (hardLimit) {
+      // This process cannot continue on the exhausted account. Retire it before
+      // recovery so its own background commands cannot keep the global account
+      // switch waiting forever. Other Claude runners still retain the busy guard.
+      this.closeRunner(runner.sessionId, { expected: runner, immediately: true })
+      void this.recoverLimitedTurn(turn, exhaustedAccountNumber)
+    }
   }
 
   private async recoverLimitedTurn(turn: LiveTurn, exhaustedAccountNumber: number | null): Promise<void> {
@@ -2090,11 +2101,15 @@ export class ClaudeBackend {
   /** Closing the process would kill background work, so wait until none is left. */
   private scheduleIdleClose(runner: SessionRunner): void {
     if (runner.closed || runner.activeTurn || runner.idleTimer || runner.backgroundTasks.length > 0) return
-    runner.idleTimer = setTimeout(() => this.closeRunner(runner.sessionId, runner), RUNNER_IDLE_MS)
+    runner.idleTimer = setTimeout(() => this.closeRunner(runner.sessionId, { expected: runner }), RUNNER_IDLE_MS)
     runner.idleTimer.unref?.()
   }
 
-  private setBackgroundTasks(runner: SessionRunner, tasks: ClaudeBackgroundTask[]): void {
+  private setBackgroundTasks(
+    runner: SessionRunner,
+    tasks: ClaudeBackgroundTask[],
+    options: { checkAccounts?: boolean } = {},
+  ): void {
     if (runner.backgroundTasks.length === 0 && tasks.length === 0) return
     runner.backgroundTasks = tasks
     this.emit('thread/backgroundTasks/updated', { threadId: runner.threadId, tasks })
@@ -2103,7 +2118,7 @@ export class ClaudeBackend {
       runner.idleTimer = null
     } else {
       this.scheduleIdleClose(runner)
-      void this.accounts.tick()
+      if (options.checkAccounts !== false) void this.accounts.tick()
     }
   }
 
@@ -2125,27 +2140,34 @@ export class ClaudeBackend {
     return ''
   }
 
-  private closeRunner(sessionId: string, expected?: SessionRunner): void {
+  private closeRunner(sessionId: string, options: { expected?: SessionRunner; immediately?: boolean } = {}): void {
     const runner = this.runners.get(sessionId)
-    if (!runner || (expected && runner !== expected)) return
+    if (!runner || (options.expected && runner !== options.expected)) return
     if (runner.idleTimer) clearTimeout(runner.idleTimer)
     runner.idleTimer = null
     runner.closed = true
     this.runners.delete(sessionId)
-    this.setBackgroundTasks(runner, [])
+    this.setBackgroundTasks(runner, [], { checkAccounts: false })
     runner.input.release()
     if (runner.activeTurn) {
       runner.activeTurn.interrupted = true
       void runner.query.interrupt().catch(() => undefined)
     }
-    // Closing the input ends Claude Code; close() also stops a stuck process.
-    const timer = setTimeout(() => {
+    // Closing the input normally gives Claude Code time to exit. A hard-limit
+    // runner must close now because it cannot consume another command and may
+    // still own a background process that would block account recovery.
+    const close = (): void => {
       try {
         runner.query.close()
       } catch {
         // already closed
       }
-    }, 10_000)
+    }
+    if (options.immediately) {
+      close()
+      return
+    }
+    const timer = setTimeout(close, 10_000)
     timer.unref?.()
   }
 
@@ -2159,8 +2181,9 @@ export class ClaudeBackend {
       runner.closed = true
       if (this.runners.get(runner.sessionId) === runner) this.runners.delete(runner.sessionId)
       if (runner.idleTimer) clearTimeout(runner.idleTimer)
-      this.setBackgroundTasks(runner, [])
       const turn = runner.activeTurn
+      const hardLimitFailure = Boolean(turn && !turn.interrupted && isClaudeHardLimitError(failure))
+      this.setBackgroundTasks(runner, [], { checkAccounts: !hardLimitFailure })
       if (turn) {
         if (turn.interrupted) this.finishTurn(runner, 'interrupted')
         else this.failTurn(runner, turn, failure || 'Claude Code stopped unexpectedly.')
@@ -2355,7 +2378,7 @@ export class ClaudeBackend {
     runner.interruptTimer = setTimeout(() => {
       if (runner.activeTurn === turn) {
         this.finishTurn(runner, 'interrupted')
-        this.closeRunner(sessionId, runner)
+        this.closeRunner(sessionId, { expected: runner })
       }
     }, INTERRUPT_SETTLE_MS)
     runner.interruptTimer.unref?.()

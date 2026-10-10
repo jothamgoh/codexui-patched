@@ -392,13 +392,17 @@ test('background tasks keep the Claude process alive and block account changes u
   backend.runners.clear(); backend.dispose(); f.manager.dispose()
 })
 
-test('a hard-limit result switches accounts and continues the same Claude chat', async () => {
+test('a hard-limit result retires its background work, switches accounts, and continues the same Claude chat', async () => {
   const f = await fixture()
   const backend = new ClaudeBackend(join(f.scratch, 'threads.json'), {
     accountSwitcherPath: '/fixture/cswap',
     claudeConfigDir: join(f.scratch, 'claude'),
   })
+  backend.runAccountCommand = f.run
+  backend.refreshClaudeSessionStates = async () => ({ uncertain: false, states: new Map() })
   const session = 'session-that-hit-the-limit'
+  let closes = 0
+  let releases = 0
   const runner = {
     sessionId: session,
     threadId: `claude-${session}`,
@@ -406,23 +410,17 @@ test('a hard-limit result switches accounts and continues the same Claude chat',
     settingsKey: 'claude-sonnet|low|/work/project',
     activeTurn: null,
     pushedCommands: new Map(),
-    backgroundTasks: [],
+    backgroundTasks: [{ id: 'watcher', type: 'local_bash', description: 'tail -F pipeline.log' }],
     idleTimer: null,
     interruptTimer: null,
     closed: false,
     totalUsage: {},
     contextWindow: 200000,
-    query: { close: () => {} },
-    input: { release: () => {} },
+    query: { close: () => { closes += 1 } },
+    input: { release: () => { releases += 1 } },
   }
   backend.runners.set(session, runner)
-  backend.accounts.activeAccountNumber = () => 1
-  backend.accounts.tick = async () => {}
-  backend.accounts.recoverFromLimit = async (accountNumber, excluded) => {
-    assert.equal(accountNumber, 1)
-    assert.deepEqual(excluded, [1])
-    return { kind: 'ready', accountNumber: 2 }
-  }
+  await backend.accounts.snapshot()
   const resumed = new Promise((resolve) => {
     backend.startTurn = async (request, extra) => {
       resolve({ request, extra })
@@ -441,7 +439,13 @@ test('a hard-limit result switches accounts and continues the same Claude chat',
   assert.match(continuation.request.input[0].text, /Continue where you left off/u)
   assert.deepEqual(continuation.extra.limitRecoveryAccountNumbers, [1])
   assert.equal(runner.activeTurn, null)
-  backend.runners.clear(); backend.dispose(); f.manager.dispose()
+  assert.equal(runner.closed, true)
+  assert.deepEqual(runner.backgroundTasks, [])
+  assert.equal(backend.runners.has(session), false)
+  assert.equal(closes, 1)
+  assert.equal(releases, 1)
+  assert.deepEqual(f.calls.find((args) => args[0] === 'switch'), ['switch', '2', '--json'])
+  backend.dispose(); f.manager.dispose()
 })
 
 test('a hard-limit exception from the Claude SDK uses the same continuation path', async () => {

@@ -192,7 +192,15 @@ try {
   assert.deepEqual(approvalReplies.map(({ reply }) => reply), [{ id: 801, result: { decision: 'acceptForSession' } }, { id: 802, result: { decision: 'accept' } }])
   await notify('server/request/resolved', { id: 802 })
 
+  // After a server restart, a reconnect drops cards the server no longer knows.
+  await notify('server/request', approval(803))
+  await page.getByText('Permission to control this Mac', { exact: true }).waitFor()
+  pendingRows = []
+  await page.evaluate(() => { fixtureEvents.onopen(); fixtureEvents.onopen() })
+  await page.getByText('Permission to control this Mac', { exact: true }).waitFor({ state: 'hidden' })
+  assert.equal(approvalReplies.length, 2, 'a stale card is dropped without sending a reply')
+
   assert.deepEqual(errors, [])
   await page.evaluate(() => desktop.stopPolling())
-  console.log(JSON.stringify({ questions: true, optionDescriptions: true, freeTextVoice: true, explicitSubmit: true, retryPreserved: true, replayDuplicateGuard: true, resumedMessages: true, secretMasked: true, asyncLiveQuestions: true, asyncRetry: true, asyncVoice: true, asyncHistoryReload: true, instantApprovalHide: true, mobileOverflow: false }))
+  console.log(JSON.stringify({ questions: true, optionDescriptions: true, freeTextVoice: true, explicitSubmit: true, retryPreserved: true, replayDuplicateGuard: true, resumedMessages: true, secretMasked: true, asyncLiveQuestions: true, asyncRetry: true, asyncVoice: true, asyncHistoryReload: true, instantApprovalHide: true, staleCardsDropped: true, mobileOverflow: false }))
 } finally { await browser.close(); await server.close() }

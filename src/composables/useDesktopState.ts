@@ -5195,13 +5195,21 @@ export function useDesktopState() {
   }
 
   async function loadPendingServerRequestsFromBridge(): Promise<void> {
+    // Requests that arrive while this fetch is in flight are newer than its answer.
+    const shownBefore = new Set(Object.values(pendingServerRequestsByThreadId.value).flat().map((request) => request.id))
     try {
       const rows = await getPendingServerRequests()
+      const live = new Set<number>()
       for (const row of rows) {
         const request = normalizeServerRequest(row)
         if (request) {
+          live.add(request.id)
           upsertPendingServerRequest(request)
         }
+      }
+      // A restarted server forgets its old requests; drop their cards too.
+      for (const id of shownBefore) {
+        if (!live.has(id)) removePendingServerRequestById(id)
       }
     } catch {
       // Keep UI usable when pending request endpoint is temporarily unavailable.

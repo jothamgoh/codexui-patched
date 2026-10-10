@@ -1395,3 +1395,10 @@ After each feature implementation session that uses this skill:
 - The local app-server currently advertises GPT-6 Astra as its OpenAI default, followed by GPT-6 Sol and GPT-6 Luna, while Claude exposes a separate provider default in the merged CodexUI catalog.
 - In a unified picker, choose the first `isDefault` OpenAI model and ignore the Claude default for new Codex chats. Keep the full list runtime-driven so later models appear without another frontend release.
 - Official OpenAI model and Codex documentation lists `gpt-6.1-sol` with `low`, `medium`, `high`, `xhigh`, and `max` reasoning (`medium` default), but Codex CLI 0.158.0 on this deployment did not yet advertise it. A temporary compatibility row may fill that rollout gap; runtime metadata must replace it automatically once present.
+
+## Findings: Claude account handoff and cswap polling (2026-10-10)
+
+- Rechecked the integrated ChatGPT/Codex renderer `26.924.22138`. It keeps authentication in account settings but has no Claude multi-account or authorization-code handoff. CodexUI's Claude account manager remains an intentional extension in Tools → Accounts.
+- After `Add another account`, keep the handoff beside the account controls: explain the browser step, label the field `Paste Claude authorization code`, retain an `Open Claude sign-in` link, and call the final action `Save account`. A private-window hint helps users avoid silently reopening the account already saved on the host.
+- `cswap` owns provider usage polling, cached readings, threshold decisions, jitter, and `429` backoff. CodexUI may inspect cswap's local state every minute without making a provider request every minute; it must not add a second freshness or Retry-After scheduler over cswap.
+- Treat `cswap auto --once` exit code `2` as a normal no-op. Only a confirmed switch closes idle Claude processes and invalidates runtime caches, under the same exclusive lock used by new turn starts.

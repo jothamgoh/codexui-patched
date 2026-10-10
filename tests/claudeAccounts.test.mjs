@@ -14,7 +14,7 @@ async function load(path) {
   await build({ entryPoints: [new URL(path, import.meta.url).pathname], outfile, bundle: true, platform: 'node', format: 'esm', external: ['@anthropic-ai/claude-agent-sdk', 'zod'], logLevel: 'silent' })
   return import(pathToFileURL(outfile).href)
 }
-const { ClaudeAccountSwitcher, parseCSwapAccounts, CLAUDE_USAGE_POLL_MS } = await load('../src/server/claudeAccountSwitcher.ts')
+const { ClaudeAccountSwitcher, parseCSwapAccounts, CLAUDE_CSWAP_CHECK_MS } = await load('../src/server/claudeAccountSwitcher.ts')
 const { ClaudeBackend } = await load('../src/server/claudeBackend.ts')
 const { isAllowedClaudeHostRequest, startClaudeProcessHost, spawnThroughHost } = await load('../src/server/claudeProcessHost.ts')
 
@@ -66,7 +66,7 @@ test('manual selection queues during a reply, blocks new chats, then takes prior
   f.manager.dispose()
 })
 
-test('auto uses quota threshold only when idle, skips unknown usage and disabled rotation', async () => {
+test('auto delegates quota and unknown-usage decisions to cswap only when idle and enabled', async () => {
   const f = await fixture()
   f.setBusy(true)
   await f.manager.tick()
@@ -74,16 +74,32 @@ test('auto uses quota threshold only when idle, skips unknown usage and disabled
   f.setBusy(false)
   f.setRows(rows().map((row) => ({ ...row, usageStatus: 'unavailable' })))
   await f.manager.tick()
-  assert.equal(f.calls.some((args) => args[0] === 'auto'), false)
+  assert.deepEqual(f.calls.find((args) => args[0] === 'auto'), ['auto', '--once', '--json', '--threshold', '90'])
+  assert.deepEqual(f.calls.filter((args) => args[0] === 'prepare'), [['prepare']])
   f.setRows(rows())
-  f.advance(CLAUDE_USAGE_POLL_MS + 1)
+  f.advance(CLAUDE_CSWAP_CHECK_MS + 1)
   await f.manager.configure(false, 90)
+  const autoCalls = f.calls.filter((args) => args[0] === 'auto').length
   await f.manager.tick()
-  assert.equal(f.calls.some((args) => args[0] === 'auto'), false)
+  assert.equal(f.calls.filter((args) => args[0] === 'auto').length, autoCalls)
   await f.manager.configure(true, 90)
   await f.manager.tick()
-  assert.deepEqual(f.calls.find((args) => args[0] === 'auto'), ['auto', '--once', '--json', '--threshold', '90'])
+  assert.equal(f.calls.filter((args) => args[0] === 'auto').length, autoCalls + 1)
   assert.equal((await f.manager.snapshot()).activeAccountNumber, 2)
+  f.manager.dispose()
+})
+
+test('a cswap no-action result does not close idle Claude processes', async () => {
+  let f
+  f = await fixture({ run: async (_command, args) => {
+    f.calls.push(args)
+    if (args[0] === 'list') return { code: 0, stdout: JSON.stringify({ schemaVersion: 1, accounts: rows() }) }
+    return { code: 2, stdout: '{}' }
+  } })
+  await f.manager.tick()
+  assert.equal(f.calls.some((args) => args[0] === 'auto'), true)
+  assert.equal(f.calls.some((args) => args[0] === 'prepare'), false)
+  assert.equal(f.calls.some((args) => args[0] === 'changed'), false)
   f.manager.dispose()
 })
 
@@ -185,7 +201,7 @@ test('Claude host only permits the supported cswap operations', async () => {
   } finally { await new Promise((resolve) => server.close(resolve)); await rm(socketDirectory, { recursive: true, force: true }) }
 })
 
-test('refresh clicks and many tabs share a fifteen-minute usage cache', async () => {
+test('refresh clicks and many tabs share a one-minute cswap snapshot', async () => {
   const f = await fixture()
   await Promise.all(Array.from({ length: 12 }, () => f.manager.snapshot(true)))
   assert.equal(f.calls.filter((args) => args[0] === 'list').length, 1)
@@ -193,30 +209,36 @@ test('refresh clicks and many tabs share a fifteen-minute usage cache', async ()
   const afterSwitch = f.calls.filter((args) => args[0] === 'list').length
   await Promise.all(Array.from({ length: 12 }, () => f.manager.snapshot(true)))
   assert.equal(f.calls.filter((args) => args[0] === 'list').length, afterSwitch)
-  f.advance(CLAUDE_USAGE_POLL_MS + 1)
+  f.advance(CLAUDE_CSWAP_CHECK_MS + 1)
   await f.manager.snapshot(true)
   assert.equal(f.calls.filter((args) => args[0] === 'list').length, afterSwitch + 1)
   f.manager.dispose()
 })
 
-test('429 preserves cached bars, honors a longer retry deadline and prevents automatic rotation', async () => {
-  const f = await fixture()
+test('429 preserves cached bars while cswap remains responsible for its retry deadline', async () => {
+  let f
+  f = await fixture({ run: async (_command, args) => {
+    f.calls.push(args)
+    if (args[0] === 'list') return { code: 0, stdout: JSON.stringify({ schemaVersion: 1, accounts: f.rateLimited ? rows().map((row) => ({ ...row, usage: null, usageStatus: 'unavailable', usageError: 'http-429', usageRetryAt: f.deadline })) : rows() }) }
+    return { code: 2, stdout: '{}' }
+  } })
+  f.rateLimited = false
+  f.deadline = new Date(Date.now() + 90 * 60_000).toISOString()
   const first = await f.manager.snapshot()
-  const deadline = new Date(Date.now() + 90 * 60_000).toISOString()
-  f.setRows(rows().map((row) => ({ ...row, usage: null, usageStatus: 'unavailable', usageError: 'http-429', usageRetryAt: deadline })))
-  f.advance(CLAUDE_USAGE_POLL_MS + 1)
+  f.rateLimited = true
+  f.advance(CLAUDE_CSWAP_CHECK_MS + 1)
   const fallback = await f.manager.snapshot(true)
   assert.deepEqual(fallback.accounts[0].limits, first.accounts[0].limits)
   assert.equal(fallback.accounts[0].usageIsStale, true)
   assert.equal(fallback.accounts[0].usageRateLimited, true)
-  assert.equal(fallback.nextCheckAt, deadline)
+  assert.ok(Date.parse(fallback.nextCheckAt) < Date.parse(f.deadline))
   assert.match(fallback.notice, /rate limited/u)
-  const calls = f.calls.length
+  const listCalls = f.calls.filter((args) => args[0] === 'list').length
   await f.manager.tick()
   await f.manager.snapshot(true)
-  f.advance(60 * 60_000)
+  f.advance(CLAUDE_CSWAP_CHECK_MS + 1)
   await f.manager.snapshot(true)
-  assert.equal(f.calls.length, calls)
+  assert.equal(f.calls.filter((args) => args[0] === 'list').length, listCalls + 1)
   f.manager.dispose()
 })
 

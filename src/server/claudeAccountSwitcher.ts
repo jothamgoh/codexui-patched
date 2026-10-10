@@ -17,7 +17,8 @@ type Options = {
   now?: () => number
 }
 
-export const CLAUDE_USAGE_POLL_MS = 15 * 60_000
+/** How often CodexUI asks cswap for its locally cached account state. */
+export const CLAUDE_CSWAP_CHECK_MS = 60_000
 
 function record(value: unknown): Record<string, unknown> {
   return value !== null && typeof value === 'object' && !Array.isArray(value) ? value as Record<string, unknown> : {}
@@ -50,7 +51,10 @@ export function parseCSwapAccounts(output: string): { active: number | null; acc
       number, email: text(row.email) ?? `Account ${number}`, alias: text(row.alias),
       organization: text(row.organizationName), active: row.active === true,
       disabled: row.disabled === true, usageStatus: text(row.usageStatus) ?? 'unavailable', limits,
-      usageIsStale: fallback || (typeof row.usageAgeSeconds === 'number' && row.usageAgeSeconds > CLAUDE_USAGE_POLL_MS / 1000),
+      // cswap's usageStatus is the decision-grade freshness boundary. Its
+      // adaptive scheduler may deliberately keep a successful reading for
+      // longer than CodexUI's local check interval.
+      usageIsStale: fallback,
       usageRateLimited: row.usageError === 'http-429', usageRetryAt: text(row.usageRetryAt),
       usageFetchedAt: text(fallback ? row.lastGoodFetchedAt : row.usageFetchedAt),
     })
@@ -125,7 +129,7 @@ export class ClaudeAccountSwitcher {
     if (!inventoryChanged && this.now() < this.nextReadAt) return
     if (this.reading) return this.reading
     const pending = (async () => {
-      this.nextReadAt = this.now() + CLAUDE_USAGE_POLL_MS
+      this.nextReadAt = this.now() + CLAUDE_CSWAP_CHECK_MS
       const result = await this.command(['list', '--json'])
       if (result.code !== 0) throw new Error('Could not read saved Claude accounts. Check claude-swap on the host.')
       const data = parseCSwapAccounts(result.stdout)
@@ -138,7 +142,6 @@ export class ClaudeAccountSwitcher {
           if (last?.limits.length) { account.limits = last.limits; account.usageIsStale = true }
         }
         if (account.usageRateLimited) {
-          this.nextReadAt = Math.max(this.nextReadAt, this.now() + 60 * 60_000, Date.parse(account.usageRetryAt ?? '') || 0)
           this.notice = 'Claude usage checks are rate limited. Showing cached usage; replies and manual switching still work.'
         }
       }
@@ -147,7 +150,7 @@ export class ClaudeAccountSwitcher {
     try { await pending } catch (error) {
       this.failures += 1
       for (const account of this.cached?.accounts ?? []) account.usageIsStale = true
-      this.nextReadAt = Math.max(this.nextReadAt, this.now() + Math.min(60 * 60_000, CLAUDE_USAGE_POLL_MS * 2 ** Math.min(this.failures - 1, 3)))
+      this.nextReadAt = Math.max(this.nextReadAt, this.now() + Math.min(60 * 60_000, CLAUDE_CSWAP_CHECK_MS * 2 ** Math.min(this.failures - 1, 6)))
       throw error
     } finally { if (this.reading === pending) this.reading = null }
   }
@@ -208,6 +211,26 @@ export class ClaudeAccountSwitcher {
       return await this.command(args)
     } finally {
       this.options.accountChanged()
+      this.switching = false
+    }
+  }
+
+  /**
+   * cswap owns automatic polling, backoff, threshold evaluation and the
+   * credential change. Turn starts share this class's exclusive queue, so an
+   * idle Claude process can be closed immediately after cswap reports a switch
+   * without racing a new CodexUI reply.
+   */
+  private async autoSwitch(): Promise<CSwapResult> {
+    this.switching = true
+    try {
+      if (this.reading) await this.reading.catch(() => undefined)
+      const result = await this.command(['auto', '--once', '--json', '--threshold', String(this.threshold)])
+      if (result.code === 0) {
+        try { await this.options.prepareSwitch() } finally { this.options.accountChanged() }
+      }
+      return result
+    } finally {
       this.switching = false
     }
   }
@@ -289,16 +312,16 @@ export class ClaudeAccountSwitcher {
       if (!this.enabled || this.now() < this.manualUntil || this.now() < this.nextAutoAt) return
       await this.refresh()
       if ((this.cached?.accounts.length ?? 0) < 2 || this.cached?.active === null) return
-      const current = this.cached?.accounts.find((account) => account.active)
-      // Unknown/stale usage never drives a switch; cswap makes the final decision,
-      // including token refresh, cooldown, disabled accounts, and quota windows.
-      if (current?.usageStatus !== 'ok' || current.usageIsStale || current.usageRateLimited || !current.limits.some((limit) => limit.usedPercent >= this.threshold)) return
-      this.nextAutoAt = this.now() + CLAUDE_USAGE_POLL_MS
-      const result = await this.mutate(['auto', '--once', '--json', '--threshold', String(this.threshold)])
+      // Asking every minute does not mean an Anthropic request every minute.
+      // cswap serves its cache until its persisted adaptive poll plan is due.
+      this.nextAutoAt = this.now() + CLAUDE_CSWAP_CHECK_MS
+      const result = await this.autoSwitch()
       if (![0, 2, 3].includes(result.code ?? -1)) throw new Error('Automatic switching failed. Check saved accounts or sign in again.')
-      if (result.code === 0) this.notice = 'Automatically switched Claude accounts. Your next reply uses the new account.'
+      if (result.code === 0) {
+        this.notice = 'Automatically switched Claude accounts. Your next reply uses the new account.'
+        await this.refresh(true)
+      }
       else if (result.code === 3) this.notice = 'No saved account is ready. Add an account or wait for its usage to reset.'
-      await this.refresh(true)
     }).catch((error: unknown) => {
       this.notice = error instanceof Error ? error.message : 'Could not switch Claude accounts.'
     })

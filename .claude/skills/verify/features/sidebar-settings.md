@@ -46,6 +46,13 @@ Preconditions:
   The fixture must use fake accounts and a private metadata file, never real
   credentials or the real cswap executable. Verify both desktop and phone.
 
+- **Add a Claude account.** Use scratch `CODEXUI_CSWAP_PATH` and
+  `CODEXUI_CLAUDE_PATH` fixtures. Choose `Add another account`, then verify the
+  `Finish adding Claude account` form contains `Paste Claude authorization code`,
+  `Open Claude sign-in`, `Save account`, and `Cancel`. Do not submit a real code.
+  The sign-in fixture may return a fake `https://claude.ai/...` URL intercepted by
+  Playwright. Verify both desktop and phone.
+
 - Font size and the questions toggle live in browser storage. Each `openSession` starts with a
   fresh browser context, so reset only matters within one scenario.
-- `Sign in` starts a real OAuth flow. Do not complete it from a scenario.
+- Without a Claude executable fixture, `Sign in` starts a real OAuth flow. Do not complete it from a scenario.

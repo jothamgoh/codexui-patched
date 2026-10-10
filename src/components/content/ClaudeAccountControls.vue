@@ -17,7 +17,7 @@
         </select>
       </label>
       <p>Switches after replies finish. Chats and folders stay together. Uses this Mac’s default Claude login.</p>
-      <p class="poll-note">Usage checks at most every 15 min. Refresh uses the cache during cooldowns.</p>
+      <p class="poll-note">CodexUI checks cswap each minute. cswap schedules usage requests and 429 backoff.</p>
       <div class="account-actions">
         <button type="button" :disabled="disabled || pool.switching || !connected" @click="emit('save')">Save current login</button>
         <button type="button" :disabled="disabled || pool.switching" @click="emit('add')">Add another account</button>

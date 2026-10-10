@@ -21,7 +21,7 @@ import type {
 } from '@anthropic-ai/claude-agent-sdk'
 import { getCodexUiChildEnv } from './envFile'
 import { spawnThroughHost } from './claudeProcessHost'
-import { CLAUDE_USAGE_POLL_MS, ClaudeAccountSwitcher, resolveCSwapExecutable, type CSwapResult } from './claudeAccountSwitcher'
+import { ClaudeAccountSwitcher, resolveCSwapExecutable, type CSwapResult } from './claudeAccountSwitcher'
 import {
   addUsage,
   asRecord,
@@ -69,6 +69,7 @@ const DEFAULT_MODEL_ID = 'claude-default'
 const ENCODED_MODEL_PREFIX = 'claude-model:'
 const SKILL_PATH_PREFIX = 'claude-command:'
 const RUNTIME_CACHE_MS = 10 * 60_000
+const CLAUDE_SDK_USAGE_POLL_MS = 15 * 60_000
 const LIST_CACHE_MS = 2_500
 const COMMANDS_CACHE_MS = 10 * 60_000
 const RUNNER_IDLE_MS = 15 * 60_000
@@ -900,7 +901,7 @@ export class ClaudeBackend {
     }
     if (this.usagePending) return this.usagePending
     if (Date.now() < this.usageNextReadAt) return this.usageCache?.value ?? { plan: runtime.account.subscriptionType ?? null, limits: [], notice: 'Claude usage checks are cooling down. Try again later.' }
-    this.usageNextReadAt = Date.now() + CLAUDE_USAGE_POLL_MS
+    this.usageNextReadAt = Date.now() + CLAUDE_SDK_USAGE_POLL_MS
     const pending = this.readSdkUsage(runtime, generation)
     this.usagePending = pending
     try { return await pending } finally { if (this.usagePending === pending) this.usagePending = null }
@@ -929,7 +930,7 @@ export class ClaudeBackend {
       const headers = detail?.headers
       const retryAfter = headers instanceof Headers ? headers.get('retry-after') : readString(asRecord(headers)?.['retry-after'])
       const serverDelay = retryAfter && Number.isFinite(Number(retryAfter)) ? Number(retryAfter) * 1000 : Math.max(0, Date.parse(retryAfter || '') - Date.now()) || 0
-      const delay = Math.max(serverDelay, limited ? 60 * 60_000 : Math.min(60 * 60_000, CLAUDE_USAGE_POLL_MS * 2 ** Math.min(this.usageFailures - 1, 3)))
+      const delay = Math.max(serverDelay, limited ? 60 * 60_000 : Math.min(60 * 60_000, CLAUDE_SDK_USAGE_POLL_MS * 2 ** Math.min(this.usageFailures - 1, 3)))
       this.usageNextReadAt = Date.now() + delay
       const notice = limited ? 'Claude usage checks hit a 429. Showing cached usage; checks will resume after the cooldown.' : 'Claude usage refresh failed. Showing cached usage until the next check.'
       if (this.usageCache) {

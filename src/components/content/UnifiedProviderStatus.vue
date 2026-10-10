@@ -34,12 +34,14 @@
         </button>
       </div>
 
-      <form v-if="pendingClaudeLogin" class="claude-login" @submit.prevent="void finishClaudeLogin()">
-        <p>Choose the account to add, then paste its authorization code here. If the previous account opens, use the login link in a private browser window. Each login is saved for switching.</p>
-        <input v-model="claudeCode" autocomplete="off" placeholder="Authorization code" aria-label="Claude authorization code">
+      <form v-if="pendingClaudeLogin" class="claude-login" aria-label="Finish adding Claude account" @submit.prevent="void finishClaudeLogin()">
+        <strong>Finish adding the Claude account</strong>
+        <p>Sign in on the Claude page. Copy the authorization code it shows, return to CodexUI, and paste it below. Use a private window if Claude opens the account already saved here.</p>
+        <label for="claude-authorization-code">Paste Claude authorization code</label>
+        <input id="claude-authorization-code" v-model="claudeCode" autocomplete="one-time-code" autocapitalize="off" spellcheck="false" placeholder="Paste code from Claude here">
         <div class="claude-login-actions">
-          <a :href="pendingClaudeLogin.authUrl" target="_blank" rel="noopener noreferrer">Open Claude login</a>
-          <button type="submit" :disabled="!claudeCode.trim() || busyProvider === 'claude'">Connect</button>
+          <a :href="pendingClaudeLogin.authUrl" target="_blank" rel="noopener noreferrer">Open Claude sign-in</a>
+          <button type="submit" :disabled="!claudeCode.trim() || busyProvider === 'claude'">Save account</button>
           <button type="button" :disabled="busyProvider === 'claude'" @click="void cancelClaudeLogin()">Cancel</button>
         </div>
       </form>
@@ -364,9 +366,12 @@ function resetLabel(value: string): string {
 .provider-action:hover,
 .claude-login button:hover { background: var(--surface-hover); }
 .claude-login { @apply mt-1.5 border-t pt-2; border-color: var(--border-soft); }
+.claude-login > strong { @apply block text-[11px] leading-4 font-medium; }
 .claude-login p,
 .provider-error,
 .provider-note { @apply m-0 text-[10px] leading-4; color: var(--text-muted); }
+.claude-login p { @apply mt-1; }
+.claude-login label { @apply mt-2 block text-[10px] font-medium; }
 .claude-login input { @apply mt-1.5 w-full rounded-md border px-2 py-1.5 text-[11px] outline-none; border-color: var(--border-subtle); background: var(--surface-primary); }
 .claude-login-actions { @apply mt-1.5 flex flex-wrap items-center gap-1.5; }
 .claude-login-actions a { @apply mr-auto text-[10px] underline; color: var(--text-secondary); }

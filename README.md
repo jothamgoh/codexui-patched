@@ -119,14 +119,13 @@ Remove a saved login under **Manage saved accounts → Remove → Confirm remove
 This removes it from rotation without deleting local chats or signing out the
 current login.
 
-**Auto switch** defaults to 90% used. Usage is collected at most every fifteen
-minutes for routine checks, shared across tabs and refresh clicks. The active
-usage card reuses claude-swap's measurements instead of calling Anthropic again.
-Account add/remove/switch actions refresh the account inventory; claude-swap's
-own persistent cache and backoff still protect its usage requests. A usage 429
-keeps the last known bars and pauses routine checks for at least an hour or the
-reported retry deadline, whichever is later. Other fetch errors use increasing
-cooldowns. Cached or unknown usage never drives an automatic switch.
+**Auto switch** defaults to 90% used. CodexUI asks claude-swap for account state
+once a minute, shared across tabs and refresh clicks. claude-swap decides when
+to contact Anthropic using its persistent adaptive poll plan, jitter, cache and
+429 backoff. The active usage card reuses the same measurements instead of
+calling Anthropic again. Account add/remove/switch actions refresh the account
+inventory. Cached usage stays visible during cooldowns, and claude-swap makes
+the final switch decision from decision-grade usage.
 
 The switcher checks the cached result after replies finish. It waits for all
 CodexUI Claude replies and queued messages to finish,

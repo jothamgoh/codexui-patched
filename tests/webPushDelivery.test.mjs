@@ -88,6 +88,7 @@ test('the service worker reports each push it receives and whether it showed it'
 
 async function initializeWithPermission(permission) {
   const subscribes = []
+  const permissionRequests = []
   const storage = new Map()
   const subscription = { endpoint: 'https://push.example.test/stale', toJSON: () => ({ endpoint: 'https://push.example.test/stale', keys: { p256dh: 'k', auth: 'a' } }) }
   const registration = { pushManager: { getSubscription: async () => subscription } }
@@ -95,7 +96,7 @@ async function initializeWithPermission(permission) {
     window: globalThis,
     isSecureContext: true,
     PushManager: function PushManager() {},
-    Notification: { permission },
+    Notification: { permission, requestPermission: async () => { permissionRequests.push('asked'); return permission } },
     localStorage: { getItem: (key) => storage.get(key) ?? null, setItem: (key, value) => storage.set(key, String(value)), removeItem: (key) => storage.delete(key) },
     matchMedia: () => ({ matches: false }),
     fetch: async (url, options = {}) => {
@@ -108,7 +109,7 @@ async function initializeWithPermission(permission) {
   const { useWebPushNotifications } = await import(`data:text/javascript;base64,${Buffer.from(outputFiles[0].contents).toString('base64')}`)
   const push = useWebPushNotifications()
   await push.initializeWebPushNotifications(true)
-  return { status: push.status.value, subscribes }
+  return { push, status: push.status.value, subscribes, permissionRequests }
 }
 
 test('a device whose notification permission went back to "ask" is not treated as subscribed', async () => {
@@ -119,4 +120,13 @@ test('a device whose notification permission went back to "ask" is not treated a
   const granted = await initializeWithPermission('granted')
   assert.equal(granted.status, 'enabled')
   assert.equal(granted.subscribes[0].permission, 'granted', 'the server learns the real permission')
+})
+
+test('choosing an alert mode never asks for permission; only the Enable button does', async () => {
+  const { push, permissionRequests } = await initializeWithPermission('default')
+  await push.setTurnNotificationMode('always')
+  assert.deepEqual(permissionRequests, [], 'iPhone denies requests made outside a tap, silently and for good')
+  assert.match(push.errorMessage.value, /Enable notifications/u)
+  await push.enableWebPushNotifications()
+  assert.deepEqual(permissionRequests, ['asked'])
 })

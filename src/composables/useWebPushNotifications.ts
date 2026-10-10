@@ -249,6 +249,15 @@ async function setTurnNotificationMode(nextMode: TurnNotificationMode): Promise<
     return
   }
   if (status.value !== 'enabled') {
+    // Only a button press may ask for permission: Safari on iPhone treats a
+    // dropdown change as no gesture, denies at once without a prompt, and the
+    // Home Screen app never appears in Settings > Notifications.
+    if (browserSupportsWebPush() && Notification.permission !== 'granted') {
+      saveMode(nextMode)
+      testMessage.value = ''
+      errorMessage.value = 'Tap "Enable notifications" to allow alerts on this device.'
+      return
+    }
     await enableWebPushNotifications(nextMode)
     return
   }

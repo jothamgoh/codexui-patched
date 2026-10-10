@@ -32,6 +32,7 @@ const { ClaudeBackend, isClaudeModelId, normalizeClaudeUsage, runtimeModel } = a
 const { BackendRouter } = await loadModule('../src/server/backendRouter.ts')
 const transcript = await loadModule('../src/server/claudeTranscript.ts')
 const { startClaudeProcessHost, spawnThroughHost } = await loadModule('../src/server/claudeProcessHost.ts')
+const { scanClaudeSessionRegistry } = await loadModule('../src/server/claudeSessionRegistry.ts')
 const { buildReviewChanges } = await loadModule('../src/utils/reviewDiff.ts')
 const { createClaudeAutomationTool } = await loadModule('../src/server/claudeAutomationTool.ts')
 
@@ -253,6 +254,44 @@ test('refuses to send to a session another Claude app is writing', async () => {
   }
 })
 
+test('shows live Remote Control work as running until Claude reports idle', async () => {
+  const configDir = await mkdtemp(join(tmpdir(), 'codexui-claude-sessions-'))
+  const sessionId = '77777777-8888-9999-aaaa-bbbbbbbbbbbb'
+  const projectDir = join(configDir, 'projects', '-work-project')
+  const sessionsDir = join(configDir, 'sessions')
+  const sessionFile = join(sessionsDir, `${String(process.pid)}.json`)
+  await mkdir(projectDir, { recursive: true })
+  await mkdir(sessionsDir, { recursive: true })
+  await writeFile(join(projectDir, `${sessionId}.jsonl`), fixture.slice(0, 15).map((row) => JSON.stringify(row)).join('\n') + '\n')
+  const record = { pid: process.pid, sessionId, cwd, kind: 'interactive', entrypoint: 'sdk-cli', status: 'busy', startedAt: Date.now() }
+  await writeFile(sessionFile, JSON.stringify(record))
+  const backend = new ClaudeBackend(join(configDir, 'threads.json'), { accountSwitcherPath: null, claudeConfigDir: configDir })
+  const notifications = []
+  const unsubscribe = backend.onNotification((notification) => notifications.push(notification))
+  try {
+    const running = (await backend.rpc('thread/read', { threadId: `claude-${sessionId}`, includeTurns: true })).thread
+    assert.equal(running.status.type, 'active')
+    assert.equal(running.turns.at(-1).status, 'inProgress')
+
+    await writeFile(sessionFile, JSON.stringify({ ...record, status: 'idle' }))
+    await backend.refreshClaudeSessionStates()
+    assert.deepEqual(notifications.at(-1), {
+      method: 'thread/status/changed',
+      params: { threadId: `claude-${sessionId}`, status: { type: 'idle' } },
+    })
+    const idle = (await backend.rpc('thread/read', { threadId: `claude-${sessionId}`, includeTurns: true })).thread
+    assert.equal(idle.status.type, 'idle')
+    assert.equal(idle.turns.at(-1).status, 'completed')
+
+    await writeFile(join(sessionsDir, 'unreadable.json'), '{')
+    assert.equal((await scanClaudeSessionRegistry(configDir)).uncertain, true)
+  } finally {
+    unsubscribe()
+    backend.dispose()
+    await rm(configDir, { recursive: true, force: true })
+  }
+})
+
 // ── Backend helpers ──────────────────────────────────────────────────────
 
 test('recognizes both stable and runtime-generated Claude model ids', () => {
@@ -309,7 +348,7 @@ test('normalizes the Agent SDK usage response and model-scoped windows', () => {
 
 test('enables Claude in Chrome only for conversational runners', async () => {
   const directory = await mkdtemp(join(tmpdir(), 'codexui-claude-chrome-'))
-  const backend = new ClaudeBackend(join(directory, 'threads.json'), { accountSwitcherPath: null })
+  const backend = new ClaudeBackend(join(directory, 'threads.json'), { accountSwitcherPath: null, claudeConfigDir: directory })
   let runnerOptions
   backend.readRuntime = async () => ({ connected: true, account: {}, models: [] })
   backend.sdk = async () => ({
@@ -352,7 +391,7 @@ test('loads guarded Mac control for Claude runners and waits for approval', asyn
   }))
   const previous = process.env.CODEXUI_CLAUDE_COMPUTER_USE_MCP_FILE
   process.env.CODEXUI_CLAUDE_COMPUTER_USE_MCP_FILE = configPath
-  const backend = new ClaudeBackend(join(directory, 'threads.json'), { accountSwitcherPath: null })
+  const backend = new ClaudeBackend(join(directory, 'threads.json'), { accountSwitcherPath: null, claudeConfigDir: directory })
   let runnerOptions
   let releaseQuery
   backend.readRuntime = async () => ({ connected: true, account: {}, models: [] })
@@ -424,7 +463,7 @@ IFS= read -r code
     const previousPath = process.env.CODEXUI_CLAUDE_PATH
     process.env.CODEXUI_CLAUDE_PATH = executable
     try {
-      const backend = new ClaudeBackend(join(directory, 'threads.json'), { accountSwitcherPath: null })
+      const backend = new ClaudeBackend(join(directory, 'threads.json'), { accountSwitcherPath: null, claudeConfigDir: directory })
       backend.readProviderStatus = async () => ({ id: 'claude', connected: true })
       const login = await backend.startLogin()
       assert.equal(login.authUrl, 'https://claude.com/cai/oauth/authorize?state=expected-state')
@@ -445,7 +484,7 @@ IFS= read -r code
 `, async (executable, directory) => {
     const previousPath = process.env.CODEXUI_CLAUDE_PATH
     process.env.CODEXUI_CLAUDE_PATH = executable
-    const backend = new ClaudeBackend(join(directory, 'threads.json'), { accountSwitcherPath: '/fixture/cswap' })
+    const backend = new ClaudeBackend(join(directory, 'threads.json'), { accountSwitcherPath: '/fixture/cswap', claudeConfigDir: directory })
     let active = 1
     let saved = 0
     const calls = []

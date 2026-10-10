@@ -24,6 +24,13 @@ import { loadClaudeComputerUseMcpConfig } from './claudeComputerUse'
 import { spawnThroughHost } from './claudeProcessHost'
 import { ClaudeAccountSwitcher, resolveCSwapExecutable, type CSwapResult } from './claudeAccountSwitcher'
 import {
+  claudeConfigDir,
+  isClaudeSessionActive,
+  scanClaudeSessionRegistry,
+  type ClaudeSessionRegistryScan,
+  type ClaudeSessionState,
+} from './claudeSessionRegistry'
+import {
   addUsage,
   asRecord,
   buildTurnsFromChain,
@@ -81,6 +88,7 @@ const DEFAULT_CONTEXT_WINDOW = 200_000
 const TRANSCRIPT_CACHE_BYTES = 96 * 1024 * 1024
 /** A transcript written this recently by another Claude Code process is busy. */
 const EXTERNAL_ACTIVITY_MS = 30_000
+const CLAUDE_SESSION_POLL_MS = 5_000
 /** Writes this soon after CodexUI's own activity (titles, hooks) are its own. */
 const OWN_WRITE_SLACK_MS = 10_000
 const HUMAN_PROMPT_SCAN_BYTES = 256 * 1024
@@ -346,10 +354,6 @@ function resolveClaudeExecutable(): string {
 /** Claude Code's project folder name for a working directory. */
 function projectDirName(cwd: string): string {
   return cwd.replace(/[^a-zA-Z0-9]/gu, '-')
-}
-
-function claudeConfigDir(): string {
-  return process.env.CLAUDE_CONFIG_DIR || join(homedir(), '.claude')
 }
 
 // ── Persisted per-chat settings ─────────────────────────────────────────
@@ -664,6 +668,7 @@ export type ClaudeBackendOptions = {
   hostSocketPath?: string
   tools?: ClaudeHostTool[]
   accountSwitcherPath?: string | null
+  claudeConfigDir?: string
 }
 
 export class ClaudeBackend {
@@ -673,6 +678,7 @@ export class ClaudeBackend {
   private readonly store: ClaudeThreadStore
   private readonly hostSocketPath: string
   private readonly tools: ClaudeHostTool[]
+  private readonly claudeConfigDirectory: string
   readonly accounts: ClaudeAccountSwitcher
   private readonly metadataQueries = new Set<Query>()
   private accountGeneration = 0
@@ -694,6 +700,10 @@ export class ClaudeBackend {
   private readonly humanSessions = new Map<string, { human: boolean; lastModified: number }>()
   /** When CodexUI last saw its own Claude process write each session. */
   private readonly ownActivityMs = new Map<string, number>()
+  private claudeSessionStates = new Map<string, ClaudeSessionState>()
+  private claudeSessionScan: Promise<ClaudeSessionRegistryScan> | null = null
+  private claudeSessionStatesInitialized = false
+  private claudeSessionTimer: ReturnType<typeof setInterval> | null = null
   private nextRequestId = SERVER_REQUEST_ID_BASE
   private login: ClaudeLogin | null = null
 
@@ -701,16 +711,20 @@ export class ClaudeBackend {
     this.store = new ClaudeThreadStore(storeFilePath)
     this.hostSocketPath = options.hostSocketPath?.trim() ?? ''
     this.tools = options.tools ?? []
+    this.claudeConfigDirectory = options.claudeConfigDir?.trim() || claudeConfigDir()
     this.accounts = new ClaudeAccountSwitcher({
       stateFilePath: join(dirname(storeFilePath), 'codexui-claude-accounts.json'),
       executable: options.accountSwitcherPath === undefined ? resolveCSwapExecutable() : options.accountSwitcherPath,
       run: (command, args) => this.runAccountCommand(command, args),
-      isBusy: () => Boolean(this.login) || [...this.runners.values()].some((runner) => Boolean(runner.activeTurn) || runner.pushedCommands.size > 0),
+      isBusy: () => this.isClaudeBusy(),
       isAuthenticating: () => Boolean(this.login) || this.changingAccount,
       prepareSwitch: () => this.prepareAccountChange(),
       accountChanged: () => this.accountChanged(),
     })
     this.accounts.start()
+    void this.refreshClaudeSessionStates()
+    this.claudeSessionTimer = setInterval(() => { void this.refreshClaudeSessionStates() }, CLAUDE_SESSION_POLL_MS)
+    this.claudeSessionTimer.unref?.()
   }
 
   private sdk(): Promise<SdkModule> {
@@ -804,7 +818,7 @@ export class ClaudeBackend {
   }
 
   private async prepareAccountChange(): Promise<void> {
-    if ([...this.runners.values()].some((runner) => runner.activeTurn || runner.pushedCommands.size > 0)) {
+    if (await this.isClaudeBusy()) {
       throw new Error('Wait for Claude replies to finish before changing accounts.')
     }
     this.changingAccount = true
@@ -1196,11 +1210,51 @@ export class ClaudeBackend {
     this.listCache = null
   }
 
+  private async refreshClaudeSessionStates(): Promise<ClaudeSessionRegistryScan> {
+    if (this.claudeSessionScan) return this.claudeSessionScan
+    const previous = this.claudeSessionStates
+    const hadPrevious = this.claudeSessionStatesInitialized
+    const pending = scanClaudeSessionRegistry(this.claudeConfigDirectory).then((scan) => {
+      this.claudeSessionStates = scan.states
+      this.claudeSessionStatesInitialized = true
+      if (hadPrevious) {
+        const sessionIds = new Set([...previous.keys(), ...scan.states.keys()])
+        for (const sessionId of sessionIds) {
+          const wasActive = isClaudeSessionActive(previous.get(sessionId))
+          const active = isClaudeSessionActive(scan.states.get(sessionId))
+          if (wasActive === active) continue
+          this.invalidateList()
+          this.emit('thread/status/changed', {
+            threadId: toThreadId(sessionId),
+            status: { type: active ? 'active' : 'idle' },
+          })
+        }
+      }
+      return scan
+    })
+    this.claudeSessionScan = pending
+    try {
+      return await pending
+    } finally {
+      if (this.claudeSessionScan === pending) this.claudeSessionScan = null
+    }
+  }
+
+  private async isClaudeBusy(): Promise<boolean> {
+    if (this.login || [...this.runners.values()].some((runner) => Boolean(runner.activeTurn) || runner.pushedCommands.size > 0)) return true
+    const scan = await this.refreshClaudeSessionStates()
+    return scan.uncertain || [...scan.states.values()].some(isClaudeSessionActive)
+  }
+
+  private sessionIsActive(sessionId: string): boolean {
+    return Boolean(this.liveTurnFor(sessionId)) || isClaudeSessionActive(this.claudeSessionStates.get(sessionId))
+  }
+
   /** Claude Code stores each chat as `<config>/projects/<encoded cwd>/<session id>.jsonl`. */
   private async findTranscriptPath(sessionId: string, cwdHint = ''): Promise<string | null> {
     const cached = this.transcriptPaths.get(sessionId)
     if (cached && existsSync(cached)) return cached
-    const projectsDir = join(claudeConfigDir(), 'projects')
+    const projectsDir = join(this.claudeConfigDirectory, 'projects')
     if (cwdHint) {
       const direct = join(projectsDir, projectDirName(cwdHint), `${sessionId}.jsonl`)
       if (existsSync(direct)) {
@@ -1283,7 +1337,7 @@ export class ClaudeBackend {
       cliVersion: 'claude-code',
       source: 'cli',
       gitInfo: null,
-      status: { type: this.liveTurnFor(sessionId) ? 'active' : 'idle' },
+      status: { type: this.sessionIsActive(sessionId) ? 'active' : 'idle' },
       turns,
     }
   }
@@ -1305,7 +1359,7 @@ export class ClaudeBackend {
     const request = asRecord(params)
     const limit = typeof request?.limit === 'number' ? request.limit : 100
     const wantArchived = request?.archived === true
-    const [sessions, store] = await Promise.all([this.listAllSessions(), this.store.read()])
+    const [sessions, store] = await Promise.all([this.listAllSessions(), this.store.read(), this.refreshClaudeSessionStates()])
     const threads: Record<string, unknown>[] = []
     const seen = new Set<string>()
     for (const info of sessions) {
@@ -1329,7 +1383,7 @@ export class ClaudeBackend {
     const term = readString(request?.searchTerm).trim().toLowerCase()
     const limit = typeof request?.limit === 'number' ? request.limit : 50
     if (!term) return []
-    const [sessions, store] = await Promise.all([this.listAllSessions(), this.store.read()])
+    const [sessions, store] = await Promise.all([this.listAllSessions(), this.store.read(), this.refreshClaudeSessionStates()])
     const results: Array<{ thread: Record<string, unknown>; snippet: string }> = []
     for (const info of sessions.slice(0, SEARCH_FILE_LIMIT)) {
       if (store.threads[info.sessionId]?.archived === true) continue
@@ -1461,14 +1515,18 @@ export class ClaudeBackend {
 
   private async readThread(threadId: string, includeTurns: boolean): Promise<Record<string, unknown>> {
     const sessionId = toSessionId(threadId)
-    const stored = await this.store.get(sessionId)
+    const [stored] = await Promise.all([this.store.get(sessionId), this.refreshClaudeSessionStates()])
     const transcript = await this.readTranscript(sessionId, stored?.cwd ?? '')
     if (!transcript && !stored) throw new Error(`Claude chat ${threadId} was not found.`)
     const live = this.liveTurnFor(sessionId)
     const chain = transcript
       ? (stored?.rewindAt ? truncateChain(transcript.chain, stored.rewindAt) : transcript.chain)
       : []
-    const summary = buildTurnsFromChain(chain, stored?.cwd ?? '', { liveTurnId: live?.turnId ?? null })
+    let summary = buildTurnsFromChain(chain, stored?.cwd ?? '', { liveTurnId: live?.turnId ?? null })
+    const externalTurnId = !live && isClaudeSessionActive(this.claudeSessionStates.get(sessionId))
+      ? summary.turns.at(-1)?.id
+      : null
+    if (externalTurnId) summary = buildTurnsFromChain(chain, stored?.cwd ?? '', { liveTurnId: externalTurnId })
     if (transcript?.title) this.sessionTitles.set(sessionId, transcript.title)
     const meta = {
       name: transcript?.title ?? '',
@@ -1560,7 +1618,7 @@ export class ClaudeBackend {
     if (forkedPath && cwd && cwd !== sourceCwd) {
       // Claude finds a session by its working folder, so a fork into a new
       // worktree moves to that folder's project directory.
-      const targetDir = join(claudeConfigDir(), 'projects', projectDirName(cwd))
+      const targetDir = join(this.claudeConfigDirectory, 'projects', projectDirName(cwd))
       await mkdir(targetDir, { recursive: true })
       const target = join(targetDir, `${sessionId}.jsonl`)
       await rename(forkedPath, target)
@@ -1712,9 +1770,10 @@ export class ClaudeBackend {
     const settingsKey = `${stored.model}|${stored.effort ?? ''}|${cwd}`
 
     let runner = this.runners.get(sessionId)
+    await this.refreshClaudeSessionStates()
     const external = await this.externalActivity(sessionId, cwd)
-    if (external.recent && !runner) {
-      throw new Error('This Claude session is active in another app, such as a terminal or Remote Control. Continue it there, or send again once it has been idle for half a minute.')
+    if ((isClaudeSessionActive(this.claudeSessionStates.get(sessionId)) || external.recent) && !runner) {
+      throw new Error('This Claude session is active in another app, such as a terminal or Remote Control. Continue it there, or send again once it is idle.')
     }
     // A chat continued elsewhere since this process last ran must reload its history.
     if (runner && (runner.closed || runner.settingsKey !== settingsKey || external.since)) {
@@ -2338,6 +2397,8 @@ export class ClaudeBackend {
 
   dispose(): void {
     this.accounts.dispose()
+    if (this.claudeSessionTimer) clearInterval(this.claudeSessionTimer)
+    this.claudeSessionTimer = null
     this.cancelLogin()
     for (const sessionId of [...this.runners.keys()]) this.closeRunner(sessionId)
   }

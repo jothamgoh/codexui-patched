@@ -68,6 +68,17 @@ test('manual selection queues during a reply, blocks new chats, then takes prior
   f.manager.dispose()
 })
 
+test('account switching waits for asynchronously detected Remote Control work', async () => {
+  let remoteBusy = true
+  const f = await fixture({ isBusy: async () => remoteBusy })
+  assert.equal((await f.manager.requestSwitch(2)).pendingAccountNumber, 2)
+  assert.equal(f.calls.some((args) => args[0] === 'switch'), false)
+  remoteBusy = false
+  await f.manager.tick()
+  assert.equal((await f.manager.snapshot()).activeAccountNumber, 2)
+  f.manager.dispose()
+})
+
 test('auto delegates quota and unknown-usage decisions to cswap only when idle and enabled', async () => {
   const f = await fixture()
   f.setBusy(true)
@@ -155,7 +166,10 @@ test('all accounts unavailable produces an actionable notice without replaying a
 
 test('switch closes idle Claude processes while preserving saved chat and folder history', async () => {
   const f = await fixture()
-  const backend = new ClaudeBackend(join(f.scratch, 'threads.json'), { accountSwitcherPath: '/fixture/cswap' })
+  const backend = new ClaudeBackend(join(f.scratch, 'threads.json'), {
+    accountSwitcherPath: '/fixture/cswap',
+    claudeConfigDir: join(f.scratch, 'claude'),
+  })
   backend.runAccountCommand = f.run
   backend.readRuntime = async () => ({ connected: true, account: {}, models: [] })
   const session = 'session-that-must-stay'
@@ -277,7 +291,10 @@ test('accounts can be excluded from and restored to automatic switching without 
 
 test('active usage card reuses cswap data without querying the SDK usage endpoint', async () => {
   const f = await fixture()
-  const backend = new ClaudeBackend(join(f.scratch, 'threads.json'), { accountSwitcherPath: '/fixture/cswap' })
+  const backend = new ClaudeBackend(join(f.scratch, 'threads.json'), {
+    accountSwitcherPath: '/fixture/cswap',
+    claudeConfigDir: join(f.scratch, 'claude'),
+  })
   backend.runAccountCommand = f.run
   backend.readRuntime = async () => ({ connected: true, account: { apiProvider: 'firstParty' }, models: [] })
   backend.sdk = () => { throw new Error('duplicate collector is forbidden') }
@@ -290,7 +307,7 @@ test('active usage card reuses cswap data without querying the SDK usage endpoin
 
 test('SDK-only usage fallback keeps cached limits after 429 and refresh cannot bypass Retry-After', async () => {
   const scratch = await mkdtemp(join(directory, 'sdk-cache-'))
-  const backend = new ClaudeBackend(join(scratch, 'threads.json'), { accountSwitcherPath: null })
+  const backend = new ClaudeBackend(join(scratch, 'threads.json'), { accountSwitcherPath: null, claudeConfigDir: join(scratch, 'claude') })
   backend.readRuntime = async () => ({ connected: true, account: { apiProvider: 'firstParty' }, models: [] })
   let calls = 0
   backend.sdk = async () => ({ query: () => ({

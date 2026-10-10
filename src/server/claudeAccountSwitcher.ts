@@ -10,7 +10,7 @@ type Options = {
   stateFilePath: string
   executable: string | null
   run: (command: string, args: string[]) => Promise<CSwapResult>
-  isBusy: () => boolean
+  isBusy: () => boolean | Promise<boolean>
   isAuthenticating?: () => boolean
   prepareSwitch: () => Promise<void>
   accountChanged: () => void
@@ -236,7 +236,7 @@ export class ClaudeAccountSwitcher {
   }
 
   private async applyPending(): Promise<void> {
-    if (this.pending === null || this.options.isBusy() || this.disposed) return
+    if (this.pending === null || await this.options.isBusy() || this.disposed) return
     const number = this.pending
     const result = await this.mutate(['switch', String(number), '--json'])
     if (result.code !== 0) {
@@ -277,7 +277,7 @@ export class ClaudeAccountSwitcher {
   async removeAccount(number: unknown): Promise<ClaudeAccountPool> {
     if (!Number.isSafeInteger(number) || Number(number) < 1) throw new Error('Choose a saved Claude account to remove.')
     await this.exclusive(async () => {
-      if (this.options.isBusy()) throw new Error('Wait for Claude replies or sign-in to finish before removing an account.')
+      if (await this.options.isBusy()) throw new Error('Wait for Claude replies or sign-in to finish before removing an account.')
       await this.refresh()
       if (!this.cached?.accounts.some((account) => account.number === number)) throw new Error('That saved account is no longer available.')
       await this.drainReads()
@@ -327,7 +327,7 @@ export class ClaudeAccountSwitcher {
 
   async enrollCurrent(): Promise<ClaudeAccountPool> {
     await this.exclusive(async () => {
-      if (this.options.isBusy()) throw new Error('Wait for Claude replies to finish before saving this login.')
+      if (await this.options.isBusy()) throw new Error('Wait for Claude replies to finish before saving this login.')
       if (!this.options.executable) throw new Error('Install claude-swap on the host first.')
       await this.saveCurrent()
     })
@@ -338,7 +338,7 @@ export class ClaudeAccountSwitcher {
     if (this.ticking) return this.ticking
     const pending = this.exclusive(async () => {
       await this.initialize()
-      if (this.disposed || !this.options.executable || this.options.isBusy()) return
+      if (this.disposed || !this.options.executable || await this.options.isBusy()) return
       if (this.pending !== null) { await this.applyPending(); return }
       if (!this.enabled || this.now() < this.manualUntil || this.now() < this.nextAutoAt) return
       await this.refresh()

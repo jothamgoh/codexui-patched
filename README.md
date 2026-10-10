@@ -145,13 +145,15 @@ calling Anthropic again. Account add/remove/switch actions refresh the account
 inventory. Cached usage stays visible during cooldowns, and claude-swap makes
 the final switch decision from decision-grade usage.
 
-The switcher checks the cached result after replies finish. It waits for all
-CodexUI Claude replies and queued messages to finish,
-closes idle Claude processes, then lets claude-swap select an available account.
-A manual selection takes priority and holds for at least five minutes. If every
-account is unavailable, the UI says so. Failed replies are never automatically
-replayed. Existing terminal or Remote Control processes using the same default
-Claude login may observe its change too; they are not stopped by CodexUI.
+The switcher checks the cached result after replies finish. It waits until every
+live local Claude Code session—including terminal and Remote Control work—is
+idle, closes CodexUI's idle Claude processes, then lets claude-swap select an
+available account. CodexUI reads Claude Code's live session registry, so Remote
+Control replies stay marked as running here while they are busy or waiting for
+input. A manual selection takes priority and holds for at least five minutes. If
+every account is unavailable, the UI says so. Failed replies are never
+automatically replayed. Existing idle terminal or Remote Control processes may
+observe the new shared login shortly after a switch; CodexUI does not stop them.
 
 Credentials stay with claude-swap and the local Claude CLI. The browser receives
 only account names, usage, and switching settings. On macOS, both CLI tools run

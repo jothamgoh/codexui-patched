@@ -1415,3 +1415,9 @@ After each feature implementation session that uses this skill:
 - The Claude Agent SDK accepts CLI flags through `Options.extraArgs`, using `null` for boolean flags. Pass `chrome: null` only when creating a conversational runner so background model, command, account, and usage probes do not attach to Chrome.
 - Claude Code's built-in whole-computer control is limited to interactive sessions. CodexUI's headless Agent SDK runners need a separate desktop-control implementation; the Chrome flag must not be presented as whole-computer access.
 - Codex's installed unified Computer Use plugin exposes its signed native bridge as a reusable `cua_repl` MCP server. Load only that server for Claude, restrict it to the computer surface so Chrome stays with Claude's native integration, and gate every control call with a blocking CodexUI approval.
+
+## Findings: Claude Remote Control live status and account rotation (2026-10-10)
+
+- Claude Remote Control keeps execution on the host and synchronizes progress to web and mobile. A transcript timestamp alone cannot distinguish a thinking pause from completion, so use Claude Code's live session registry instead of an activity timeout.
+- The registry reports `busy`, `shell`, `waiting`, and `idle` for live PID/session pairs. Treat every non-idle state as active in thread lists and transcript reconstruction, then emit the existing native-shaped `thread/status/changed` event when the state crosses the active boundary.
+- claude-swap changes the shared Claude login and may be observed by already-running Claude processes. Defer manual and automatic switches while any live Claude session is non-idle, including Remote Control and non-CodexUI CLI work; do not limit the guard to CodexUI-owned runners.

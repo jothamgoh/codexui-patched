@@ -89,6 +89,7 @@ const TRANSCRIPT_CACHE_BYTES = 96 * 1024 * 1024
 /** A transcript written this recently by another Claude Code process is busy. */
 const EXTERNAL_ACTIVITY_MS = 30_000
 const CLAUDE_SESSION_POLL_MS = 5_000
+const CLAUDE_LIMIT_CONTINUATION = 'Continue where you left off. The previous Claude account reached its session limit, so CodexUI switched to another saved account. Do not repeat work that is already complete.'
 /** Writes this soon after CodexUI's own activity (titles, hooks) are its own. */
 const OWN_WRITE_SLACK_MS = 10_000
 const HUMAN_PROMPT_SCAN_BYTES = 256 * 1024
@@ -500,7 +501,17 @@ type LiveTurn = {
   lastAgentItemId: string
   usage: ClaudeTokenUsage
   goalContinuation: boolean
+  limitRecoveryAccountNumbers: number[]
   settled: boolean
+}
+
+type StartTurnExtra = {
+  goalContinuation?: boolean
+  limitRecoveryAccountNumbers?: readonly number[]
+}
+
+export function isClaudeHardLimitError(message: string): boolean {
+  return /(?:you(?:'|’)ve\s+)?hit\s+your\s+(?:session|usage|weekly)\s+limit|(?:session|usage|weekly)\s+limit\s+(?:has\s+been\s+)?reached/iu.test(message)
 }
 
 type InputStream = {
@@ -1243,6 +1254,7 @@ export class ClaudeBackend {
             threadId: toThreadId(sessionId),
             status: { type: active ? 'active' : 'idle' },
           })
+          if (!active) void this.accounts.tick()
         }
       }
       return scan
@@ -1761,11 +1773,11 @@ export class ClaudeBackend {
 
   // ── Turns ──
 
-  private async startTurn(request: Record<string, unknown>, extra: { goalContinuation?: boolean } = {}): Promise<unknown> {
+  private async startTurn(request: Record<string, unknown>, extra: StartTurnExtra = {}): Promise<unknown> {
     return this.accounts.exclusive(() => this.startTurnUnlocked(request, extra))
   }
 
-  private async startTurnUnlocked(request: Record<string, unknown>, extra: { goalContinuation?: boolean } = {}): Promise<unknown> {
+  private async startTurnUnlocked(request: Record<string, unknown>, extra: StartTurnExtra = {}): Promise<unknown> {
     const threadId = readString(request.threadId)
     const sessionId = toSessionId(threadId)
     const userMessage = await buildUserMessage(request.input, sessionId)
@@ -1811,6 +1823,7 @@ export class ClaudeBackend {
 
     const turn = this.beginTurn(runner, readString(userMessage.uuid), cwd, userMessage)
     turn.goalContinuation = extra.goalContinuation === true
+    turn.limitRecoveryAccountNumbers = [...new Set(extra.limitRecoveryAccountNumbers ?? [])]
     runner.pushedCommands.set(turn.turnId, userMessage)
     if (!runner.input.push(userMessage)) {
       this.finishTurn(runner, 'failed', 'Claude Code closed before the message was sent.')
@@ -1996,6 +2009,7 @@ export class ClaudeBackend {
       lastAgentItemId: '',
       usage: emptyUsage(),
       goalContinuation: false,
+      limitRecoveryAccountNumbers: [],
       settled: false,
     }
     runner.activeTurn = turn
@@ -2042,6 +2056,30 @@ export class ClaudeBackend {
     void this.accounts.tick()
   }
 
+  private failTurn(runner: SessionRunner, turn: LiveTurn, errorMessage: string): void {
+    const hardLimit = isClaudeHardLimitError(errorMessage)
+    const exhaustedAccountNumber = hardLimit ? this.accounts.activeAccountNumber() : null
+    this.finishTurn(runner, 'failed', errorMessage)
+    if (hardLimit) void this.recoverLimitedTurn(turn, exhaustedAccountNumber)
+  }
+
+  private async recoverLimitedTurn(turn: LiveTurn, exhaustedAccountNumber: number | null): Promise<void> {
+    const attemptedAccountNumbers = [...new Set([
+      ...turn.limitRecoveryAccountNumbers,
+      ...(exhaustedAccountNumber === null ? [] : [exhaustedAccountNumber]),
+    ])]
+    const recovery = await this.accounts.recoverFromLimit(exhaustedAccountNumber, attemptedAccountNumbers)
+    if (recovery.kind !== 'ready') return
+    try {
+      await this.startTurn({
+        threadId: turn.threadId,
+        input: [{ type: 'text', text: CLAUDE_LIMIT_CONTINUATION }],
+      }, { limitRecoveryAccountNumbers: attemptedAccountNumbers })
+    } catch (error) {
+      console.warn(`[claude-backend] Could not continue rate-limited Claude session ${turn.sessionId}: ${error instanceof Error ? error.message : String(error)}`)
+    }
+  }
+
   /** Closing the process would kill background work, so wait until none is left. */
   private scheduleIdleClose(runner: SessionRunner): void {
     if (runner.closed || runner.activeTurn || runner.idleTimer || runner.backgroundTasks.length > 0) return
@@ -2058,6 +2096,7 @@ export class ClaudeBackend {
       runner.idleTimer = null
     } else {
       this.scheduleIdleClose(runner)
+      void this.accounts.tick()
     }
   }
 
@@ -2116,7 +2155,8 @@ export class ClaudeBackend {
       this.setBackgroundTasks(runner, [])
       const turn = runner.activeTurn
       if (turn) {
-        this.finishTurn(runner, turn.interrupted ? 'interrupted' : 'failed', failure || 'Claude Code stopped unexpectedly.')
+        if (turn.interrupted) this.finishTurn(runner, 'interrupted')
+        else this.failTurn(runner, turn, failure || 'Claude Code stopped unexpectedly.')
       }
       if (failure && !turn?.interrupted) {
         console.warn(`[claude-backend] Claude session ${runner.sessionId} ended: ${failure}`)
@@ -2261,7 +2301,7 @@ export class ClaudeBackend {
         this.finishTurn(runner, 'completed')
       } else {
         const detail = message.subtype === 'success' ? message.result : message.errors.join('\n')
-        this.finishTurn(runner, 'failed', detail)
+        this.failTurn(runner, turn, detail)
       }
     }
   }

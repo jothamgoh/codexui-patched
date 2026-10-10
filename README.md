@@ -152,8 +152,13 @@ available account. CodexUI reads Claude Code's live session registry, so Remote
 Control replies stay marked as running here while they are busy or waiting for
 input. A manual selection takes priority and holds for at least five minutes. If
 every account is unavailable, the UI says so. Failed replies are never
-automatically replayed. Existing idle terminal or Remote Control processes may
-observe the new shared login shortly after a switch; CodexUI does not stop them.
+automatically replayed, except when Claude returns its explicit session-limit
+error. CodexUI then selects the enabled account with the most available quota,
+switches after other Claude work becomes idle, and sends a visible continue
+message in the same chat. Accounts that fail during that recovery are skipped
+for the rest of its retry chain. Existing idle terminal or Remote Control
+processes may observe the new shared login shortly after a switch; CodexUI does
+not stop them.
 
 Credentials stay with claude-swap and the local Claude CLI. The browser receives
 only account names, usage, and switching settings. On macOS, both CLI tools run

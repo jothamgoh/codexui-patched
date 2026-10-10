@@ -1421,3 +1421,9 @@ After each feature implementation session that uses this skill:
 - Claude Remote Control keeps execution on the host and synchronizes progress to web and mobile. A transcript timestamp alone cannot distinguish a thinking pause from completion, so use Claude Code's live session registry instead of an activity timeout.
 - The registry reports `busy`, `shell`, `waiting`, and `idle` for live PID/session pairs. Treat every non-idle state as active in thread lists and transcript reconstruction, then emit the existing native-shaped `thread/status/changed` event when the state crosses the active boundary.
 - claude-swap changes the shared Claude login and may be observed by already-running Claude processes. Defer manual and automatic switches while any live Claude session is non-idle, including Remote Control and non-CodexUI CLI work; do not limit the guard to CodexUI-owned runners.
+
+## Findings: Claude hard-limit recovery (2026-10-10)
+
+- A periodic threshold check cannot prevent one long reply from crossing the remaining session quota. Claude's explicit session-limit result is the authoritative recovery signal; handle both SDK result messages and thrown SDK errors.
+- Finish the failed turn first, then wait until other local Claude work is idle. Switch through the existing serialized account manager, resume the same transcript, and send a visible continuation message so the recovery remains understandable in chat history.
+- Choose only enabled accounts with decision-grade usage below the configured threshold. Carry previously exhausted account numbers through the continuation chain so repeated hard limits move forward instead of bouncing back.

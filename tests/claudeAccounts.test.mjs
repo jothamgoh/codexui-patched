@@ -15,7 +15,7 @@ async function load(path) {
   return import(pathToFileURL(outfile).href)
 }
 const { ClaudeAccountSwitcher, parseCSwapAccounts, CLAUDE_CSWAP_CHECK_MS } = await load('../src/server/claudeAccountSwitcher.ts')
-const { ClaudeBackend } = await load('../src/server/claudeBackend.ts')
+const { ClaudeBackend, isClaudeHardLimitError } = await load('../src/server/claudeBackend.ts')
 const { isAllowedClaudeHostRequest, startClaudeProcessHost, spawnThroughHost } = await load('../src/server/claudeProcessHost.ts')
 
 function rows(active = 1, percent = 95) {
@@ -53,6 +53,13 @@ test('HTTP account metadata excludes credentials, invalid JSON never leaks the o
   assert.throws(() => parseCSwapAccounts('{"token":"TOP_SECRET"'), (error) => !error.message.includes('TOP_SECRET'))
 })
 
+test('only provider hard-limit messages trigger account recovery', () => {
+  assert.equal(isClaudeHardLimitError("You've hit your session limit · resets 9:20pm"), true)
+  assert.equal(isClaudeHardLimitError('Your weekly limit has been reached'), true)
+  assert.equal(isClaudeHardLimitError('HTTP 429 while refreshing usage'), false)
+  assert.equal(isClaudeHardLimitError('Context window limit reached'), false)
+})
+
 test('manual selection queues during a reply, blocks new chats, then takes priority over auto', async () => {
   const f = await fixture()
   f.setBusy(true)
@@ -76,6 +83,34 @@ test('account switching waits for asynchronously detected Remote Control work', 
   remoteBusy = false
   await f.manager.tick()
   assert.equal((await f.manager.snapshot()).activeAccountNumber, 2)
+  f.manager.dispose()
+})
+
+test('a hard limit switches to the enabled account with the most quota', async () => {
+  const f = await fixture()
+  f.setRows([
+    ...rows(1, 100).slice(0, 1),
+    { ...rows()[1], usage: { fiveHour: { pct: 8 }, sevenDay: { pct: 10 } } },
+    { ...rows()[2], usage: { fiveHour: { pct: 3 }, sevenDay: { pct: 5 } } },
+  ])
+  const recovery = await f.manager.recoverFromLimit(1, [1])
+  assert.deepEqual(recovery, { kind: 'ready', accountNumber: 3 })
+  assert.deepEqual(f.calls.filter((args) => ['prepare', 'switch', 'changed'].includes(args[0])), [['prepare'], ['switch', '3', '--json'], ['changed']])
+  assert.match((await f.manager.snapshot()).notice, /continuing the reply/u)
+  f.manager.dispose()
+})
+
+test('hard-limit recovery waits for other Claude work, then switches and resolves', async () => {
+  const f = await fixture()
+  f.setRows(rows(1, 100))
+  f.setBusy(true)
+  const recovery = f.manager.recoverFromLimit(1, [1])
+  await new Promise((resolve) => setImmediate(resolve))
+  assert.equal(f.calls.some((args) => args[0] === 'switch'), false)
+  assert.match((await f.manager.snapshot()).notice, /waiting for other Claude work/u)
+  f.setBusy(false)
+  await f.manager.tick()
+  assert.deepEqual(await recovery, { kind: 'ready', accountNumber: 2 })
   f.manager.dispose()
 })
 
@@ -355,6 +390,103 @@ test('background tasks keep the Claude process alive and block account changes u
   assert.notEqual(runner.idleTimer, null, 'the idle close starts once the last task ends')
   clearTimeout(runner.idleTimer)
   backend.runners.clear(); backend.dispose(); f.manager.dispose()
+})
+
+test('a hard-limit result switches accounts and continues the same Claude chat', async () => {
+  const f = await fixture()
+  const backend = new ClaudeBackend(join(f.scratch, 'threads.json'), {
+    accountSwitcherPath: '/fixture/cswap',
+    claudeConfigDir: join(f.scratch, 'claude'),
+  })
+  const session = 'session-that-hit-the-limit'
+  const runner = {
+    sessionId: session,
+    threadId: `claude-${session}`,
+    cwd: '/work/project',
+    settingsKey: 'claude-sonnet|low|/work/project',
+    activeTurn: null,
+    pushedCommands: new Map(),
+    backgroundTasks: [],
+    idleTimer: null,
+    interruptTimer: null,
+    closed: false,
+    totalUsage: {},
+    contextWindow: 200000,
+    query: { close: () => {} },
+    input: { release: () => {} },
+  }
+  backend.runners.set(session, runner)
+  backend.accounts.activeAccountNumber = () => 1
+  backend.accounts.tick = async () => {}
+  backend.accounts.recoverFromLimit = async (accountNumber, excluded) => {
+    assert.equal(accountNumber, 1)
+    assert.deepEqual(excluded, [1])
+    return { kind: 'ready', accountNumber: 2 }
+  }
+  const resumed = new Promise((resolve) => {
+    backend.startTurn = async (request, extra) => {
+      resolve({ request, extra })
+      return {}
+    }
+  })
+  backend.beginTurn(runner, 'turn-at-limit', runner.cwd, null)
+  backend.handleMessage(runner, {
+    type: 'result',
+    subtype: 'error_during_execution',
+    is_error: true,
+    errors: ["You've hit your session limit · resets 9:20pm (Asia/Singapore)"],
+  })
+  const continuation = await resumed
+  assert.equal(continuation.request.threadId, `claude-${session}`)
+  assert.match(continuation.request.input[0].text, /Continue where you left off/u)
+  assert.deepEqual(continuation.extra.limitRecoveryAccountNumbers, [1])
+  assert.equal(runner.activeTurn, null)
+  backend.runners.clear(); backend.dispose(); f.manager.dispose()
+})
+
+test('a hard-limit exception from the Claude SDK uses the same continuation path', async () => {
+  const f = await fixture()
+  const backend = new ClaudeBackend(join(f.scratch, 'threads.json'), {
+    accountSwitcherPath: '/fixture/cswap',
+    claudeConfigDir: join(f.scratch, 'claude'),
+  })
+  const session = 'session-whose-sdk-threw-the-limit'
+  const runner = {
+    sessionId: session,
+    threadId: `claude-${session}`,
+    cwd: '/work/project',
+    settingsKey: 'claude-sonnet|low|/work/project',
+    activeTurn: null,
+    pushedCommands: new Map(),
+    backgroundTasks: [],
+    idleTimer: null,
+    interruptTimer: null,
+    closed: false,
+    totalUsage: {},
+    contextWindow: 200000,
+    query: {
+      async *[Symbol.asyncIterator]() {
+        throw new Error("Claude Code returned an error result: You've hit your session limit · resets 2:30am (Asia/Singapore)")
+      },
+      close: () => {},
+    },
+    input: { release: () => {} },
+  }
+  backend.runners.set(session, runner)
+  backend.accounts.activeAccountNumber = () => 2
+  backend.accounts.tick = async () => {}
+  backend.accounts.recoverFromLimit = async () => ({ kind: 'ready', accountNumber: 3 })
+  const resumed = new Promise((resolve) => {
+    backend.startTurn = async (request) => {
+      resolve(request)
+      return {}
+    }
+  })
+  backend.beginTurn(runner, 'turn-with-thrown-limit', runner.cwd, null)
+  await backend.consumeRunner(runner)
+  assert.match((await resumed).input[0].text, /Continue where you left off/u)
+  assert.equal(runner.activeTurn, null)
+  backend.dispose(); f.manager.dispose()
 })
 
 test('a chat the previous server was running can be continued at once, unlike one active elsewhere', async () => {

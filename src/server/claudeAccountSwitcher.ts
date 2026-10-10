@@ -17,6 +17,16 @@ type Options = {
   now?: () => number
 }
 
+export type ClaudeLimitRecoveryResult =
+  | { kind: 'ready'; accountNumber: number }
+  | { kind: 'blocked'; reason: 'disabled' | 'no-account' | 'switch-failed' | 'stopped' }
+
+type LimitRecoveryRequest = {
+  exhaustedAccountNumber: number | null
+  excludedAccountNumbers: Set<number>
+  resolve: (result: ClaudeLimitRecoveryResult) => void
+}
+
 /** How often CodexUI asks cswap for its locally cached account state. */
 export const CLAUDE_CSWAP_CHECK_MS = 60_000
 
@@ -90,6 +100,7 @@ export class ClaudeAccountSwitcher {
   private nextReadAt = 0
   private nextAutoAt = 0
   private failures = 0
+  private readonly limitRecoveries: LimitRecoveryRequest[] = []
 
   constructor(private readonly options: Options) {}
 
@@ -253,10 +264,137 @@ export class ClaudeAccountSwitcher {
     this.notice = `Switched to account ${number}. Your chats and folders are unchanged.`
   }
 
+  private bestRecoveryAccount(excludedAccountNumbers: ReadonlySet<number>): ClaudeSavedAccount | null {
+    const candidates = (this.cached?.accounts ?? []).flatMap((account) => {
+      if (
+        account.active
+        || account.disabled
+        || account.usageStatus !== 'ok'
+        || account.usageIsStale
+        || account.limits.length === 0
+        || excludedAccountNumbers.has(account.number)
+      ) return []
+      const bindingUsedPercent = Math.max(...account.limits.map((limit) => limit.usedPercent))
+      return bindingUsedPercent < this.threshold ? [{ account, bindingUsedPercent }] : []
+    })
+    candidates.sort((left, right) => left.bindingUsedPercent - right.bindingUsedPercent || left.account.number - right.account.number)
+    return candidates[0]?.account ?? null
+  }
+
+  private resolveLimitRecoveries(result: ClaudeLimitRecoveryResult): void {
+    const pending = this.limitRecoveries.splice(0)
+    for (const request of pending) request.resolve(result)
+  }
+
+  private async applyLimitRecovery(): Promise<void> {
+    if (this.limitRecoveries.length === 0) return
+    if (this.disposed) {
+      this.resolveLimitRecoveries({ kind: 'blocked', reason: 'stopped' })
+      return
+    }
+    if (!this.enabled) {
+      this.notice = 'Claude reached its limit. Turn on automatic switching to continue on another saved account.'
+      this.resolveLimitRecoveries({ kind: 'blocked', reason: 'disabled' })
+      return
+    }
+    if (await this.options.isBusy()) {
+      this.notice = 'Claude reached its limit. Account recovery is waiting for other Claude work to finish.'
+      return
+    }
+    if (this.pending !== null) await this.applyPending()
+    if (this.pending !== null) return
+
+    try {
+      await this.refresh(true)
+    } catch {
+      this.notice = 'Claude reached its limit, but saved accounts could not be refreshed.'
+      this.resolveLimitRecoveries({ kind: 'blocked', reason: 'switch-failed' })
+      return
+    }
+    const activeAccountNumber = this.cached?.active ?? null
+    if (activeAccountNumber !== null) {
+      for (const request of this.limitRecoveries) request.exhaustedAccountNumber ??= activeAccountNumber
+    }
+    const alreadyRecovered = activeAccountNumber !== null && this.limitRecoveries.every((request) => (
+      request.exhaustedAccountNumber !== null
+      && request.exhaustedAccountNumber !== activeAccountNumber
+      && !request.excludedAccountNumbers.has(activeAccountNumber)
+    ))
+    if (alreadyRecovered) {
+      this.resolveLimitRecoveries({ kind: 'ready', accountNumber: activeAccountNumber })
+      return
+    }
+
+    const excludedAccountNumbers = new Set<number>()
+    for (const request of this.limitRecoveries) {
+      for (const number of request.excludedAccountNumbers) excludedAccountNumbers.add(number)
+      if (request.exhaustedAccountNumber !== null) excludedAccountNumbers.add(request.exhaustedAccountNumber)
+    }
+    if (activeAccountNumber !== null) excludedAccountNumbers.add(activeAccountNumber)
+    const target = this.bestRecoveryAccount(excludedAccountNumbers)
+    if (!target) {
+      this.notice = 'Claude reached its limit, but no enabled saved account below the switching threshold is ready.'
+      this.resolveLimitRecoveries({ kind: 'blocked', reason: 'no-account' })
+      return
+    }
+
+    try {
+      const result = await this.mutate(['switch', String(target.number), '--json'])
+      if (result.code !== 0) throw new Error('switch failed')
+      await this.refresh(true)
+      if (this.cached?.active !== target.number) throw new Error('switch was not confirmed')
+    } catch {
+      this.notice = 'Claude reached its limit, but the next saved account could not be activated.'
+      this.resolveLimitRecoveries({ kind: 'blocked', reason: 'switch-failed' })
+      return
+    }
+    this.manualUntil = this.now() + 5 * 60_000
+    this.nextAutoAt = this.manualUntil
+    this.notice = `Claude reached its limit. Switched to account ${target.number} and continuing the reply.`
+    this.resolveLimitRecoveries({ kind: 'ready', accountNumber: target.number })
+  }
+
+  recoverFromLimit(exhaustedAccountNumber: number | null, excludedAccountNumbers: readonly number[]): Promise<ClaudeLimitRecoveryResult> {
+    return new Promise((resolve) => {
+      const request: LimitRecoveryRequest = {
+        exhaustedAccountNumber,
+        excludedAccountNumbers: new Set(excludedAccountNumbers.filter((number) => Number.isSafeInteger(number) && number > 0)),
+        resolve,
+      }
+      void this.exclusive(async () => {
+        await this.initialize()
+        if (this.disposed) {
+          resolve({ kind: 'blocked', reason: 'stopped' })
+          return
+        }
+        if (!this.enabled) {
+          this.notice = 'Claude reached its limit. Turn on automatic switching to continue on another saved account.'
+          resolve({ kind: 'blocked', reason: 'disabled' })
+          return
+        }
+        this.limitRecoveries.push(request)
+        await this.applyLimitRecovery()
+      }).catch(() => {
+        const index = this.limitRecoveries.indexOf(request)
+        if (index >= 0) this.limitRecoveries.splice(index, 1)
+        this.notice = 'Claude reached its limit, but account recovery failed.'
+        resolve({ kind: 'blocked', reason: 'switch-failed' })
+      })
+    })
+  }
+
+  activeAccountNumber(): number | null {
+    return this.cached?.active ?? null
+  }
+
   /** Called inside the turn-start lock, before a new Claude process can be created. */
   async beforeTurn(): Promise<void> {
     if (this.disposed) throw new Error('Claude account manager is stopping.')
     if (this.switching) throw new Error('Claude is switching accounts. Send again in a moment.')
+    if (this.limitRecoveries.length > 0) {
+      await this.applyLimitRecovery()
+      throw new Error('Claude is recovering a reply after an account limit. Wait for its continuation to start.')
+    }
     await this.applyPending()
     if (this.pending !== null) throw new Error('An account change is queued. Wait for current Claude replies to finish before starting another.')
   }
@@ -338,7 +476,12 @@ export class ClaudeAccountSwitcher {
     if (this.ticking) return this.ticking
     const pending = this.exclusive(async () => {
       await this.initialize()
-      if (this.disposed || !this.options.executable || await this.options.isBusy()) return
+      if (this.disposed || !this.options.executable) return
+      if (this.limitRecoveries.length > 0) {
+        await this.applyLimitRecovery()
+        return
+      }
+      if (await this.options.isBusy()) return
       if (this.pending !== null) { await this.applyPending(); return }
       if (!this.enabled || this.now() < this.manualUntil || this.now() < this.nextAutoAt) return
       await this.refresh()
@@ -362,6 +505,7 @@ export class ClaudeAccountSwitcher {
 
   dispose(): void {
     this.disposed = true
+    this.resolveLimitRecoveries({ kind: 'blocked', reason: 'stopped' })
     if (this.timer) clearInterval(this.timer)
     this.timer = null
   }

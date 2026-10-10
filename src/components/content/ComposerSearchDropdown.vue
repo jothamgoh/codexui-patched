@@ -153,11 +153,11 @@ onBeforeUnmount(() => window.removeEventListener('pointerdown', onDocumentPointe
 }
 
 .search-dropdown-trigger {
-  @apply inline-flex h-7 items-center gap-1 border-0 bg-transparent p-0 text-sm leading-none text-zinc-500 outline-none transition;
+  @apply inline-flex h-7 items-center gap-1 border-0 bg-transparent p-0 text-sm leading-none text-zinc-700 outline-none transition;
 }
 
 .search-dropdown-trigger:disabled {
-  @apply cursor-not-allowed text-zinc-500;
+  @apply cursor-not-allowed text-zinc-400;
 }
 
 .search-dropdown-value {

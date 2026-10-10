@@ -372,6 +372,26 @@ html[data-theme='dark'] .thread-composer-file-mention-row.is-active {
   color: var(--text-primary);
 }
 
+/* Model, effort and skills pickers: readable labels and options on dark surfaces. */
+html[data-theme='dark'] .composer-dropdown-trigger,
+html[data-theme='dark'] .search-dropdown-trigger,
+html[data-theme='dark'] .composer-dropdown-option,
+html[data-theme='dark'] .search-dropdown-option,
+html[data-theme='dark'] .composer-dropdown-add {
+  color: var(--text-primary);
+}
+
+html[data-theme='dark'] .composer-dropdown-chevron,
+html[data-theme='dark'] .search-dropdown-chevron,
+html[data-theme='dark'] .search-dropdown-option-desc {
+  color: var(--text-secondary);
+}
+
+html[data-theme='dark'] .composer-dropdown-trigger:disabled,
+html[data-theme='dark'] .search-dropdown-trigger:disabled {
+  color: var(--text-tertiary);
+}
+
 html[data-theme='dark'] .thread-composer-input:disabled,
 html[data-theme='dark'] .mcp-card-path-muted,
 html[data-theme='dark'] .mcp-card-badge.is-disabled,

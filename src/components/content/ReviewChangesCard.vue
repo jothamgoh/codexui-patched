@@ -241,7 +241,7 @@
       >
         <DialogTitle class="review-confirm-title">Revert changes?</DialogTitle>
         <DialogDescription id="review-confirm-description" class="review-confirm-description">
-          This action removes all of these changes. If newer edits overlap, CodexUI will stop without forcing them.
+          This action removes all of these changes. If newer edits overlap, Agents will stop without forcing them.
         </DialogDescription>
         <div class="review-confirm-actions">
           <button ref="confirmCancelRef" type="button" class="review-confirm-button" @click="confirmOpen = false">

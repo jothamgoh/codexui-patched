@@ -1,5 +1,5 @@
-const NOTIFICATION_ICON = '/icons/codexui-192.png'
-const NOTIFICATION_BADGE = '/icons/codexui-192.png'
+const NOTIFICATION_ICON = '/icons/agents-192.png'
+const NOTIFICATION_BADGE = '/icons/agents-192.png'
 
 self.addEventListener('install', () => {
   self.skipWaiting()
@@ -24,7 +24,7 @@ async function showPushNotification(event) {
     payload = event.data?.json() ?? {}
   } catch {
     payload = {
-      title: 'CodexUI',
+      title: 'Agents',
       body: event.data?.text() || 'Codex finished responding',
     }
   }
@@ -39,7 +39,7 @@ async function showPushNotification(event) {
     }
   }
 
-  await self.registration.showNotification(payload.title || 'CodexUI', {
+  await self.registration.showNotification(payload.title || 'Agents', {
     body: payload.body || 'Codex finished responding',
     tag: payload.tag || undefined,
     icon: payload.icon || NOTIFICATION_ICON,

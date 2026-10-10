@@ -382,7 +382,7 @@
           <ol v-if="status === 'needs-install'" class="notification-install-steps">
             <li>Open this site in Safari.</li>
             <li>Tap Share, then Add to Home Screen.</li>
-            <li>Open CodexUI from its new Home Screen icon.</li>
+            <li>Open Agents from its new Home Screen icon.</li>
           </ol>
 
           <template v-else-if="status !== 'unsupported'">
@@ -428,7 +428,7 @@
           </template>
 
           <p v-if="status === 'blocked'" class="notification-note">
-            Allow CodexUI notifications in your browser and macOS settings, then reopen this panel.
+            Allow Agents notifications in your browser and macOS settings, then reopen this panel.
           </p>
           <p v-if="errorMessage" class="notification-error" role="alert">{{ errorMessage }}</p>
           <p v-if="testMessage" class="notification-success" role="status">
@@ -832,13 +832,13 @@ const statusDescription = computed(() => {
     return 'iPhone only allows Web Push from a Home Screen web app.'
   }
   if (status.value === 'blocked') {
-    return 'Notification permission was denied for CodexUI.'
+    return 'Notification permission was denied for Agents.'
   }
   if (status.value === 'unsupported') {
     return 'This browser or connection does not support secure Web Push.'
   }
   if (status.value === 'error') {
-    return 'CodexUI could not finish notification setup.'
+    return 'Agents could not finish notification setup.'
   }
   return 'Enable chat and project board alerts on this device.'
 })

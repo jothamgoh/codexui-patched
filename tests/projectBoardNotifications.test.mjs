@@ -273,7 +273,7 @@ test('does not notify without permission and redacts board content when permitte
   FakeNotification.permission = 'granted'
   const notification = showProjectBoardNeedsInputNotification(attention, deepLink, false)
   assert.ok(notification)
-  assert.equal(notification.title, 'CodexUI needs your input')
+  assert.equal(notification.title, 'Agents needs your input')
   assert.equal(notification.options.body, 'Open the project board to answer a question.')
   assert.equal(notification.options.body.includes(attention.message), false)
   assert.equal(notification.options.body.includes(attention.title), false)

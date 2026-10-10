@@ -189,7 +189,7 @@ function normalizeHistoryItem(value: unknown): StoredNotificationHistoryItem | n
     threadId,
     turnId,
     status: readString(record.status) || 'completed',
-    title: readString(record.title) || 'CodexUI',
+    title: readString(record.title) || 'Agents',
     body: compactNotificationText(
       readString(record.body),
       DEFAULT_NOTIFICATION_BODY,
@@ -372,7 +372,7 @@ function buildCompletedTurnTitle(turn: CompletedTurn): string {
   if (turn.projectBoard) return projectBoardNotificationCopy(turn.projectBoard).title
   return turn.status === 'failed'
     ? (turn.threadTitle ? `${turn.threadTitle} failed` : 'Turn failed')
-    : (turn.threadTitle || 'CodexUI')
+    : (turn.threadTitle || 'Agents')
 }
 
 function buildPayload(turn: CompletedTurn, mode: NotificationMode): PushPayload {
@@ -382,20 +382,20 @@ function buildPayload(turn: CompletedTurn, mode: NotificationMode): PushPayload 
     url: turn.projectBoard ? `/${projectBoardNotificationDeepLink(turn.projectBoard)}` : `/#/thread/${encodeURIComponent(turn.threadId)}`,
     tag: turn.projectBoard?.id ?? `${turn.threadId}:${turn.turnId}`,
     mode,
-    icon: '/icons/codexui-192.png',
-    badge: '/icons/codexui-192.png',
+    icon: '/icons/agents-192.png',
+    badge: '/icons/agents-192.png',
   }
 }
 
 function buildTestPayload(mode: NotificationMode, destination: string): PushPayload {
   return {
-    title: 'CodexUI notifications',
+    title: 'Agents notifications',
     body: 'This device is ready for turn-complete alerts.',
     url: normalizeDestination(destination),
     tag: 'codexui-test',
     mode,
-    icon: '/icons/codexui-192.png',
-    badge: '/icons/codexui-192.png',
+    icon: '/icons/agents-192.png',
+    badge: '/icons/agents-192.png',
   }
 }
 

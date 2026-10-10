@@ -3,7 +3,7 @@
     <header class="scheduled-header">
       <div>
         <h2>Scheduled tasks</h2>
-        <p>Run something once or repeat it automatically. The CodexUI server keeps schedules running when this browser is closed.</p>
+        <p>Run something once or repeat it automatically. The Agents server keeps schedules running when this browser is closed.</p>
       </div>
       <Button type="button" @click="openCreate">
         <Plus aria-hidden="true" />
@@ -184,7 +184,7 @@
         <header>
           <div>
             <h2 id="scheduled-editor-title">{{ editingTask ? 'Edit scheduled task' : 'New scheduled task' }}</h2>
-            <p>CodexUI’s server owns and runs this task even when the PWA is closed.</p>
+            <p>The Agents server owns and runs this task even when the PWA is closed.</p>
           </div>
           <Button type="button" variant="ghost" size="icon-sm" aria-label="Close" @click="closeEditor">
             <X aria-hidden="true" />

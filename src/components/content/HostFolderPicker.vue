@@ -4,7 +4,7 @@
       <DialogOverlay class="host-folder-overlay" />
       <DialogContent class="host-folder-dialog" aria-describedby="host-folder-description">
         <header>
-          <div><DialogTitle>Choose a folder</DialogTitle><p id="host-folder-description">Folders on the computer running CodexUI.</p></div>
+          <div><DialogTitle>Choose a folder</DialogTitle><p id="host-folder-description">Folders on the computer running Agents.</p></div>
           <Button type="button" variant="ghost" size="icon-sm" aria-label="Close folder browser" @click="emit('update:open', false)"><X /></Button>
         </header>
         <div class="host-folder-body">

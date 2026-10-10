@@ -1,0 +1,23 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512">
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="512" y2="512" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#312E81"/>
+      <stop offset="0.55" stop-color="#5B21B6"/>
+      <stop offset="1" stop-color="#9D174D"/>
+    </linearGradient>
+    <radialGradient id="glow" cx="236" cy="272" r="230" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#C4B5FD" stop-opacity="0.55"/>
+      <stop offset="0.45" stop-color="#8B5CF6" stop-opacity="0.18"/>
+      <stop offset="1" stop-color="#8B5CF6" stop-opacity="0"/>
+    </radialGradient>
+    <linearGradient id="spark" x1="140" y1="130" x2="340" y2="410" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#FFFFFF"/>
+      <stop offset="1" stop-color="#E9D5FF"/>
+    </linearGradient>
+  </defs>
+  <rect width="512" height="512" rx="112" fill="url(#bg)"/>
+  <rect width="512" height="512" rx="112" fill="url(#glow)"/>
+  <path d="M236 116 C247.7936 206.48000000000002 301.52 260.2064 392 272 C301.52 283.7936 247.7936 337.52 236 428 C224.2064 337.52 170.48000000000002 283.7936 80 272 C170.48000000000002 260.2064 224.2064 206.48000000000002 236 116Z" fill="url(#spark)"/>
+  <path d="M372 86 C376.3848 119.64 396.36 139.6152 430 144 C396.36 148.3848 376.3848 168.36 372 202 C367.6152 168.36 347.64 148.3848 314 144 C347.64 139.6152 367.6152 119.64 372 86Z" fill="#FDE68A"/>
+  <path d="M380 342 C382.8728 364.04 395.96 377.1272 418 380 C395.96 382.8728 382.8728 395.96 380 418 C377.1272 395.96 364.04 382.8728 342 380 C364.04 377.1272 377.1272 364.04 380 342Z" fill="#99F6E4"/>
+</svg>

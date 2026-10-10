@@ -36,7 +36,7 @@
 
       <form v-if="pendingClaudeLogin" class="claude-login" aria-label="Finish adding Claude account" @submit.prevent="void finishClaudeLogin()">
         <strong>Finish adding the Claude account</strong>
-        <p>Sign in on the Claude page. Copy the authorization code it shows, return to CodexUI, and paste it below. Use a private window if Claude opens the account already saved here.</p>
+        <p>Sign in on the Claude page. Copy the authorization code it shows, return to Agents, and paste it below. Use a private window if Claude opens the account already saved here.</p>
         <label for="claude-authorization-code">Paste Claude authorization code</label>
         <input id="claude-authorization-code" v-model="claudeCode" autocomplete="one-time-code" autocapitalize="off" spellcheck="false" placeholder="Paste code from Claude here">
         <div class="claude-login-actions">

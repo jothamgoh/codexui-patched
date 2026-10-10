@@ -59,7 +59,7 @@ export function projectBoardNotificationDeepLink(event: Pick<ProjectBoardNotific
 
 export function projectBoardNotificationCopy(event: Pick<ProjectBoardNotification, 'kind'> & Partial<Pick<ProjectBoardNotification, 'threadId' | 'requestKind'>>): { title: string; body: string } {
   switch (event.kind) {
-    case 'question': return { title: 'CodexUI needs your input', body: 'Open the project board to answer a question.' }
+    case 'question': return { title: 'Agents needs your input', body: 'Open the project board to answer a question.' }
     case 'failed': return { title: 'Project work needs attention', body: 'A board run stopped. Open the board to review and continue.' }
     case 'plan_ready': return { title: 'Project plan ready', body: 'Open the board to review the proposed features.' }
     case 'completed': return { title: 'Feature complete', body: event.threadId ? 'Open the Lead chat to review the result.' : 'Open the project board to review the result.' }
@@ -162,7 +162,7 @@ export function showProjectBoardNeedsInputNotification(
   if (!notifyWhenFocused && document.visibilityState === 'visible' && document.hasFocus()) return null
 
   try {
-    const notification = new Notification('CodexUI needs your input', {
+    const notification = new Notification('Agents needs your input', {
       body: 'Open the project board to answer a question.',
       tag: `project-board-question:${attention.questionId}`,
       data: {

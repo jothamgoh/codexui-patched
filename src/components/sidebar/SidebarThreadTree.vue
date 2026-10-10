@@ -395,13 +395,18 @@
             <span class="project-empty">No threads</span>
           </SidebarMenuRow>
 
-          <SidebarMenuRow v-if="hasHiddenThreads(group)" class="thread-show-more-row">
+          <SidebarMenuRow v-if="hasHiddenThreads(group) || canShowFewer(group)" class="thread-show-more-row">
             <template #left>
               <span class="thread-show-more-spacer" />
             </template>
-            <button class="thread-show-more-button" type="button" @click="toggleProjectExpansion(group.projectName)">
-              {{ isExpanded(group.projectName) ? 'Show less' : 'Show more' }}
-            </button>
+            <div class="thread-show-more-actions">
+              <button v-if="hasHiddenThreads(group)" class="thread-show-more-button" type="button" @click="showMoreThreads(group.projectName)">
+                Show more
+              </button>
+              <button v-if="canShowFewer(group)" class="thread-show-more-button" type="button" @click="showFewerThreads(group.projectName)">
+                Show less
+              </button>
+            </div>
           </SidebarMenuRow>
       </article>
     </div>
@@ -506,7 +511,9 @@ type ThreadDropTarget = {
 
 const DRAG_START_THRESHOLD_PX = 4
 const PROJECT_GROUP_EXPANDED_GAP_PX = 6
-const expandedProjects = ref<Record<string, boolean>>({})
+/** Chats shown per project; "Show more" reveals one more page at a time. */
+const THREAD_PAGE_SIZE = 5
+const visibleLimitByProject = ref<Record<string, number>>({})
 const treeRootRef = ref<HTMLElement | null>(null)
 const collapsedProjects = ref<Record<string, boolean>>({})
 const pinnedThreadIds = computed(() => normalizeThreadIdArray(props.pinnedThreadIds))
@@ -1183,19 +1190,24 @@ function onProjectHeaderKeyDown(event: KeyboardEvent, projectName: string): void
   })
 }
 
-function isExpanded(projectName: string): boolean {
-  return expandedProjects.value[projectName] === true
+function visibleLimit(projectName: string): number {
+  return visibleLimitByProject.value[projectName] ?? THREAD_PAGE_SIZE
+}
+
+function setVisibleLimit(projectName: string, limit: number): void {
+  visibleLimitByProject.value = { ...visibleLimitByProject.value, [projectName]: limit }
 }
 
 function isCollapsed(projectName: string): boolean {
   return collapsedProjects.value[projectName] === true
 }
 
-function toggleProjectExpansion(projectName: string): void {
-  expandedProjects.value = {
-    ...expandedProjects.value,
-    [projectName]: !isExpanded(projectName),
-  }
+function showMoreThreads(projectName: string): void {
+  setVisibleLimit(projectName, visibleLimit(projectName) + THREAD_PAGE_SIZE)
+}
+
+function showFewerThreads(projectName: string): void {
+  setVisibleLimit(projectName, THREAD_PAGE_SIZE)
 }
 
 function toggleProjectCollapse(projectName: string): void {
@@ -1572,13 +1584,17 @@ function visibleThreads(group: UiProjectGroup): UiThread[] {
   if (isThreadFilterActive.value) return projectThreads(group)
   if (isCollapsed(group.projectName)) return []
 
-  const rows = projectThreads(group)
-  return isExpanded(group.projectName) ? rows : rows.slice(0, 5)
+  return projectThreads(group).slice(0, visibleLimit(group.projectName))
 }
 
 function hasHiddenThreads(group: UiProjectGroup): boolean {
   if (isThreadFilterActive.value) return false
-  return !isCollapsed(group.projectName) && projectThreads(group).length > 5
+  return !isCollapsed(group.projectName) && projectThreads(group).length > visibleLimit(group.projectName)
+}
+
+function canShowFewer(group: UiProjectGroup): boolean {
+  if (isThreadFilterActive.value || isCollapsed(group.projectName)) return false
+  return visibleLimit(group.projectName) > THREAD_PAGE_SIZE && projectThreads(group).length > THREAD_PAGE_SIZE
 }
 
 function hasThreads(group: UiProjectGroup): boolean {
@@ -1610,8 +1626,9 @@ watch(
     const group = props.groups.find((entry) => entry.threads.some((entry) => entry.id === threadId))
     if (group && !isPinned(threadId)) {
       if (isCollapsed(group.projectName)) collapsedProjects.value = { ...collapsedProjects.value, [group.projectName]: false }
-      if (projectThreads(group).findIndex((entry) => entry.id === threadId) >= 5) {
-        expandedProjects.value = { ...expandedProjects.value, [group.projectName]: true }
+      const index = projectThreads(group).findIndex((entry) => entry.id === threadId)
+      if (index >= visibleLimit(group.projectName)) {
+        setVisibleLimit(group.projectName, Math.ceil((index + 1) / THREAD_PAGE_SIZE) * THREAD_PAGE_SIZE)
       }
     }
     void nextTick(() => {
@@ -2070,6 +2087,10 @@ onBeforeUnmount(() => {
 
 .thread-show-more-spacer {
   @apply block w-4 h-4;
+}
+
+.thread-show-more-actions {
+  @apply flex items-center justify-center gap-1;
 }
 
 .thread-show-more-button {

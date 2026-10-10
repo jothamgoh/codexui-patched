@@ -2,11 +2,13 @@ import { readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { isInternalSubagentThread } from '../utils/codexThreadSource'
 
 /**
- * Chats that were mid-reply when the server stopped get one "continue" message
- * after it starts again, so a restart does not silently end their work.
+ * Chats that were mid-reply, or whose Claude background tasks were running, when
+ * the server stopped get one "continue" message after it starts again, so a
+ * restart does not silently end their work.
  */
 export const RESTART_CONTINUE_TEXT =
-  'CodexUI restarted while you were working, which stopped your last reply. Continue where you left off.'
+  'CodexUI restarted while you were working, which stopped your last reply or background tasks. '
+  + 'Continue where you left off, and restart any background task that was still needed.'
 
 /** Ignore a file older than this: the stop was not a restart. */
 const MAX_RECORD_AGE_MS = 10 * 60_000
@@ -24,14 +26,19 @@ function readThreadId(params: unknown): string {
   return typeof value === 'string' ? value : ''
 }
 
-/** Which chats have a reply in progress, from the turn lifecycle notifications. */
+/** Which chats have a reply or background work in progress, from lifecycle notifications. */
 export class ActiveTurnTracker {
   private readonly active = new Set<string>()
+  private readonly background = new Set<string>()
 
   observe(notification: Notification): void {
     const threadId = readThreadId(notification.params)
     if (!threadId) return
-    if (notification.method === 'turn/started') {
+    if (notification.method === 'thread/backgroundTasks/updated') {
+      const tasks = asRecord(notification.params)?.tasks
+      if (Array.isArray(tasks) && tasks.length > 0) this.background.add(threadId)
+      else this.background.delete(threadId)
+    } else if (notification.method === 'turn/started') {
       this.active.add(threadId)
     } else if (notification.method === 'turn/completed') {
       this.active.delete(threadId)
@@ -43,7 +50,7 @@ export class ActiveTurnTracker {
   }
 
   threadIds(): string[] {
-    return [...this.active]
+    return [...new Set([...this.active, ...this.background])]
   }
 }
 

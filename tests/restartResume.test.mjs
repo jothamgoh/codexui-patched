@@ -24,6 +24,16 @@ test('tracks chats with a reply in progress from both backends', () => {
   assert.deepEqual(tracker.threadIds(), ['claude-a'])
 })
 
+test('a chat whose reply ended while background tasks run is still interrupted by a restart', () => {
+  const tracker = new ActiveTurnTracker()
+  tracker.observe({ method: 'turn/started', params: { threadId: 'claude-bg', turn: { id: 't1' } } })
+  tracker.observe({ method: 'thread/backgroundTasks/updated', params: { threadId: 'claude-bg', tasks: [{ id: 'b1', type: 'local_bash', description: 'npm run build' }] } })
+  tracker.observe({ method: 'turn/completed', params: { threadId: 'claude-bg', turn: { id: 't1' } } })
+  assert.deepEqual(tracker.threadIds(), ['claude-bg'])
+  tracker.observe({ method: 'thread/backgroundTasks/updated', params: { threadId: 'claude-bg', tasks: [] } })
+  assert.deepEqual(tracker.threadIds(), [])
+})
+
 test('an interruption record is continued once, and never when stale', async () => {
   const path = join(directory, 'interrupted.json')
   recordInterruptedTurns(path, ['claude-a', 'codex-1', 'claude-a'], 1_000)

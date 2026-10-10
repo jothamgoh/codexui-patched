@@ -59,7 +59,8 @@ fi
 echo "$now" > "$stamp"
 
 thread="${CLAUDE_CODE_SESSION_ID:+claude-$CLAUDE_CODE_SESSION_ID}"
-/usr/bin/nohup /usr/bin/perl -MPOSIX -e 'POSIX::setsid() or die "setsid: $!"; exec @ARGV' \
+# Fork, then start a new session: no terminal is needed (nohup fails without one).
+/usr/bin/perl -MPOSIX -e '$SIG{HUP} = "IGNORE"; exit 0 if fork; POSIX::setsid() or die "setsid: $!"; exec @ARGV' \
   /bin/zsh "${0:A}" --run "$thread" "${1:-20}" >>"$log" 2>&1 </dev/null &!
 
 if [[ -n "$thread" ]]; then

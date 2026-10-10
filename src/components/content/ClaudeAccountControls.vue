@@ -16,8 +16,6 @@
           <option v-for="threshold in thresholds" :key="threshold" :value="threshold">{{ threshold }}% used</option>
         </select>
       </label>
-      <p>Switches after replies finish. Chats and folders stay together. Uses this Mac’s default Claude login.</p>
-      <p class="poll-note">CodexUI checks cswap each minute. cswap schedules usage requests and 429 backoff.</p>
       <div class="account-actions">
         <button type="button" :disabled="disabled || pool.switching || !connected" @click="emit('save')">Save current login</button>
         <button type="button" :disabled="disabled || pool.switching" @click="emit('add')">Add another account</button>
@@ -28,6 +26,7 @@
         <div v-for="account in pool.accounts" :key="account.number" class="saved-account">
           <div class="saved-account-header" :class="{ 'is-confirming': removeConfirm === account.number }">
             <strong>{{ account.alias || account.email }}</strong>
+            <button type="button" :aria-label="`${account.disabled ? 'Enable' : 'Disable'} automatic switching for ${account.email}`" :disabled="disabled || pool.switching" @click="emit('set-enabled', account.number, account.disabled)">{{ account.disabled ? 'Enable auto' : 'Disable auto' }}</button>
             <button type="button" :aria-label="`${removeConfirm === account.number ? 'Confirm remove' : 'Remove'} ${account.email}`" :disabled="disabled || pool.switching" @click="removeAccount(account.number)">{{ removeConfirm === account.number ? 'Confirm remove' : 'Remove' }}</button>
             <button v-if="removeConfirm === account.number" type="button" @click="removeConfirm = null">Cancel</button>
           </div>
@@ -57,6 +56,7 @@ const emit = defineEmits<{
   configure: [enabled: boolean, threshold: number]
   save: []
   add: []
+  'set-enabled': [number: number, enabled: boolean]
   remove: [number: number]
 }>()
 const removeConfirm = ref<number | null>(null)
@@ -93,7 +93,6 @@ summary { @apply cursor-pointer; }
 .saved-account-header button { @apply shrink-0; }
 .saved-account-header.is-confirming { @apply justify-start; }
 .saved-account-header.is-confirming strong { @apply basis-full; }
-.poll-note { @apply mt-1; }
 .saved-account > span { @apply block; color: var(--text-muted); }
 .limit { @apply mt-1; }
 .limit span { color: var(--text-muted); }

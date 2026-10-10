@@ -1811,6 +1811,7 @@ export function createCodexBridgeMiddleware(): CodexBridgeMiddleware {
         try {
           let data
           if (url.pathname.endsWith('/settings')) data = await shared.claude.accounts.configure(body?.enabled, body?.threshold)
+          else if (url.pathname.endsWith('/rotation')) data = await shared.claude.accounts.setAccountEnabled(body?.number, body?.enabled)
           else if (url.pathname.endsWith('/switch')) data = await shared.claude.accounts.requestSwitch(body?.number)
           else if (url.pathname.endsWith('/save')) data = await shared.claude.accounts.enrollCurrent()
           else if (url.pathname.endsWith('/remove')) data = await shared.claude.accounts.removeAccount(body?.number)

@@ -78,6 +78,7 @@ export function isAllowedClaudeHostRequest(command: string, args: string[]): boo
   try { if (!statSync(command).isFile()) return false } catch { return false }
   if (args.length === 1 && args[0] === 'add') return true
   if (args.length === 2 && args[0] === 'remove' && /^[1-9]\d*$/u.test(args[1] ?? '')) return true
+  if (args.length === 2 && ['disable', 'enable'].includes(args[0] ?? '') && /^[1-9]\d*$/u.test(args[1] ?? '')) return true
   if (args.length === 2 && args[0] === 'list' && args[1] === '--json') return true
   if (args.length === 3 && args[0] === 'switch' && /^[1-9]\d*$/u.test(args[1] ?? '') && args[2] === '--json') return true
   return args.length === 5 && args.slice(0, 4).join(' ') === 'auto --once --json --threshold'

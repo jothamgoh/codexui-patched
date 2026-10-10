@@ -92,6 +92,7 @@ function accountAction(action: string, body: Record<string, unknown> = {}): Prom
 
 export const saveClaudeAccount = (): Promise<ClaudeAccountPool> => accountAction('save')
 export const removeClaudeAccount = (number: number): Promise<ClaudeAccountPool> => accountAction('remove', { number })
+export const setClaudeAccountEnabled = (number: number, enabled: boolean): Promise<ClaudeAccountPool> => accountAction('rotation', { number, enabled })
 export const switchClaudeAccount = (number: number): Promise<ClaudeAccountPool> => accountAction('switch', { number })
 export const configureClaudeAccounts = (enabled: boolean, threshold: number): Promise<ClaudeAccountPool> => accountAction('settings', { enabled, threshold })
 export const cancelClaudeProviderLogin = (): Promise<{ ok: boolean }> => request('/codex-api/providers/claude/login/cancel', { method: 'POST' })

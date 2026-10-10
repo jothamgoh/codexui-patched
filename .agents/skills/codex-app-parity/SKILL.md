@@ -1402,3 +1402,9 @@ After each feature implementation session that uses this skill:
 - After `Add another account`, keep the handoff beside the account controls: explain the browser step, label the field `Paste Claude authorization code`, retain an `Open Claude sign-in` link, and call the final action `Save account`. A private-window hint helps users avoid silently reopening the account already saved on the host.
 - `cswap` owns provider usage polling, cached readings, threshold decisions, jitter, and `429` backoff. CodexUI may inspect cswap's local state every minute without making a provider request every minute; it must not add a second freshness or Retry-After scheduler over cswap.
 - Treat `cswap auto --once` exit code `2` as a normal no-op. Only a confirmed switch closes idle Claude processes and invalidates runtime caches, under the same exclusive lock used by new turn starts.
+
+## Findings: Claude account rotation eligibility (2026-10-10)
+
+- The integrated ChatGPT/Codex renderer `26.924.22138` has no multi-account Claude rotation or per-account eligibility control. Keep this CodexUI extension inside the existing Claude account manager rather than adding it to native model or account sign-in surfaces.
+- claude-swap's `disable` and `enable` commands retain the saved login and only change automatic eligibility. Use explicit **Disable auto** / **Enable auto** labels: disabled accounts remain valid deliberate manual-switch targets.
+- Changing rotation metadata does not replace credentials or require closing Claude processes. Serialize it with account operations, refresh the public account snapshot, and do not invalidate chats or runtime state.

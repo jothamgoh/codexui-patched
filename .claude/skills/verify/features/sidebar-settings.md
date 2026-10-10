@@ -11,7 +11,8 @@ settings. The `Accounts` region shows provider sign-in state.
 - `settings-questions` toggles optional questions in new chats for this browser.
 - `settings-accounts` shows Claude and Codex sign-in state with `Refresh accounts`.
 - `settings-claude-accounts` saves Claude logins, selects the active account, and
-  configures automatic switching with usage for every saved account.
+  configures automatic switching and per-account rotation eligibility with usage
+  for every saved account.
 
 ## How to get to it (user POV)
 
@@ -40,6 +41,8 @@ Preconditions:
 - **Saved Claude accounts.** With a scratch `CODEXUI_CSWAP_PATH` fixture, choose
   `Active Claude account`, toggle `Automatically switch Claude accounts`, and
   set `Claude automatic switch threshold`. Open `Manage saved accounts`, choose
+  `Disable automatic switching for <email>`, verify `Excluded from auto switch`,
+  then choose `Enable automatic switching for <email>` to restore rotation. Choose
   `Remove <email>` then `Confirm remove <email>` to delete a fixture account.
   Reload to check the selected account and settings, and read
   `$VERIFY_DIR/codex-home/codexui-claude-accounts.json` for settings side effects.

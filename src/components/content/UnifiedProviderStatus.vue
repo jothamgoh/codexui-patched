@@ -56,6 +56,7 @@
       @switch="(number) => void updateClaudeAccounts(() => switchClaudeAccount(number))"
       @configure="(enabled, threshold) => void updateClaudeAccounts(() => configureClaudeAccounts(enabled, threshold))"
       @save="void updateClaudeAccounts(saveClaudeAccount)"
+      @set-enabled="(number, enabled) => void updateClaudeAccounts(() => setClaudeAccountEnabled(number, enabled))"
       @remove="(number) => void updateClaudeAccounts(() => removeClaudeAccount(number))"
       @add="void onLogin('claude')"
     />
@@ -108,6 +109,7 @@ import {
   startProviderLogin,
   saveClaudeAccount,
   removeClaudeAccount,
+  setClaudeAccountEnabled,
   switchClaudeAccount,
   type ClaudeUsage,
   type ProviderId,

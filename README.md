@@ -119,6 +119,11 @@ Remove a saved login under **Manage saved accounts → Remove → Confirm remove
 This removes it from rotation without deleting local chats or signing out the
 current login.
 
+Choose **Disable auto** to keep a saved account out of automatic switching, or
+**Enable auto** to return it to rotation. A disabled account remains available
+for an intentional manual selection and is never chosen by claude-swap's
+automatic strategies.
+
 **Auto switch** defaults to 90% used. CodexUI asks claude-swap for account state
 once a minute, shared across tabs and refresh clicks. claude-swap decides when
 to contact Anthropic using its persistent adaptive poll plan, jitter, cache and

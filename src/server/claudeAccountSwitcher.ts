@@ -294,6 +294,37 @@ export class ClaudeAccountSwitcher {
     return this.snapshot()
   }
 
+  async setAccountEnabled(number: unknown, enabled: unknown): Promise<ClaudeAccountPool> {
+    if (!Number.isSafeInteger(number) || Number(number) < 1 || typeof enabled !== 'boolean') {
+      throw new Error('Choose a saved Claude account and whether it can be used automatically.')
+    }
+    await this.exclusive(async () => {
+      if (this.options.isAuthenticating?.()) throw new Error('Finish or cancel Claude sign-in before changing account rotation.')
+      await this.refresh()
+      const account = this.cached?.accounts.find((entry) => entry.number === number)
+      if (!account) throw new Error('This saved Claude account is no longer available.')
+      if (account.disabled === !enabled) {
+        this.notice = enabled ? 'This account is already available to automatic switching.' : 'This account is already excluded from automatic switching.'
+        return
+      }
+      await this.drainReads()
+      this.switching = true
+      try {
+        const result = await this.command([enabled ? 'enable' : 'disable', String(number)])
+        if (result.code !== 0) throw new Error(`Could not ${enabled ? 'enable' : 'disable'} automatic switching for this account.`)
+        await this.refresh(true)
+        const updated = this.cached?.accounts.find((entry) => entry.number === number)
+        if (!updated || updated.disabled !== !enabled) throw new Error('claude-swap did not confirm the account rotation change. Refresh and try again.')
+      } finally { this.switching = false }
+      this.notice = enabled
+        ? 'Account enabled for automatic switching.'
+        : account.active
+          ? 'Account excluded from automatic switching. It stays active until you switch away.'
+          : 'Account excluded from automatic switching.'
+    })
+    return this.snapshot()
+  }
+
   async enrollCurrent(): Promise<ClaudeAccountPool> {
     await this.exclusive(async () => {
       if (this.options.isBusy()) throw new Error('Wait for Claude replies to finish before saving this login.')

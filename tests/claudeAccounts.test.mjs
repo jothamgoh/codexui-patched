@@ -36,6 +36,8 @@ async function fixture(options = {}) {
     if (args[0] === 'switch') active = Number(args[1])
     if (args[0] === 'auto') active = 2
     if (args[0] === 'remove') accounts = accounts.filter((account) => account.number !== Number(args[1]))
+    if (args[0] === 'disable') accounts = accounts.map((account) => account.number === Number(args[1]) ? { ...account, disabled: true } : account)
+    if (args[0] === 'enable') accounts = accounts.map((account) => account.number === Number(args[1]) ? { ...account, disabled: false } : account)
     return { code: 0, stdout: '{}' }
   }
   const manager = new ClaudeAccountSwitcher({ stateFilePath: join(scratch, 'settings.json'), executable: '/fixture/cswap', run, isBusy: () => busy, isAuthenticating: () => authenticating, prepareSwitch: async () => calls.push(['prepare']), accountChanged: () => calls.push(['changed']), now: () => now, ...options })
@@ -186,8 +188,8 @@ test('Claude host only permits the supported cswap operations', async () => {
   const executable = join(directory, 'cswap')
   await writeFile(executable, '#!/bin/sh\nprintf \'{"schemaVersion":1,"accounts":[]}\\n\'\n')
   await chmod(executable, 0o700)
-  for (const args of [['add'], ['remove', '2'], ['list', '--json'], ['switch', '2', '--json'], ['auto', '--once', '--json', '--threshold', '90']]) assert.equal(isAllowedClaudeHostRequest(executable, args), true)
-  for (const args of [['export'], ['import', '/tmp/secrets'], ['add', '--token', 'secret'], ['auto'], ['auto', '--once', '--json', '--threshold', '100'], ['switch', '2;evil', '--json']]) assert.equal(isAllowedClaudeHostRequest(executable, args), false)
+  for (const args of [['add'], ['remove', '2'], ['disable', '2'], ['enable', '2'], ['list', '--json'], ['switch', '2', '--json'], ['auto', '--once', '--json', '--threshold', '90']]) assert.equal(isAllowedClaudeHostRequest(executable, args), true)
+  for (const args of [['export'], ['import', '/tmp/secrets'], ['add', '--token', 'secret'], ['disable', '2;evil'], ['enable', '0'], ['auto'], ['auto', '--once', '--json', '--threshold', '100'], ['switch', '2;evil', '--json']]) assert.equal(isAllowedClaudeHostRequest(executable, args), false)
   const socketDirectory = await mkdtemp('/tmp/codexui-accounts-')
   const socketPath = join(socketDirectory, 'host.sock')
   const server = await startClaudeProcessHost(socketPath)
@@ -252,6 +254,24 @@ test('account removal waits for replies and removes only the saved login', async
   assert.equal(state.activeAccountNumber, 1)
   assert.deepEqual(f.calls.find((args) => args[0] === 'remove'), ['remove', '2'])
   assert.equal(f.calls.some((args) => args[0] === 'prepare'), false)
+  f.manager.dispose()
+})
+
+test('accounts can be excluded from and restored to automatic switching without changing the active login', async () => {
+  const f = await fixture()
+  const excluded = await f.manager.setAccountEnabled(2, false)
+  assert.equal(excluded.accounts.find((account) => account.number === 2).disabled, true)
+  assert.equal(excluded.activeAccountNumber, 1)
+  assert.deepEqual(f.calls.find((args) => args[0] === 'disable'), ['disable', '2'])
+  assert.equal(f.calls.some((args) => args[0] === 'prepare'), false)
+  assert.equal(f.calls.some((args) => args[0] === 'changed'), false)
+
+  const restored = await f.manager.setAccountEnabled(2, true)
+  assert.equal(restored.accounts.find((account) => account.number === 2).disabled, false)
+  assert.equal(restored.activeAccountNumber, 1)
+  assert.deepEqual(f.calls.find((args) => args[0] === 'enable'), ['enable', '2'])
+  await assert.rejects(f.manager.setAccountEnabled(99, false), /no longer available/u)
+  await assert.rejects(f.manager.setAccountEnabled(2, 'yes'), /whether it can be used/u)
   f.manager.dispose()
 })
 

@@ -2444,6 +2444,19 @@ export function createCodexBridgeMiddleware(): CodexBridgeMiddleware {
         return
       }
 
+      if (req.method === 'POST' && url.pathname === '/codex-api/restart/continue-after') {
+        // The one-shot restart script names the chat that asked for the restart,
+        // so that chat is continued too, not only chats still mid-reply.
+        const threadId = asRecord(await readJsonBody(req))?.threadId
+        if (typeof threadId !== 'string' || !threadId.trim() || threadId.length > 200) {
+          setJson(res, 400, { error: 'threadId is required' })
+          return
+        }
+        shared.activeTurns.continueAfterRestart(threadId.trim())
+        setJson(res, 200, { ok: true })
+        return
+      }
+
       if (req.method === 'GET' && url.pathname === '/codex-api/server-requests/pending') {
         setJson(res, 200, { data: appServer.listPendingServerRequests() })
         return

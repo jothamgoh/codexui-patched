@@ -47,8 +47,10 @@ instructions provide, and launch it exactly once:
   not under the CodexUI service, so a detached process it starts survives the restart. Run the
   local copy of `deployment/macos/restart-codexui-detached.sh.example`. It returns at once,
   waits until the calling chat's reply has finished (it reads `CLAUDE_CODE_SESSION_ID` and polls
-  that chat's status, giving up after 15 minutes), then performs one `kickstart -k` and one
-  health check, and refuses a second request within three minutes. Other running chats are not
+  that chat's status, giving up after 15 minutes), asks the server to continue that chat after
+  the restart, then performs one `kickstart -k` and one health check, and refuses a second
+  request within three minutes. The calling chat therefore receives a continue message once the
+  service is back, so it can verify the restarted service itself. Other running chats are not
   waited for; they are continued after the restart (below). Finish the release workflow first, start it as
   the last action of the turn, and tell the user to refresh after about a minute.
 - **Separate Terminal.** From a Codex chat, or when no detached script exists, open the local
@@ -57,8 +59,8 @@ instructions provide, and launch it exactly once:
 If neither handoff is available, leave the restart for the user. Verify health after
 reconnecting.
 
-On shutdown the server records chats that were still mid-reply, or whose Claude background tasks
-were still running, in
+On shutdown the server records chats that were still mid-reply, whose Claude background tasks
+were still running, or that asked for the restart (`POST /codex-api/restart/continue-after`), in
 `$CODEX_HOME/codexui-interrupted-turns.json`. A few seconds after the next start it sends each
 one a "continue" message (`src/server/restartResume.ts`). Project-board chats recover through
 their own service, and Codex helper sub-chats through their parent, so both are skipped.

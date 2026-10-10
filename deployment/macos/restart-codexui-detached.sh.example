@@ -34,9 +34,15 @@ if [[ "${1:-}" == "--run" ]]; then
   else
     /bin/sleep "$delay"
   fi
+  if [[ -n "$thread" ]]; then
+    # Continue the calling chat after the restart too, not only chats still mid-reply.
+    /usr/bin/curl --silent --max-time 5 -X POST -H 'content-type: application/json' \
+      -d "{\"threadId\":\"$thread\"}" "$base/codex-api/restart/continue-after" >/dev/null || true
+  fi
   echo "$(/bin/date) restarting $label"
   /usr/bin/sudo -n /bin/launchctl kickstart -k "system/$label"
-  /bin/sleep 8
+  # One check, late enough for a busy Mac to finish starting the service.
+  /bin/sleep 20
   if /usr/bin/curl --fail --silent --output /dev/null "$base/codex-api/meta/methods"; then
     echo "$(/bin/date) CodexUI is back"
   else

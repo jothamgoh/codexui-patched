@@ -33,6 +33,16 @@ test('a chat whose reply ended while background tasks run is still interrupted b
   assert.deepEqual(tracker.threadIds(), [])
 })
 
+test('the chat that asked for the restart is continued even though its reply has finished', () => {
+  const tracker = new ActiveTurnTracker()
+  tracker.observe({ method: 'turn/started', params: { threadId: 'claude-caller', turn: { id: 't1' } } })
+  tracker.observe({ method: 'turn/completed', params: { threadId: 'claude-caller', turn: { id: 't1' } } })
+  assert.deepEqual(tracker.threadIds(), [])
+  tracker.continueAfterRestart('claude-caller')
+  assert.deepEqual(tracker.threadIds(), ['claude-caller'])
+  assert.match(RESTART_CONTINUE_TEXT, /^Continue where you left off\./u)
+})
+
 test('an interruption record is continued once, and never when stale', async () => {
   const path = join(directory, 'interrupted.json')
   recordInterruptedTurns(path, ['claude-a', 'codex-1', 'claude-a'], 1_000)

@@ -8,8 +8,7 @@ import { isInternalSubagentThread } from '../utils/codexThreadSource'
  */
 export const RESTART_CONTINUE_TEXT =
   // Names no app: the chat is usually working in another project, so "CodexUI" would mislead it.
-  'Your session was interrupted by a restart, which stopped your last reply or any background tasks. '
-  + 'Continue where you left off, and restart any background task that was still needed.'
+  'Continue where you left off. A restart interrupted this session; restart any background task that is still needed.'
 
 /** Ignore a file older than this: the stop was not a restart. */
 const MAX_RECORD_AGE_MS = 10 * 60_000
@@ -35,6 +34,12 @@ function readThreadId(params: unknown): string {
 export class ActiveTurnTracker {
   private readonly active = new Set<string>()
   private readonly background = new Set<string>()
+  private readonly requested = new Set<string>()
+
+  /** Continue this chat after the next restart even if it is idle, such as the chat that asked for it. */
+  continueAfterRestart(threadId: string): void {
+    this.requested.add(threadId)
+  }
 
   observe(notification: Notification): void {
     const threadId = readThreadId(notification.params)
@@ -51,7 +56,7 @@ export class ActiveTurnTracker {
   }
 
   threadIds(): string[] {
-    return [...new Set([...this.active, ...this.background])]
+    return [...new Set([...this.active, ...this.background, ...this.requested])]
   }
 }
 

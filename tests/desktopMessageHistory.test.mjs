@@ -443,3 +443,18 @@ test('pending approvals and questions replace generic thinking without ending th
   f.emit('turn/completed', { turn: { id: 'turn-1', status: 'completed' } })
   assert.equal(f.state.selectedLiveOverlay.value, null)
 })
+
+test('background work shows the live dots after the reply ends, and only while it runs', async (t) => {
+  const f = fixture(t, { readBackgroundTasks: (tasks) => tasks })
+  await f.state.refreshAll({ loadSelectedThread: false })
+  const first = await f.read()
+  first.response.resolve(page([message('Started the build in the background.', { phase: 'final_answer' })], false))
+  await first.pending
+  assert.equal(f.state.selectedLiveOverlay.value, null)
+  f.emit('thread/backgroundTasks/updated', { tasks: [{ id: 'b1', type: 'local_bash', description: 'npm run build' }] })
+  assert.equal(f.state.selectedLiveOverlay.value?.activityLabel, 'Running 1 background task')
+  assert.deepEqual(f.state.selectedThreadBackgroundTasks.value.map((task) => task.id), ['b1'])
+  f.emit('thread/backgroundTasks/updated', { tasks: [] })
+  assert.equal(f.state.selectedLiveOverlay.value, null)
+  assert.deepEqual(f.state.selectedThreadBackgroundTasks.value, [])
+})

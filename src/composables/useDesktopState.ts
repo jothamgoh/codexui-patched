@@ -1346,7 +1346,16 @@ export function useDesktopState() {
         errorText: '',
       }
     }
-    if (inProgressById.value[threadId] !== true) return null
+    if (inProgressById.value[threadId] !== true) {
+      const backgroundCount = backgroundTasksByThreadId.value[threadId]?.length ?? 0
+      if (backgroundCount === 0) return null
+      return {
+        activityLabel: `Running ${backgroundCount} background ${backgroundCount === 1 ? 'task' : 'tasks'}`,
+        activityDetails: [],
+        reasoningText: '',
+        errorText: '',
+      }
+    }
 
     const activity = turnActivityByThreadId.value[threadId]
     const reasoningText = (liveReasoningTextByThreadId.value[threadId] ?? '').trim()

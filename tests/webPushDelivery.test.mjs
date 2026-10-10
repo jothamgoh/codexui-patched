@@ -2,6 +2,7 @@ import assert from 'node:assert/strict'
 import { readFile } from 'node:fs/promises'
 import test from 'node:test'
 import vm from 'node:vm'
+import { build } from 'esbuild'
 
 const notificationSettingsSource = await readFile(
   new URL('../src/composables/useWebPushNotifications.ts', import.meta.url),
@@ -83,4 +84,39 @@ test('the service worker reports each push it receives and whether it showed it'
   const failed = await runServiceWorkerPush({ title: 'Done', tag: 'turn-3', mode: 'always' }, { failShow: true })
   assert.equal(failed.receipts[0].body.shown, false)
   assert.match(failed.receipts[0].body.error, /blocked/u)
+})
+
+async function initializeWithPermission(permission) {
+  const subscribes = []
+  const storage = new Map()
+  const subscription = { endpoint: 'https://push.example.test/stale', toJSON: () => ({ endpoint: 'https://push.example.test/stale', keys: { p256dh: 'k', auth: 'a' } }) }
+  const registration = { pushManager: { getSubscription: async () => subscription } }
+  Object.assign(globalThis, {
+    window: globalThis,
+    isSecureContext: true,
+    PushManager: function PushManager() {},
+    Notification: { permission },
+    localStorage: { getItem: (key) => storage.get(key) ?? null, setItem: (key, value) => storage.set(key, String(value)), removeItem: (key) => storage.delete(key) },
+    matchMedia: () => ({ matches: false }),
+    fetch: async (url, options = {}) => {
+      if (String(url).includes('/push/subscribe')) subscribes.push(JSON.parse(options.body))
+      return { ok: true, json: async () => ({ data: { supported: true, publicKey: 'BPub' } }) }
+    },
+  })
+  Object.defineProperty(globalThis, 'navigator', { configurable: true, value: { userAgent: 'Mozilla/5.0 (Macintosh) Chrome/151.0.0.0', platform: 'MacIntel', maxTouchPoints: 0, serviceWorker: { getRegistration: async () => registration, register: async () => registration } } })
+  const { outputFiles } = await build({ entryPoints: [new URL('../src/composables/useWebPushNotifications.ts', import.meta.url).pathname], bundle: true, write: false, format: 'esm', platform: 'neutral', logLevel: 'silent', plugins: [{ name: 'vue-external', setup(b) { b.onResolve({ filter: /^vue$/ }, () => ({ path: import.meta.resolve('vue'), external: true })) } }] })
+  const { useWebPushNotifications } = await import(`data:text/javascript;base64,${Buffer.from(outputFiles[0].contents).toString('base64')}`)
+  const push = useWebPushNotifications()
+  await push.initializeWebPushNotifications(true)
+  return { status: push.status.value, subscribes }
+}
+
+test('a device whose notification permission went back to "ask" is not treated as subscribed', async () => {
+  const reset = await initializeWithPermission('default')
+  assert.equal(reset.status, 'ready', 'the panel offers Enable again')
+  assert.deepEqual(reset.subscribes, [], 'the stale subscription is not refreshed as if alerts worked')
+
+  const granted = await initializeWithPermission('granted')
+  assert.equal(granted.status, 'enabled')
+  assert.equal(granted.subscribes[0].permission, 'granted', 'the server learns the real permission')
 })

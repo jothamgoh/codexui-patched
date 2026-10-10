@@ -100,11 +100,12 @@ export async function saveWebPushSubscription(
   subscription: PushSubscriptionJSON,
   mode: WebPushMode,
   deviceName: string,
+  permission: NotificationPermission,
 ): Promise<void> {
   await callPushApi('subscribe', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ subscription, mode, deviceName }),
+    body: JSON.stringify({ subscription, mode, deviceName, permission }),
   })
 }
 

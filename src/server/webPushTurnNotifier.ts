@@ -35,6 +35,8 @@ type StoredSubscription = {
   mode: NotificationMode
   deviceName: string
   userAgent: string
+  /** The page's notification permission when it last refreshed this subscription. */
+  permission?: string
   createdAt: string
   updatedAt: string
 }
@@ -161,6 +163,7 @@ function normalizeStoredSubscription(value: unknown): StoredSubscription | null 
     mode: normalizeMode(record.mode),
     deviceName: readString(record.deviceName).slice(0, 120),
     userAgent: readString(record.userAgent).slice(0, 500),
+    ...(readString(record.permission) ? { permission: readString(record.permission).slice(0, 20) } : {}),
     createdAt: readString(record.createdAt) || new Date().toISOString(),
     updatedAt: readString(record.updatedAt) || new Date().toISOString(),
   }
@@ -670,6 +673,7 @@ export function createWebPushTurnNotifier(): WebPushTurnNotifier {
           data: state.subscriptions.map((entry) => ({
             deviceName: entry.deviceName,
             updatedAt: entry.updatedAt,
+            permission: entry.permission ?? null,
             receipt: receipts.get(entry.subscription.endpoint) ?? null,
           })),
         })
@@ -799,6 +803,7 @@ export function createWebPushTurnNotifier(): WebPushTurnNotifier {
         const now = new Date().toISOString()
         const deviceName = readString(body?.deviceName).slice(0, 120)
         const userAgent = readString(req.headers['user-agent']).slice(0, 500)
+        const permission = readString(body?.permission).slice(0, 20)
 
         const subscriptionCount = await mutateState((currentState) => {
           const existing = currentState.subscriptions.find(
@@ -809,6 +814,7 @@ export function createWebPushTurnNotifier(): WebPushTurnNotifier {
             existing.mode = mode
             existing.deviceName = deviceName || existing.deviceName
             existing.userAgent = userAgent
+            if (permission) existing.permission = permission
             existing.updatedAt = now
           } else {
             currentState.subscriptions.push({
@@ -816,6 +822,7 @@ export function createWebPushTurnNotifier(): WebPushTurnNotifier {
               mode,
               deviceName,
               userAgent,
+              ...(permission ? { permission } : {}),
               createdAt: now,
               updatedAt: now,
             })

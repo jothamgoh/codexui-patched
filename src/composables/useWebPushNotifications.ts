@@ -135,6 +135,14 @@ async function initializeWebPushNotifications(force = false): Promise<void> {
     saveEnabled(false)
     return
   }
+  if (Notification.permission !== 'granted') {
+    // Chrome can reset an unused site's permission to "ask" yet keep its push
+    // subscription. Pushes are then dropped, so this device is not enabled
+    // until someone allows notifications again.
+    status.value = 'ready'
+    saveEnabled(false)
+    return
+  }
 
   status.value = 'loading'
   try {
@@ -151,7 +159,7 @@ async function initializeWebPushNotifications(force = false): Promise<void> {
 
     const currentMode = mode.value === 'off' ? 'unfocused' : mode.value
     if (mode.value === 'off') saveMode(currentMode)
-    await saveWebPushSubscription(subscription.toJSON(), currentMode, deviceName())
+    await saveWebPushSubscription(subscription.toJSON(), currentMode, deviceName(), Notification.permission)
     saveEnabled(true)
     status.value = 'enabled'
   } catch (error) {
@@ -196,7 +204,7 @@ async function enableWebPushNotifications(requestedMode?: WebPushMode): Promise<
         applicationServerKey: urlBase64ToUint8Array(vapidPublicKey),
       })
     const nextMode = requestedMode ?? (mode.value === 'off' ? 'unfocused' : mode.value)
-    await saveWebPushSubscription(subscription.toJSON(), nextMode, deviceName())
+    await saveWebPushSubscription(subscription.toJSON(), nextMode, deviceName(), Notification.permission)
     saveMode(nextMode)
     saveEnabled(true)
     status.value = 'enabled'
@@ -259,7 +267,7 @@ async function setTurnNotificationMode(nextMode: TurnNotificationMode): Promise<
       errorMessage.value = 'This device is no longer subscribed. Enable notifications again.'
       return
     }
-    await saveWebPushSubscription(subscription.toJSON(), nextMode, deviceName())
+    await saveWebPushSubscription(subscription.toJSON(), nextMode, deviceName(), Notification.permission)
     saveMode(nextMode)
   } catch (error) {
     status.value = 'error'

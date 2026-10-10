@@ -5211,7 +5211,11 @@ export function useDesktopState() {
   async function respondToPendingServerRequest(reply: UiServerRequestReply): Promise<void> {
     const pending = Object.values(pendingServerRequestsByThreadId.value).flat().find((request) => request.id === reply.id)
     if (pending?.replyState === 'sending') return
-    if (pending) upsertPendingServerRequest({ ...pending, replyState: 'sending', replyError: undefined })
+    // Approval cards hold no typed input, so hide them at once rather than wait on a
+    // slow phone connection. They come back with the error if the reply fails.
+    const optimistic = pending?.method.endsWith('/requestApproval') === true
+    if (optimistic) removePendingServerRequestById(reply.id)
+    else if (pending) upsertPendingServerRequest({ ...pending, replyState: 'sending', replyError: undefined })
     try {
       await replyToServerRequest(reply.id, {
         result: reply.result,
@@ -5222,7 +5226,11 @@ export function useDesktopState() {
       const message = unknownError instanceof Error ? unknownError.message : 'Failed to reply to server request'
       error.value = message
       // Another client may have resolved the request while this reply was in flight.
-      const current = Object.values(pendingServerRequestsByThreadId.value).flat().find((request) => request.id === reply.id)
+      const current = optimistic
+        ? await getPendingServerRequests()
+          .then((rows) => rows.some((row) => asRecord(row)?.id === reply.id) ? pending : undefined)
+          .catch(() => pending)
+        : Object.values(pendingServerRequestsByThreadId.value).flat().find((request) => request.id === reply.id)
       if (current) upsertPendingServerRequest({ ...current, replyState: 'failed', replyError: message })
     }
   }

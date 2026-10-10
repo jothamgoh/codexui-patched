@@ -46,9 +46,16 @@ try {
   })
   const replies = []
   let releaseReply
+  const approvalReplies = []
+  let pendingRows = []
   await page.route('**/codex-api/**', async route => {
     const path = new URL(route.request().url()).pathname
-    if (path === '/codex-api/server-requests/respond') {
+    if (path === '/codex-api/server-requests/respond' && route.request().postDataJSON().id >= 800) {
+      const reply = route.request().postDataJSON()
+      await new Promise(resolve => approvalReplies.push({ reply, release: resolve }))
+      await route.fulfill(reply.id === 802 ? { status: 503, json: { error: 'Temporarily disconnected.' } } : { json: { ok: true } })
+    } else if (path === '/codex-api/server-requests/pending') await route.fulfill({ json: { data: pendingRows } })
+    else if (path === '/codex-api/server-requests/respond') {
       replies.push(route.request().postDataJSON())
       if (replies.length === 1) {
         await new Promise(resolve => { releaseReply = resolve })
@@ -168,7 +175,24 @@ try {
   await asyncCards.nth(1).getByText('Answer sent', { exact: true }).waitFor()
   assert.equal(await asyncCards.getByText('Answer sent', { exact: true }).count(), 2, 'Answers survive transcript normalization and component remount')
   assert.equal(await page.getByText('<send_user_message_question_reply>', { exact: false }).count(), 0)
+
+  // Approval cards vanish on tap, before a slow phone reply returns, and come back if it fails.
+  const approval = (id) => ({ id, method: 'item/permissions/requestApproval', params: { threadId: 'parent', turnId: 'turn-cu', itemId: `cu-${id}`, title: 'Allow Claude to control this Mac?', reason: 'Claude requested a Computer Use action.', permissionKind: 'computerUse', availableDecisions: ['accept', 'acceptForSession', 'decline'] } })
+  await notify('server/request', approval(801))
+  await page.getByRole('button', { name: 'Allow for this chat', exact: true }).click()
+  await page.getByText('Permission to control this Mac', { exact: true }).waitFor({ state: 'hidden' })
+  assert.equal(approvalReplies.length, 1, 'the reply is still in flight while the card is already gone')
+  approvalReplies[0].release()
+  await notify('server/request', approval(802))
+  pendingRows = [approval(802)]
+  await page.getByRole('button', { name: 'Accept', exact: true }).click()
+  await page.getByText('Permission to control this Mac', { exact: true }).waitFor({ state: 'hidden' })
+  approvalReplies[1].release()
+  await page.getByRole('alert').filter({ hasText: 'Temporarily disconnected.' }).waitFor()
+  assert.deepEqual(approvalReplies.map(({ reply }) => reply), [{ id: 801, result: { decision: 'acceptForSession' } }, { id: 802, result: { decision: 'accept' } }])
+  await notify('server/request/resolved', { id: 802 })
+
   assert.deepEqual(errors, [])
   await page.evaluate(() => desktop.stopPolling())
-  console.log(JSON.stringify({ questions: true, optionDescriptions: true, freeTextVoice: true, explicitSubmit: true, retryPreserved: true, replayDuplicateGuard: true, resumedMessages: true, secretMasked: true, asyncLiveQuestions: true, asyncRetry: true, asyncVoice: true, asyncHistoryReload: true, mobileOverflow: false }))
+  console.log(JSON.stringify({ questions: true, optionDescriptions: true, freeTextVoice: true, explicitSubmit: true, retryPreserved: true, replayDuplicateGuard: true, resumedMessages: true, secretMasked: true, asyncLiveQuestions: true, asyncRetry: true, asyncVoice: true, asyncHistoryReload: true, instantApprovalHide: true, mobileOverflow: false }))
 } finally { await browser.close(); await server.close() }

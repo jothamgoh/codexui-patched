@@ -318,20 +318,22 @@ async function startServer(options: {
     openBrowser(`http://localhost:${String(port)}`)
   }
 
+  let disposed = false
   function shutdown() {
     console.log('\nShutting down...')
     if (tunnelChild && !tunnelChild.killed) {
       tunnelChild.kill('SIGTERM')
     }
-    server.close(() => {
+    // Dispose first: it records which chats a restart interrupts. Waiting for
+    // open browser connections could outlast launchd's patience and lose that.
+    if (!disposed) {
+      disposed = true
       dispose()
-      process.exit(0)
-    })
-    // Force exit after timeout
-    setTimeout(() => {
-      dispose()
-      process.exit(1)
-    }, 5000).unref()
+    }
+    server.close(() => process.exit(0))
+    // Event streams never end on their own; do not wait for them.
+    server.closeAllConnections()
+    setTimeout(() => process.exit(1), 5000).unref()
   }
 
   process.on('SIGINT', shutdown)

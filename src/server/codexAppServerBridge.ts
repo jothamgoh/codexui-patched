@@ -1725,7 +1725,8 @@ function getSharedBridgeState(): SharedBridgeState {
       void continueInterruptedTurns(
         interrupted,
         (method, params) => router.rpc(method, params),
-        (threadId) => projectBoardService.isManagedThread(threadId),
+        async (threadId) => (isClaudeThreadId(threadId) && !(await claude.isListedChat(threadId)))
+          || projectBoardService.isManagedThread(threadId),
       ).then((result) => console.log('[restart-resume]', JSON.stringify(result)))
     }, RESTART_CONTINUE_DELAY_MS).unref()
   }

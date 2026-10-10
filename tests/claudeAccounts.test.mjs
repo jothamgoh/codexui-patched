@@ -531,5 +531,11 @@ test('a refused send to a Claude session running in another app does not list it
     /active in another app/u,
   )
   assert.equal(await backend.store.get(session), undefined)
+  assert.equal(await backend.isListedChat(`claude-${session}`), false, 'restart recovery skips it')
+  await backend.store.update('codexui-chat', { cwd: '/w', createdAtMs: 1 })
+  assert.equal(await backend.isListedChat('claude-codexui-chat'), true)
+  await backend.store.update('codexui-chat', { archived: true })
+  assert.equal(await backend.isListedChat('claude-codexui-chat'), false)
+  await backend.store.writeChain
   backend.runners.clear(); backend.dispose(); f.manager.dispose()
 })

@@ -84,18 +84,19 @@ export function takeInterruptedTurns(path: string, now = Date.now()): string[] {
 
 /**
  * Sends the continue message to each interrupted chat the user drives directly.
- * Project-board chats recover through their own service, and Codex helper
- * sub-chats are continued by their parent.
+ * `skip` excludes chats someone else owns: project-board chats recover through
+ * their own service, and Claude sessions CodexUI does not list are another app's.
+ * Codex helper sub-chats are continued by their parent.
  */
 export async function continueInterruptedTurns(
   threadIds: string[],
   rpc: Rpc,
-  isManagedThread: (threadId: string) => Promise<boolean>,
+  skip: (threadId: string) => Promise<boolean>,
 ): Promise<{ continued: string[]; skipped: string[]; failed: string[] }> {
   const result = { continued: [] as string[], skipped: [] as string[], failed: [] as string[] }
   for (const threadId of threadIds) {
     try {
-      if (await isManagedThread(threadId)) {
+      if (await skip(threadId)) {
         result.skipped.push(threadId)
         continue
       }

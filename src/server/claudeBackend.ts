@@ -1619,6 +1619,12 @@ export class ClaudeBackend {
    * Claude process when that server went away. Its last transcript writes are
    * ours, so the external-activity guard must not refuse the continue message.
    */
+  /** A chat CodexUI started or continued, and the user has not archived. */
+  async isListedChat(threadId: string): Promise<boolean> {
+    const stored = await this.store.get(toSessionId(threadId))
+    return Boolean(stored && !stored.archived)
+  }
+
   adoptInterruptedSession(threadId: string): void {
     this.ownActivityMs.set(toSessionId(threadId), Date.now())
   }

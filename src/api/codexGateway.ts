@@ -94,8 +94,26 @@ export type ThreadSearchResult = {
   snippet: string
 }
 
+/** Claude work that keeps running after its turn ends (shell commands, subagents). */
+export type UiBackgroundTask = { id: string; type: string; description: string }
+
+export function readBackgroundTasks(value: unknown): UiBackgroundTask[] {
+  if (!Array.isArray(value)) return []
+  return value.flatMap((entry) => {
+    if (!entry || typeof entry !== 'object') return []
+    const task = entry as Record<string, unknown>
+    if (typeof task.id !== 'string' || !task.id) return []
+    return [{
+      id: task.id,
+      type: typeof task.type === 'string' ? task.type : '',
+      description: typeof task.description === 'string' ? task.description : '',
+    }]
+  })
+}
+
 export type ThreadMessagePage = {
   threadSource?: UiThreadSource & { threadId: string }
+  backgroundTasks: UiBackgroundTask[]
   messages: UiMessage[]
   isInProgress: boolean
   activeTurnId: string
@@ -638,6 +656,7 @@ export async function getThreadMessagesWithStatus(
     const turnState = getInProgressTurnStateV2(payload)
     return {
       threadSource: { threadId: payload.thread.id, ...normalizeThreadSourceV2(payload.thread) },
+      backgroundTasks: readBackgroundTasks((payload.thread as unknown as Record<string, unknown>).backgroundTasks),
       messages: normalizeThreadMessagesV2(payload, payload.page.startTurnIndex),
       isInProgress: turnState.isInProgress,
       activeTurnId: turnState.activeTurnId,
@@ -1143,6 +1162,14 @@ export async function interruptThreadTurn(threadId: string, turnId?: string): Pr
     await callRpc('turn/interrupt', { threadId: normalizedThreadId, turnId: normalizedTurnId })
   } catch (error) {
     throw normalizeCodexApiError(error, `Failed to interrupt turn for thread ${normalizedThreadId}`, 'turn/interrupt')
+  }
+}
+
+export async function stopBackgroundTask(threadId: string, taskId: string): Promise<void> {
+  try {
+    await callRpc('thread/backgroundTask/stop', { threadId, taskId })
+  } catch (error) {
+    throw normalizeCodexApiError(error, 'Failed to stop the background task', 'thread/backgroundTask/stop')
   }
 }
 

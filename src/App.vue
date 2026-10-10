@@ -392,6 +392,10 @@
               </div>
 
               <div class="composer-with-queue" @focusin="collapseBoardReplyOptions">
+                <BackgroundTasks
+                  :tasks="composerBackgroundTasks"
+                  @stop="stopThreadBackgroundTask"
+                />
                 <QueuedMessages
                   :messages="selectedThreadQueuedMessages"
                   @steer="steerQueuedMessage"
@@ -413,7 +417,7 @@
                   :goal="selectedThreadGoal"
                   :turn-activity-label="composerTurnActivityLabel"
                   :is-turn-in-progress="isSelectedThreadInProgress" :is-interrupting-turn="isInterruptingTurn || Boolean(selectedChatFeature && isMutatingProjectBoards)"
-                  :has-queue-above="selectedThreadQueuedMessages.length > 0"
+                  :has-queue-above="selectedThreadQueuedMessages.length > 0 || composerBackgroundTasks.length > 0"
                   @submit="onSubmitThreadMessage" @update:selected-model="onSelectModel"
                   @update:selected-reasoning-effort="onSelectReasoningEffort" @interrupt="onInterruptTurn"
                   @set-goal="onSetGoal" @clear-goal="onClearGoal" @update-goal-status="onUpdateGoalStatus" />
@@ -465,6 +469,7 @@ import { collectProjectBoardActivity, shouldSurfaceUnlistedBoardActivity } from 
 import { collectThreadHelpers } from './utils/threadHelpers'
 import { useThreadHelperActivity } from './composables/useThreadHelperActivity'
 import QueuedMessages from './components/content/QueuedMessages.vue'
+import BackgroundTasks from './components/content/BackgroundTasks.vue'
 import NewThreadFolderPicker from './components/content/NewThreadFolderPicker.vue'
 import { createBoardTeamDraft } from './utils/boardTeamDraft'
 import BoardPlanDialog, { type BoardPlanDraft } from './components/content/BoardPlanDialog.vue'
@@ -585,6 +590,8 @@ const {
   isRollingBack,
   selectedThreadQueuedMessages,
   removeQueuedMessage,
+  selectedThreadBackgroundTasks,
+  stopThreadBackgroundTask,
   steerQueuedMessage,
   setSelectedModelId,
   setSelectedReasoningEffort,
@@ -965,6 +972,7 @@ watch(
 const liveOverlay = computed(() => selectedLiveOverlay.value)
 const composerTurnActivityLabel = computed(() => liveOverlay.value?.activityLabel ?? 'Thinking')
 const composerThreadContextId = computed(() => (isHomeRoute.value ? '__new-thread__' : selectedThreadId.value))
+const composerBackgroundTasks = computed(() => (isHomeRoute.value ? [] : selectedThreadBackgroundTasks.value))
 const composerThreadTokenUsage = computed(() => (isHomeRoute.value ? null : selectedThreadTokenUsage.value))
 const composerCwd = computed(() => {
   if (isHomeRoute.value) return newThreadCwd.value.trim()

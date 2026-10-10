@@ -176,7 +176,7 @@ test('switch closes idle Claude processes while preserving saved chat and folder
   await backend.store.update(session, { cwd: '/work/project', model: 'claude-sonnet', effort: 'low', createdAtMs: 1 })
   await backend.store.writeChain
   let closed = 0
-  const old = { sessionId: session, threadId: `claude-${session}`, activeTurn: null, pushedCommands: new Map(), closed: false, query: { close: () => { closed += 1 } }, input: { release: () => {} } }
+  const old = { sessionId: session, threadId: `claude-${session}`, activeTurn: null, pushedCommands: new Map(), backgroundTasks: [], closed: false, query: { close: () => { closed += 1 } }, input: { release: () => {} } }
   backend.runners.set(session, old)
   const before = await readFile(join(f.scratch, 'threads.json'), 'utf8')
   await backend.accounts.requestSwitch(2)
@@ -322,4 +322,37 @@ test('SDK-only usage fallback keeps cached limits after 429 and refresh cannot b
   await Promise.all([backend.readUsage(true), backend.readUsage(true)])
   assert.equal(calls, 1)
   backend.dispose()
+})
+
+test('background tasks keep the Claude process alive and block account changes until they end', async () => {
+  const f = await fixture()
+  const backend = new ClaudeBackend(join(f.scratch, 'threads.json'), {
+    accountSwitcherPath: '/fixture/cswap',
+    claudeConfigDir: join(f.scratch, 'claude'),
+  })
+  backend.runAccountCommand = f.run
+  backend.refreshClaudeSessionStates = async () => ({ uncertain: false, states: new Map() })
+  const session = 'session-with-background-work'
+  const runner = { sessionId: session, threadId: `claude-${session}`, activeTurn: null, pushedCommands: new Map(), backgroundTasks: [], idleTimer: null, closed: false, query: { close: () => {} }, input: { release: () => {} } }
+  backend.runners.set(session, runner)
+  const updates = []
+  backend.onNotification((notification) => {
+    if (notification.method === 'thread/backgroundTasks/updated') updates.push(notification.params)
+  })
+  const changed = (tasks) => backend.handleMessage(runner, { type: 'system', subtype: 'background_tasks_changed', tasks, uuid: 'u', session_id: session })
+
+  changed([
+    { task_id: 'b1', task_type: 'local_bash', description: 'npm run build' },
+    { task_id: 'w1', task_type: 'monitor', description: 'file watcher', ambient: true },
+  ])
+  assert.deepEqual(updates.at(-1), { threadId: `claude-${session}`, tasks: [{ id: 'b1', type: 'local_bash', description: 'npm run build' }] })
+  backend.scheduleIdleClose(runner)
+  assert.equal(runner.idleTimer, null, 'a reply ending must not start the idle close while work runs')
+  await assert.rejects(backend.prepareAccountChange(), /Wait for Claude replies/u)
+
+  changed([])
+  assert.deepEqual(updates.at(-1).tasks, [])
+  assert.notEqual(runner.idleTimer, null, 'the idle close starts once the last task ends')
+  clearTimeout(runner.idleTimer)
+  backend.runners.clear(); backend.dispose(); f.manager.dispose()
 })

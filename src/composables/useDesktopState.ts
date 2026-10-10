@@ -16,6 +16,8 @@ import {
   getThreadAudience,
   getThreadGoal,
   interruptThreadTurn,
+  readBackgroundTasks,
+  stopBackgroundTask,
   replyToServerRequest,
   rollbackThread,
   getThreadGroups,
@@ -43,6 +45,7 @@ import {
   type ResolvedThreadMentionParam,
   type ThreadModelConfig,
   type ThreadMessagePage,
+  type UiBackgroundTask,
   type ThreadTurnSummary,
   normalizeRateLimitSnapshotPayload,
   normalizeSharedThreadReadState,
@@ -1253,6 +1256,7 @@ export function useDesktopState() {
   const turnErrorByThreadId = ref<Record<string, TurnErrorState>>({})
   const threadGoalByThreadId = ref<Record<string, UiThreadGoal>>({})
   const threadTokenUsageByThreadId = ref<Record<string, UiThreadTokenUsage>>({})
+  const backgroundTasksByThreadId = ref<Record<string, UiBackgroundTask[]>>({})
   const activeTurnIdByThreadId = ref<Record<string, string>>(persistedRuntimeState.activeTurnIdByThreadId)
   const pendingServerRequestsByThreadId = ref<Record<string, UiServerRequest[]>>({})
 
@@ -1691,7 +1695,15 @@ export function useDesktopState() {
     return true
   }
 
+  function setBackgroundTasksForThread(threadId: string, tasks: UiBackgroundTask[]): void {
+    if (tasks.length === 0 && !(threadId in backgroundTasksByThreadId.value)) return
+    backgroundTasksByThreadId.value = tasks.length > 0
+      ? { ...backgroundTasksByThreadId.value, [threadId]: tasks }
+      : omitKey(backgroundTasksByThreadId.value, threadId)
+  }
+
   function applyPageThreadSource(threadId: string, page: ThreadMessagePage): void {
+    setBackgroundTasksForThread(threadId, page.backgroundTasks)
     if (page.threadSource?.threadId === threadId && rememberThreadSource(threadId, page.threadSource)) applyThreadFlags()
   }
 
@@ -3615,6 +3627,12 @@ export function useDesktopState() {
       }
     }
 
+    if (notification.method === 'thread/backgroundTasks/updated') {
+      const params = asRecord(notification.params)
+      const threadId = readString(pick(params ?? {}, 'threadId', 'thread_id'))
+      if (threadId) setBackgroundTasksForThread(threadId, readBackgroundTasks(params?.tasks))
+    }
+
     if (notification.method === 'thread/goal/cleared') {
       const params = asRecord(notification.params)
       const threadId = readString(pick(params ?? {}, 'threadId', 'thread_id'))
@@ -3884,7 +3902,7 @@ export function useDesktopState() {
     // These events have already updated live state. Re-reading the transcript
     // for each text/progress chunk turns a stream into constant history replay.
     if (method === 'thread/tokenUsage/updated' || method === 'thread/goal/updated'
-      || method === 'thread/goal/cleared') return
+      || method === 'thread/goal/cleared' || method === 'thread/backgroundTasks/updated') return
     const threadId = extractThreadIdFromNotification(notification)
     const turnBoundary = method === 'turn/started' || method === 'turn/completed'
     const refreshThreads = method.startsWith('thread/') || turnBoundary
@@ -5233,6 +5251,20 @@ export function useDesktopState() {
     return queuedMessagesByThreadId.value[threadId] ?? []
   })
 
+  const selectedThreadBackgroundTasks = computed<UiBackgroundTask[]>(
+    () => backgroundTasksByThreadId.value[selectedThreadId.value] ?? [],
+  )
+
+  async function stopThreadBackgroundTask(taskId: string): Promise<void> {
+    const threadId = selectedThreadId.value
+    if (!threadId) return
+    try {
+      await stopBackgroundTask(threadId, taskId)
+    } catch {
+      // The task finished first; the next update removes it.
+    }
+  }
+
   function removeQueuedMessage(messageId: string): void {
     const threadId = selectedThreadId.value
     if (!threadId) return
@@ -5325,6 +5357,8 @@ export function useDesktopState() {
     isRollingBack,
     selectedThreadQueuedMessages,
     removeQueuedMessage,
+    selectedThreadBackgroundTasks,
+    stopThreadBackgroundTask,
     steerQueuedMessage,
     setSelectedModelId,
     setSelectedReasoningEffort,

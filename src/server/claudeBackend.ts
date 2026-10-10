@@ -558,7 +558,22 @@ type SessionRunner = {
   interruptTimer: ReturnType<typeof setTimeout> | null
   totalUsage: ClaudeTokenUsage
   contextWindow: number
+  /** Live background work (shell commands, subagents) that outlives a turn. */
+  backgroundTasks: ClaudeBackgroundTask[]
   closed: boolean
+}
+
+export type ClaudeBackgroundTask = { id: string; type: string; description: string }
+
+/** The non-ambient tasks of a `background_tasks_changed` message. */
+function readBackgroundTasks(value: unknown): ClaudeBackgroundTask[] {
+  if (!Array.isArray(value)) return []
+  return value.flatMap((entry) => {
+    const task = asRecord(entry)
+    const id = readString(task?.task_id)
+    if (!task || !id || task.ambient === true) return []
+    return [{ id, type: readString(task.task_type), description: readString(task.description) }]
+  })
 }
 
 type UserContentBlock = Exclude<SDKUserMessage['message']['content'], string>[number]
@@ -1241,7 +1256,7 @@ export class ClaudeBackend {
   }
 
   private async isClaudeBusy(): Promise<boolean> {
-    if (this.login || [...this.runners.values()].some((runner) => Boolean(runner.activeTurn) || runner.pushedCommands.size > 0)) return true
+    if (this.login || [...this.runners.values()].some((runner) => Boolean(runner.activeTurn) || runner.pushedCommands.size > 0 || runner.backgroundTasks.length > 0)) return true
     const scan = await this.refreshClaudeSessionStates()
     return scan.uncertain || [...scan.states.values()].some(isClaudeSessionActive)
   }
@@ -1338,6 +1353,7 @@ export class ClaudeBackend {
       source: 'cli',
       gitInfo: null,
       status: { type: this.sessionIsActive(sessionId) ? 'active' : 'idle' },
+      backgroundTasks: this.runners.get(sessionId)?.backgroundTasks ?? [],
       turns,
     }
   }
@@ -1441,6 +1457,8 @@ export class ClaudeBackend {
         return this.startTurn(request)
       case 'turn/interrupt':
         return this.interrupt(threadId)
+      case 'thread/backgroundTask/stop':
+        return this.stopBackgroundTask(threadId, readString(request.taskId))
       case 'thread/name/set':
         return this.setName(threadId, readString(request.name))
       case 'thread/archive':
@@ -1831,6 +1849,7 @@ export class ClaudeBackend {
       interruptTimer: null,
       totalUsage: history?.totalUsage ?? emptyUsage(),
       contextWindow: stored.contextWindow ?? DEFAULT_CONTEXT_WINDOW,
+      backgroundTasks: [],
       closed: false,
     } as unknown as SessionRunner
 
@@ -2010,11 +2029,36 @@ export class ClaudeBackend {
     this.invalidateList()
     void this.recordGoalProgress(turn, status).catch(() => undefined)
     this.cancelRequests(turn.turnId)
-    if (!runner.closed) {
-      runner.idleTimer = setTimeout(() => this.closeRunner(runner.sessionId, runner), RUNNER_IDLE_MS)
-      runner.idleTimer.unref?.()
-    }
+    this.scheduleIdleClose(runner)
     void this.accounts.tick()
+  }
+
+  /** Closing the process would kill background work, so wait until none is left. */
+  private scheduleIdleClose(runner: SessionRunner): void {
+    if (runner.closed || runner.activeTurn || runner.idleTimer || runner.backgroundTasks.length > 0) return
+    runner.idleTimer = setTimeout(() => this.closeRunner(runner.sessionId, runner), RUNNER_IDLE_MS)
+    runner.idleTimer.unref?.()
+  }
+
+  private setBackgroundTasks(runner: SessionRunner, tasks: ClaudeBackgroundTask[]): void {
+    if (runner.backgroundTasks.length === 0 && tasks.length === 0) return
+    runner.backgroundTasks = tasks
+    this.emit('thread/backgroundTasks/updated', { threadId: runner.threadId, tasks })
+    if (tasks.length > 0) {
+      if (runner.idleTimer) clearTimeout(runner.idleTimer)
+      runner.idleTimer = null
+    } else {
+      this.scheduleIdleClose(runner)
+    }
+  }
+
+  private async stopBackgroundTask(threadId: string, taskId: string): Promise<Record<string, never>> {
+    const runner = this.runners.get(toSessionId(threadId))
+    if (!runner || runner.closed || !runner.backgroundTasks.some((task) => task.id === taskId)) {
+      throw new Error('This background task has already finished.')
+    }
+    await runner.query.stopTask(taskId)
+    return {}
   }
 
   private titleFor(sessionId: string): string {
@@ -2033,6 +2077,7 @@ export class ClaudeBackend {
     runner.idleTimer = null
     runner.closed = true
     this.runners.delete(sessionId)
+    this.setBackgroundTasks(runner, [])
     runner.input.release()
     if (runner.activeTurn) {
       runner.activeTurn.interrupted = true
@@ -2059,6 +2104,7 @@ export class ClaudeBackend {
       runner.closed = true
       if (this.runners.get(runner.sessionId) === runner) this.runners.delete(runner.sessionId)
       if (runner.idleTimer) clearTimeout(runner.idleTimer)
+      this.setBackgroundTasks(runner, [])
       const turn = runner.activeTurn
       if (turn) {
         this.finishTurn(runner, turn.interrupted ? 'interrupted' : 'failed', failure || 'Claude Code stopped unexpectedly.')
@@ -2177,6 +2223,10 @@ export class ClaudeBackend {
     }
 
     if (message.type === 'system') {
+      if (record.subtype === 'background_tasks_changed') {
+        this.setBackgroundTasks(runner, readBackgroundTasks(record.tasks))
+        return
+      }
       const turn = runner.activeTurn
       if (record.subtype === 'compact_boundary' && turn) {
         const item = { type: 'contextCompaction', id: readString(record.uuid) || randomUUID() }

@@ -1221,6 +1221,8 @@ export function useDesktopState() {
   const availableModelIds = ref<string[]>([])
   const availableModels = ref<AvailableModel[]>([])
   const defaultModelId = ref(FALLBACK_DEFAULT_MODEL_ID)
+  /** Codex's own default, kept for Codex chats when the app default is a Claude model. */
+  const codexDefaultModelId = ref(FALLBACK_DEFAULT_MODEL_ID)
   const defaultReasoningEffort = ref<ReasoningEffort | ''>(DEFAULT_REASONING_EFFORT)
   const fastServiceTierByModel = ref<FastServiceTierByModel>({})
   const fastModeEnabled = ref(false)
@@ -1426,13 +1428,22 @@ export function useDesktopState() {
     shouldAutoScrollOnNextAgentEvent = false
   }
 
-  function getDefaultModelConfig(): ThreadModelConfig {
-    const model = defaultModelId.value && (
-      availableModelIds.value.length === 0 ||
-      availableModelIds.value.includes(defaultModelId.value)
-    )
+  /**
+   * The default for a chat. A chat keeps its provider, so inside a Codex chat a
+   * Claude default falls back to the Codex default, and the other way round.
+   * An empty `threadId` means a new chat, which may use either provider.
+   */
+  function getDefaultModelConfig(threadId = selectedThreadId.value): ThreadModelConfig {
+    const provider = threadId ? providerForThreadId(threadId) : null
+    const candidates = provider
+      ? availableModelIds.value.filter((id) => providerForModelId(id, availableModels.value) === provider)
+      : availableModelIds.value
+    const preferred = !provider || providerForModelId(defaultModelId.value, availableModels.value) === provider
       ? defaultModelId.value
-      : pickDefaultModelId(availableModelIds.value)
+      : provider === 'openai' ? codexDefaultModelId.value : ''
+    const model = preferred && (candidates.length === 0 || candidates.includes(preferred))
+      ? preferred
+      : pickDefaultModelId(candidates)
     return { model, reasoningEffort: reasoningEffortForModel(model, defaultReasoningEffort.value) }
   }
 
@@ -1445,7 +1456,7 @@ export function useDesktopState() {
   }
 
   function getNewThreadModelConfig(): ThreadModelConfig {
-    const fallback = getDefaultModelConfig()
+    const fallback = getDefaultModelConfig('')
     const configuredModel = newThreadModelConfig.value.model.trim()
     const model = configuredModel && (
       availableModelIds.value.length === 0 ||
@@ -1479,12 +1490,16 @@ export function useDesktopState() {
   function applyThreadModelConfig(threadId: string, config: ThreadModelConfig, applyToPicker: boolean): void {
     const model = config.model.trim()
     const reasoningEffort = normalizeReasoningEffortPreference(config.reasoningEffort)
-    if (!model && !reasoningEffort) return
+    if (!model && !reasoningEffort) {
+      // Nothing saved: never leave the previous screen's model (maybe another provider's) in the picker.
+      if (applyToPicker) setPickerModelConfig(threadModelConfigById.value[threadId] ?? getDefaultModelConfig(threadId))
+      return
+    }
 
     const previousConfig = threadModelConfigById.value[threadId]
     const nextConfig = {
-      model: model || previousConfig?.model || getDefaultModelConfig().model,
-      reasoningEffort: reasoningEffort || previousConfig?.reasoningEffort || getDefaultModelConfig().reasoningEffort,
+      model: model || previousConfig?.model || getDefaultModelConfig(threadId).model,
+      reasoningEffort: reasoningEffort || previousConfig?.reasoningEffort || getDefaultModelConfig(threadId).reasoningEffort,
     }
     const hasChanged =
       previousConfig?.model !== nextConfig.model ||
@@ -1507,7 +1522,7 @@ export function useDesktopState() {
         reasoningEffort: selectedReasoningEffort.value,
       }
     }
-    return threadModelConfigById.value[threadId] ?? getDefaultModelConfig()
+    return threadModelConfigById.value[threadId] ?? getDefaultModelConfig(threadId)
   }
 
   function getRequestedServiceTier(modelId: string): string | null {
@@ -1564,8 +1579,8 @@ export function useDesktopState() {
     }
     newThreadPreferenceVersion += 1
     newThreadModelConfig.value = {
-      model: selectedModelId.value.trim() || getDefaultModelConfig().model,
-      reasoningEffort: effort || getDefaultModelConfig().reasoningEffort,
+      model: selectedModelId.value.trim() || getDefaultModelConfig('').model,
+      reasoningEffort: effort || getDefaultModelConfig('').reasoningEffort,
     }
     saveNewThreadModelConfig(newThreadModelConfig.value)
   }
@@ -1636,29 +1651,34 @@ export function useDesktopState() {
         fastModeError.value = ''
       }
 
+      const configuredDefaultModelId = modelIds.includes(runtimeConfig.defaultModel) ? runtimeConfig.defaultModel : ''
+      codexDefaultModelId.value = modelIds.length === 0
+        ? FALLBACK_DEFAULT_MODEL_ID
+        : pickDefaultModelId(modelIds.filter((id) => providerForModelId(id, modelCatalog.models) === 'openai'), modelCatalog.defaultModelId)
       defaultModelId.value = modelIds.length === 0
         ? FALLBACK_DEFAULT_MODEL_ID
-        : pickDefaultModelId(modelIds, modelCatalog.defaultModelId)
+        : configuredDefaultModelId || pickDefaultModelId(modelIds, modelCatalog.defaultModelId)
 
       const configuredDefaultReasoningEffort =
         runtimeConfig.defaultReasoningEffort || DEFAULT_REASONING_EFFORT
       defaultReasoningEffort.value = configuredDefaultReasoningEffort
 
+      // Codex's config only holds Codex models; a Claude app default stays a CodexUI preference.
       if (
-        defaultModelId.value &&
-        (currentConfig.model !== defaultModelId.value || currentConfig.reasoningEffort !== configuredDefaultReasoningEffort)
+        codexDefaultModelId.value &&
+        (currentConfig.model !== codexDefaultModelId.value || currentConfig.reasoningEffort !== configuredDefaultReasoningEffort)
       ) {
         try {
-          await setDefaultModel(defaultModelId.value, configuredDefaultReasoningEffort)
+          await setDefaultModel(codexDefaultModelId.value, configuredDefaultReasoningEffort)
         } catch {
           // Frontend defaults still apply when app-server config persistence is unavailable.
         }
       }
 
-      if (runtimeConfig.defaultReasoningEffort && newThreadPreferenceVersion === initialPreferenceVersion) {
+      if ((runtimeConfig.defaultReasoningEffort || configuredDefaultModelId) && newThreadPreferenceVersion === initialPreferenceVersion) {
         newThreadModelConfig.value = {
           model: defaultModelId.value,
-          reasoningEffort: runtimeConfig.defaultReasoningEffort,
+          reasoningEffort: reasoningEffortForModel(defaultModelId.value, configuredDefaultReasoningEffort),
         }
         saveNewThreadModelConfig(newThreadModelConfig.value)
       }

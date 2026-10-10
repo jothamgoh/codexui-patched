@@ -462,3 +462,27 @@ test('background work shows the live dots after the reply ends, and only while i
   assert.deepEqual(f.state.selectedThreadBackgroundTasks.value, [])
   assert.equal(sidebarRow().hasBackgroundTasks, false)
 })
+
+test('a Claude app default starts new chats on Claude, keeps Codex config and Codex chats on Codex', async (t) => {
+  const configWrites = []
+  const models = [
+    { id: 'gpt-codex', label: 'GPT', description: '', provider: 'openai', reasoningEfforts: ['low', 'medium', 'high', 'xhigh'], defaultReasoningEffort: 'low' },
+    { id: 'claude-default', label: 'Claude · Default', description: '', provider: 'anthropic', reasoningEfforts: ['low', 'medium', 'high', 'xhigh', 'max'], defaultReasoningEffort: 'medium' },
+  ]
+  const f = fixture(t, {
+    getAvailableModelCatalog: async () => ({ ids: models.map((model) => model.id), models, defaultModelId: 'gpt-codex', fastServiceTierByModel: {} }),
+    getCurrentModelConfig: async () => ({ model: 'gpt-codex', reasoningEffort: 'xhigh', fastModeEnabled: false }),
+    getCodexUiRuntimeConfig: async () => ({ defaultModel: 'claude-default', defaultReasoningEffort: 'high' }),
+    setDefaultModel: async (model, effort) => { configWrites.push([model, effort]) },
+    resumeThread: async () => ({ model: '', reasoningEffort: '' }),
+  })
+  await f.state.refreshAll({ loadSelectedThread: false })
+  await flush()
+  assert.equal(f.state.selectedModelId.value, 'claude-default', 'a new chat starts on Claude default')
+  assert.equal(f.state.selectedReasoningEffort.value, 'high')
+  assert.deepEqual(configWrites, [['gpt-codex', 'high']], 'Codex config only ever receives a Codex model')
+  const first = await f.read()
+  first.response.resolve(page([message('Codex reply', { phase: 'final_answer' })], false))
+  await first.pending
+  assert.equal(f.state.selectedModelId.value, 'gpt-codex', 'an existing Codex chat without a saved model stays on Codex')
+})

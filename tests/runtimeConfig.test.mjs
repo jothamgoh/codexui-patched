@@ -20,13 +20,20 @@ const { readCodexUiRuntimeConfig } = await loadTypeScriptModule(runtimeConfigSou
 test('accepts a supported default reasoning effort', () => {
   assert.deepEqual(
     readCodexUiRuntimeConfig({ CODEXUI_DEFAULT_REASONING_EFFORT: ' High ' }),
-    { defaultReasoningEffort: 'high' },
+    { defaultReasoningEffort: 'high', defaultModel: '' },
   )
 })
 
 test('ignores an unsupported default reasoning effort', () => {
   assert.deepEqual(
     readCodexUiRuntimeConfig({ CODEXUI_DEFAULT_REASONING_EFFORT: 'extreme' }),
-    { defaultReasoningEffort: '' },
+    { defaultReasoningEffort: '', defaultModel: '' },
+  )
+})
+
+test('passes through the configured default model for new chats', () => {
+  assert.deepEqual(
+    readCodexUiRuntimeConfig({ CODEXUI_DEFAULT_MODEL: ' claude-default ', CODEXUI_DEFAULT_REASONING_EFFORT: 'high' }),
+    { defaultReasoningEffort: 'high', defaultModel: 'claude-default' },
   )
 })

@@ -11,6 +11,8 @@ const REASONING_EFFORTS = new Set([
 
 export type CodexUiRuntimeConfig = {
   defaultReasoningEffort: string
+  /** Model id for new chats, e.g. `claude-default`. Empty keeps the Codex default. */
+  defaultModel: string
 }
 
 export function readCodexUiRuntimeConfig(
@@ -19,5 +21,6 @@ export function readCodexUiRuntimeConfig(
   const requestedEffort = env.CODEXUI_DEFAULT_REASONING_EFFORT?.trim().toLowerCase() ?? ''
   return {
     defaultReasoningEffort: REASONING_EFFORTS.has(requestedEffort) ? requestedEffort : '',
+    defaultModel: env.CODEXUI_DEFAULT_MODEL?.trim() ?? '',
   }
 }

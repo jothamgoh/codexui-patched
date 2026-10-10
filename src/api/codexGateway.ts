@@ -66,6 +66,7 @@ type CurrentModelConfig = {
 
 export type CodexUiRuntimeConfig = {
   defaultReasoningEffort: ReasoningEffort | ''
+  defaultModel: string
 }
 
 export type ThreadModelConfig = {
@@ -1272,14 +1273,15 @@ export async function getCurrentModelConfig(): Promise<CurrentModelConfig> {
 export async function getCodexUiRuntimeConfig(): Promise<CodexUiRuntimeConfig> {
   try {
     const response = await fetch('/codex-api/runtime-config')
-    if (!response.ok) return { defaultReasoningEffort: '' }
+    if (!response.ok) return { defaultReasoningEffort: '', defaultModel: '' }
     const payload = asRecord(await response.json())
     const data = asRecord(payload?.data)
     return {
       defaultReasoningEffort: normalizeReasoningEffort(data?.defaultReasoningEffort),
+      defaultModel: readString(data?.defaultModel),
     }
   } catch {
-    return { defaultReasoningEffort: '' }
+    return { defaultReasoningEffort: '', defaultModel: '' }
   }
 }
 

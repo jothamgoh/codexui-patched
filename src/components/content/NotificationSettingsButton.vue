@@ -639,7 +639,10 @@ const boardWorkActivity = computed(() => (props.boardActivity ?? []).filter((ite
   (item.threadId || item.status === 'running') && !waitingThreadIds.value.has(item.threadId) &&
   !props.boardAttention.some((question) => question.boardId === item.boardId && question.featureId === item.featureId),
 ).sort((left, right) => Number(right.status === 'running') - Number(left.status === 'running') || Date.parse(right.updatedAtIso) - Date.parse(left.updatedAtIso)))
-const runningThreads = computed(() => activityThreads.value.filter((thread) => (thread.inProgress || hasWorkingHelpers(thread.id)) && !waitingThreadIds.value.has(thread.id)))
+/** A reply in progress, or Claude background work that outlived its reply. */
+const isThreadRunning = (thread: UiThread) => thread.inProgress || thread.hasBackgroundTasks === true
+const runningThreadIds = computed(() => new Set(props.threads.filter(isThreadRunning).map((thread) => thread.id)))
+const runningThreads = computed(() => activityThreads.value.filter((thread) => (isThreadRunning(thread) || hasWorkingHelpers(thread.id)) && !waitingThreadIds.value.has(thread.id)))
 const runningActivity = computed<RunningActivityItem[]>(() => [
   ...(props.boardActivity ?? []).filter((item) => (item.status === 'running' || hasWorkingHelpers(item.threadId)) && !waitingThreadIds.value.has(item.threadId)).map((item) => ({
     id: `board:${item.boardId}:${item.featureId}`,
@@ -656,7 +659,7 @@ const runningActivity = computed<RunningActivityItem[]>(() => [
   })),
 ].sort((left, right) => Date.parse(right.updatedAtIso) - Date.parse(left.updatedAtIso)))
 const unreadThreads = computed(() =>
-  activityThreads.value.filter((thread) => isThreadUnread(thread) && !thread.inProgress && !hasWorkingHelpers(thread.id) && !waitingThreadIds.value.has(thread.id)),
+  activityThreads.value.filter((thread) => isThreadUnread(thread) && !isThreadRunning(thread) && !hasWorkingHelpers(thread.id) && !waitingThreadIds.value.has(thread.id)),
 )
 const visibleHistory = computed(() => history.value.filter((item) =>
   !threadHelpers.value.childIds.has(item.threadId) &&
@@ -719,7 +722,7 @@ const unreadActivity = computed<RecentActivityItem[]>(() => {
   const candidates: RecentActivityItem[] = []
   for (const item of visibleHistory.value) {
     if (item.readAt !== null) continue
-    if (waitingThreadIds.value.has(item.threadId)) continue
+    if (waitingThreadIds.value.has(item.threadId) || runningThreadIds.value.has(item.threadId)) continue
     if (dismissedActivityByThreadId.value[item.threadId] === item.completedAt) continue
     const thread = props.threads.find((candidate) => candidate.id === item.threadId)
     candidates.push({
@@ -735,7 +738,7 @@ const unreadActivity = computed<RecentActivityItem[]>(() => {
     })
   }
   for (const thread of activityThreads.value) {
-    if (!isThreadUnread(thread) || thread.inProgress || hasWorkingHelpers(thread.id) || waitingThreadIds.value.has(thread.id)) continue
+    if (!isThreadUnread(thread) || isThreadRunning(thread) || hasWorkingHelpers(thread.id) || waitingThreadIds.value.has(thread.id)) continue
     candidates.push({
       id: `thread:${thread.id}`,
       threadId: thread.id,
@@ -851,7 +854,7 @@ const telegramStatusLabel = computed(() => {
 
 const threadActivitySignature = computed(() =>
   props.threads
-    .map((thread) => `${thread.id}:${thread.inProgress ? '1' : '0'}:${thread.unread ? '1' : '0'}`)
+    .map((thread) => `${thread.id}:${isThreadRunning(thread) ? '1' : '0'}:${thread.unread ? '1' : '0'}`)
     .join('|'),
 )
 
@@ -924,7 +927,7 @@ async function markAllActivityRead(): Promise<void> {
   if (markAllReadBusy.value || unreadAttentionCount.value === 0) return
 
   const threadsToMark = props.threads.filter((thread) =>
-    !thread.inProgress && (
+    !isThreadRunning(thread) && (
       isThreadUnread(thread) ||
       history.value.some((item) => item.threadId === thread.id && item.readAt === null)
     ),

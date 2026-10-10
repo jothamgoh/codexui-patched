@@ -25,8 +25,9 @@ Requires Node.js >= 18 and `codex` CLI installed and in PATH.
 Keep machine-specific paths, service labels, ports, domains, and restart commands outside
 the repository. If `~/.config/codexui/AGENTS.local.md` exists, read it before local deployment
 work. Use `deployment/macos/com.codexui.user.plist.example` as the public-safe service template
-and `deployment/macos/restart-codexui.command.example` as the public-safe one-shot restart
-template.
+and `deployment/macos/restart-codexui.command.example` and
+`deployment/macos/restart-codexui-detached.sh.example` as the public-safe one-shot restart
+templates.
 
 The compiled service runs from `dist/` and `dist-cli/`, so always run `npm run build` before
 deploying a source change. To prove a user-visible change works, use the project `verify` skill
@@ -36,11 +37,23 @@ fine to run.
 
 Never wrap a service restart or health check in `launchctl submit`, a `KeepAlive` helper,
 a scheduler, or a retry loop. Launchd can reschedule a short-lived submitted job, turning a
-one-shot `kickstart -k` into a forced restart loop. Never invoke `kickstart -k` directly from a
-CodexUI session hosted by that same service. When the user explicitly authorizes the disconnect
-and the local deployment instructions provide a separate-Terminal handoff, launch exactly one
-restart through that independent Terminal process. Otherwise, leave the restart for the user.
-Verify health after reconnecting.
+one-shot `kickstart -k` into a forced restart loop. Never run `kickstart -k` in the foreground of a
+CodexUI session hosted by that same service: it kills the turn before the command returns.
+
+When the user asks for a restart, use whichever one-shot handoff the local deployment
+instructions provide, and launch it exactly once:
+
+- **Detached restart (Claude chats).** A Claude chat runs under the separate Claude host agent,
+  not under the CodexUI service, so a detached process it starts survives the restart. Run the
+  local copy of `deployment/macos/restart-codexui-detached.sh.example`. It returns at once,
+  waits a short delay so the reply can finish, performs one `kickstart -k` and one health check,
+  and refuses a second request within three minutes. Finish the release workflow first, start
+  it as the last action of the turn, and tell the user to refresh after about a minute.
+- **Separate Terminal.** From a Codex chat, or when no detached script exists, open the local
+  one-shot `.command` file in Terminal.
+
+If neither handoff is available, leave the restart for the user. Verify health after
+reconnecting.
 
 ## Release and production workflow
 

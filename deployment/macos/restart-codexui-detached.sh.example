@@ -1,0 +1,36 @@
+#!/bin/zsh
+# One-shot CodexUI restart that a Claude chat inside CodexUI may start itself.
+# Claude chats run under the claude-host LaunchAgent, not the CodexUI daemon, so this
+# detached process survives the restart it triggers. Exactly one kickstart, no retries.
+set -eu
+
+# Copy this file outside the repository, then replace the service label placeholder.
+
+label="com.codexui.USER"
+health="http://127.0.0.1:5999/codex-api/meta/methods"
+log="$HOME/Library/Logs/codexui-restart.log"
+stamp="$HOME/.config/codexui/.last-restart"
+delay="${1:-20}"
+
+if [[ "$label" == *USER* ]]; then
+  echo "Replace the label placeholder before running this script."
+  exit 64
+fi
+
+now=$(/bin/date +%s)
+last=$(/bin/cat "$stamp" 2>/dev/null || echo 0)
+if (( now - last < 180 )); then
+  echo "Refused: a restart was already requested $(( now - last ))s ago."
+  exit 75
+fi
+echo "$now" > "$stamp"
+
+/usr/bin/nohup /usr/bin/perl -MPOSIX -e 'POSIX::setsid() or die "setsid: $!"; exec @ARGV' \
+  /bin/zsh -c "/bin/sleep $delay
+echo \"\$(/bin/date) restarting $label\"
+/usr/bin/sudo -n /bin/launchctl kickstart -k system/$label
+/bin/sleep 8
+if /usr/bin/curl --fail --silent --output /dev/null $health; then echo \"\$(/bin/date) CodexUI is back\"; else echo \"\$(/bin/date) health check FAILED\"; fi" \
+  >>"$log" 2>&1 </dev/null &!
+
+echo "CodexUI restarts in ${delay}s. Log: $log"

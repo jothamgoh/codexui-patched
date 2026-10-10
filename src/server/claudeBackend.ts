@@ -1799,21 +1799,22 @@ export class ClaudeBackend {
       isClaudeModelId(request.model) ? request.model : existing?.model,
       toEffort(request.effort) ?? existing?.effort,
     )
+    const cwd = readString(request.cwd) || existing?.cwd || homedir()
+    let runner = this.runners.get(sessionId)
+    // Check before saving anything: a refused send must not add another app's
+    // session to the chats CodexUI lists as its own.
+    await this.refreshClaudeSessionStates()
+    const external = await this.externalActivity(sessionId, cwd)
+    if ((isClaudeSessionActive(this.claudeSessionStates.get(sessionId)) || external.recent) && !runner) {
+      throw new Error('This Claude session is active in another app, such as a terminal or Remote Control. Continue it there, or send again once it is idle.')
+    }
     const stored = await this.store.update(sessionId, {
       model: requested.model,
       effort: requested.effort,
       ...(readString(request.cwd) ? { cwd: readString(request.cwd) } : {}),
       ...(existing ? {} : { createdAtMs: Date.now() }),
     })
-    const cwd = stored.cwd || homedir()
     const settingsKey = `${stored.model}|${stored.effort ?? ''}|${cwd}`
-
-    let runner = this.runners.get(sessionId)
-    await this.refreshClaudeSessionStates()
-    const external = await this.externalActivity(sessionId, cwd)
-    if ((isClaudeSessionActive(this.claudeSessionStates.get(sessionId)) || external.recent) && !runner) {
-      throw new Error('This Claude session is active in another app, such as a terminal or Remote Control. Continue it there, or send again once it is idle.')
-    }
     // A chat continued elsewhere since this process last ran must reload its history.
     if (runner && (runner.closed || runner.settingsKey !== settingsKey || external.since)) {
       this.closeRunner(sessionId)

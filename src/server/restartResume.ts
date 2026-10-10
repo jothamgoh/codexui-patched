@@ -26,7 +26,11 @@ function readThreadId(params: unknown): string {
   return typeof value === 'string' ? value : ''
 }
 
-/** Which chats have a reply or background work in progress, from lifecycle notifications. */
+/**
+ * Which chats this server has a reply or background work running for. Only turn
+ * and background-task events count: `thread/status/changed` also reports Claude
+ * sessions running in other apps, which a restart does not stop.
+ */
 export class ActiveTurnTracker {
   private readonly active = new Set<string>()
   private readonly background = new Set<string>()
@@ -42,10 +46,6 @@ export class ActiveTurnTracker {
       this.active.add(threadId)
     } else if (notification.method === 'turn/completed') {
       this.active.delete(threadId)
-    } else if (notification.method === 'thread/status/changed') {
-      const status = asRecord(asRecord(notification.params)?.status)?.type
-      if (status === 'active') this.active.add(threadId)
-      else this.active.delete(threadId)
     }
   }
 

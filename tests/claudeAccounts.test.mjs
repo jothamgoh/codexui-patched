@@ -515,3 +515,21 @@ test('a chat the previous server was running can be continued at once, unlike on
   await backend.store.writeChain
   backend.runners.clear(); backend.dispose(); f.manager.dispose()
 })
+
+test('a refused send to a Claude session running in another app does not list it as a CodexUI chat', async () => {
+  const f = await fixture()
+  const backend = new ClaudeBackend(join(f.scratch, 'threads.json'), { accountSwitcherPath: '/fixture/cswap', claudeConfigDir: join(f.scratch, 'claude') })
+  backend.runAccountCommand = f.run
+  backend.readRuntime = async () => ({ connected: true, account: {}, models: [] })
+  const session = 'pipeline-job-in-terminal'
+  backend.refreshClaudeSessionStates = async () => {
+    backend.claudeSessionStates = new Map([[session, 'busy']])
+    return { uncertain: false, states: backend.claudeSessionStates }
+  }
+  await assert.rejects(
+    backend.rpc('turn/start', { threadId: `claude-${session}`, input: [{ type: 'text', text: 'continue' }] }),
+    /active in another app/u,
+  )
+  assert.equal(await backend.store.get(session), undefined)
+  backend.runners.clear(); backend.dispose(); f.manager.dispose()
+})

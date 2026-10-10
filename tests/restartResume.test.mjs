@@ -13,13 +13,12 @@ const outfile = join(directory, 'restartResume.mjs')
 await build({ entryPoints: [new URL('../src/server/restartResume.ts', import.meta.url).pathname], outfile, bundle: true, platform: 'node', format: 'esm', logLevel: 'silent' })
 const { ActiveTurnTracker, RESTART_CONTINUE_TEXT, continueInterruptedTurns, recordInterruptedTurns, takeInterruptedTurns } = await import(pathToFileURL(outfile).href)
 
-test('tracks chats with a reply in progress from both backends', () => {
+test('tracks replies this server runs, not Claude sessions active in other apps', () => {
   const tracker = new ActiveTurnTracker()
   tracker.observe({ method: 'turn/started', params: { threadId: 'codex-1', turn: { id: 't1' } } })
   tracker.observe({ method: 'turn/started', params: { threadId: 'claude-a', turn: { id: 't2' } } })
-  tracker.observe({ method: 'thread/status/changed', params: { threadId: 'claude-b', status: { type: 'active' } } })
+  tracker.observe({ method: 'thread/status/changed', params: { threadId: 'claude-terminal', status: { type: 'active' } } })
   tracker.observe({ method: 'turn/completed', params: { threadId: 'codex-1', turn: { id: 't1' } } })
-  tracker.observe({ method: 'thread/status/changed', params: { threadId: 'claude-b', status: { type: 'idle' } } })
   tracker.observe({ method: 'item/agentMessage/delta', params: { threadId: 'other' } })
   assert.deepEqual(tracker.threadIds(), ['claude-a'])
 })

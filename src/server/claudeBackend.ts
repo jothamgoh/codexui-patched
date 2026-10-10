@@ -2533,6 +2533,17 @@ export class ClaudeBackend {
     }
   }
 
+  /**
+   * Chats whose Claude process is doing work a restart would stop: a reply, a
+   * queued message, background tasks, or a session Claude Code itself reports as
+   * busy. Restart recovery records these at shutdown alongside the turn events.
+   */
+  activeThreadIds(): string[] {
+    return [...this.runners.values()]
+      .filter((runner) => !runner.closed && (runnerIsBusy(runner) || isClaudeSessionActive(this.claudeSessionStates.get(runner.sessionId))))
+      .map((runner) => runner.threadId)
+  }
+
   listPendingServerRequests(): ClaudePendingServerRequest[] {
     return [...this.questions.values(), ...this.permissions.values()].map((request) => request.pending)
   }

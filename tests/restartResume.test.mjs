@@ -33,6 +33,17 @@ test('a chat whose reply ended while background tasks run is still interrupted b
   assert.deepEqual(tracker.threadIds(), [])
 })
 
+test('a completion for another turn does not hide a reply that is still running', () => {
+  const tracker = new ActiveTurnTracker()
+  tracker.observe({ method: 'turn/started', params: { threadId: 'claude-a', turn: { id: 'old' } } })
+  tracker.observe({ method: 'turn/started', params: { threadId: 'claude-a', turn: { id: 'current' } } })
+  tracker.observe({ method: 'turn/completed', params: { threadId: 'claude-a', turn: { id: 'old' } } })
+  tracker.observe({ method: 'turn/completed', params: { threadId: 'claude-a', turn: { id: 'background-agent' } } })
+  assert.deepEqual(tracker.threadIds(), ['claude-a'])
+  tracker.observe({ method: 'turn/completed', params: { threadId: 'claude-a', turn: { id: 'current' } } })
+  assert.deepEqual(tracker.threadIds(), [])
+})
+
 test('the chat that asked for the restart is continued even though its reply has finished', () => {
   const tracker = new ActiveTurnTracker()
   tracker.observe({ method: 'turn/started', params: { threadId: 'claude-caller', turn: { id: 't1' } } })

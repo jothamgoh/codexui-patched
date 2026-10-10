@@ -2888,7 +2888,11 @@ export function createCodexBridgeMiddleware(): CodexBridgeMiddleware {
 
   middleware.dispose = () => {
     try {
-      recordInterruptedTurns(join(getCodexHomeDir(), INTERRUPTED_TURNS_FILE), shared.activeTurns.threadIds())
+      // Turn events can miss work (a stray completion, a background agent), so
+      // also ask the Claude backend which of its chats are still busy.
+      recordInterruptedTurns(join(getCodexHomeDir(), INTERRUPTED_TURNS_FILE), [
+        ...new Set([...shared.activeTurns.threadIds(), ...shared.claude.activeThreadIds()]),
+      ])
     } catch (error) {
       console.warn('[restart-resume] Could not record interrupted chats:', getErrorMessage(error, 'unknown error'))
     }

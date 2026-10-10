@@ -535,6 +535,21 @@ test('Claude chats drive Chrome through the cua relay instead of Claude in Chrom
   }
 })
 
+test('restart recovery learns which chats are busy from the Claude backend itself', () => {
+  const backend = new ClaudeBackend(join(tmpdir(), `codexui-active-${Date.now()}.json`), { accountSwitcherPath: null })
+  const runner = (session, extra = {}) => ({ sessionId: session, threadId: `claude-${session}`, closed: false, activeTurn: null, pushedCommands: new Map(), backgroundTasks: [], ...extra })
+  for (const entry of [
+    runner('replying', { activeTurn: { turnId: 't' } }),
+    runner('background', { backgroundTasks: [{ id: 'b' }] }),
+    runner('reported-busy'),
+    runner('idle'),
+    runner('closed', { closed: true, activeTurn: { turnId: 't' } }),
+  ]) backend.runners.set(entry.sessionId, entry)
+  backend.claudeSessionStates = new Map([['reported-busy', 'busy'], ['idle', 'idle']])
+  assert.deepEqual(backend.activeThreadIds().sort(), ['claude-background', 'claude-replying', 'claude-reported-busy'])
+  backend.runners.clear(); backend.dispose()
+})
+
 async function withComputerUseRunner(env, run) {
   const directory = await mkdtemp(join(tmpdir(), 'codexui-claude-computer-use-'))
   const configPath = join(directory, 'computer-use.mcp.json')

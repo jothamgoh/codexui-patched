@@ -20,6 +20,12 @@ function asRecord(value: unknown): Record<string, unknown> | null {
   return value && typeof value === 'object' && !Array.isArray(value) ? value as Record<string, unknown> : null
 }
 
+function readTurnId(params: unknown): string {
+  const record = asRecord(params)
+  const value = asRecord(record?.turn)?.id ?? record?.turnId
+  return typeof value === 'string' ? value : ''
+}
+
 function readThreadId(params: unknown): string {
   const record = asRecord(params)
   const value = record?.threadId ?? asRecord(record?.thread)?.id
@@ -32,7 +38,8 @@ function readThreadId(params: unknown): string {
  * sessions running in other apps, which a restart does not stop.
  */
 export class ActiveTurnTracker {
-  private readonly active = new Set<string>()
+  /** Running turn ids per chat. A completion only ends its own turn, never a newer one. */
+  private readonly active = new Map<string, Set<string>>()
   private readonly background = new Set<string>()
   private readonly requested = new Set<string>()
 
@@ -49,14 +56,20 @@ export class ActiveTurnTracker {
       if (Array.isArray(tasks) && tasks.length > 0) this.background.add(threadId)
       else this.background.delete(threadId)
     } else if (notification.method === 'turn/started') {
-      this.active.add(threadId)
+      const turns = this.active.get(threadId) ?? new Set<string>()
+      turns.add(readTurnId(notification.params))
+      this.active.set(threadId, turns)
     } else if (notification.method === 'turn/completed') {
-      this.active.delete(threadId)
+      const turnId = readTurnId(notification.params)
+      const turns = this.active.get(threadId)
+      if (turnId) turns?.delete(turnId)
+      else turns?.clear()
+      if (!turns?.size) this.active.delete(threadId)
     }
   }
 
   threadIds(): string[] {
-    return [...new Set([...this.active, ...this.background, ...this.requested])]
+    return [...new Set([...this.active.keys(), ...this.background, ...this.requested])]
   }
 }
 

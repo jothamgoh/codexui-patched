@@ -21,7 +21,7 @@
           >
             <template #left>
               <span class="thread-left-stack">
-                <span v-if="thread.inProgress || thread.unread" class="thread-status-indicator" :data-state="getThreadState(thread)" />
+                <span v-if="thread.inProgress || thread.hasBackgroundTasks || thread.unread" class="thread-status-indicator" :data-state="getThreadState(thread)" />
                 <button class="thread-pin-button" type="button" title="pin" @click="togglePin(thread.id)">
                   <IconTablerPin class="thread-icon" />
                 </button>
@@ -160,7 +160,7 @@
           <template #left>
             <span class="thread-left-stack">
               <span
-                v-if="thread.inProgress || thread.unread"
+                v-if="thread.inProgress || thread.hasBackgroundTasks || thread.unread"
                 class="thread-status-indicator"
                 :data-state="getThreadState(thread)"
               />
@@ -329,7 +329,7 @@
                 <template #left>
                   <span class="thread-left-stack">
                     <span
-                      v-if="thread.inProgress || thread.unread"
+                      v-if="thread.inProgress || thread.hasBackgroundTasks || thread.unread"
                       class="thread-status-indicator"
                       :data-state="getThreadState(thread)"
                     />
@@ -634,7 +634,7 @@ function threadMatchesSearch(thread: UiThread): boolean {
 }
 
 function threadMatchesStatus(thread: UiThread): boolean {
-  if (threadStatusFilter.value === 'running') return thread.inProgress
+  if (threadStatusFilter.value === 'running') return isThreadRunning(thread)
   if (threadStatusFilter.value === 'unread') {
     return thread.unread || retainedUnreadThreadIds.value.includes(thread.id)
   }
@@ -702,7 +702,7 @@ const threadStatusFilterOptions = computed<Array<{ value: ThreadStatusFilter; la
   const threads = [...threadById.value.values()]
   return [
     { value: 'all', label: 'All', count: threads.length },
-    { value: 'running', label: 'Running', count: threads.filter((thread) => thread.inProgress).length },
+    { value: 'running', label: 'Running', count: threads.filter(isThreadRunning).length },
     { value: 'unread', label: 'Unread', count: threads.filter((thread) => thread.unread).length },
   ]
 })
@@ -827,7 +827,7 @@ function getThreadTitleTooltip(thread: UiThread): string {
 function getThreadStatusLabel(thread: UiThread): string {
   const status = props.boardThreads?.[thread.id]?.status
   if (status === 'needs_input') return 'Needs you'
-  if (thread.inProgress) return 'Running'
+  if (isThreadRunning(thread)) return 'Running'
   if (status) return { backlog: 'Backlog', working: 'Paused', review: 'Review', blocked: 'Blocked', done: 'Done' }[status]
   if (thread.unread) return 'Unread'
   return ''
@@ -836,7 +836,7 @@ function getThreadStatusLabel(thread: UiThread): string {
 function getThreadStatusState(thread: UiThread): string {
   const status = props.boardThreads?.[thread.id]?.status
   if (status === 'needs_input') return status
-  return thread.inProgress ? 'working' : status === 'working' ? 'paused' : status || getThreadState(thread)
+  return isThreadRunning(thread) ? 'working' : status === 'working' ? 'paused' : status || getThreadState(thread)
 }
 
 function cacheVisiblePinnedThreads(): void {
@@ -1585,8 +1585,12 @@ function hasThreads(group: UiProjectGroup): boolean {
   return projectThreads(group).length > 0
 }
 
+function isThreadRunning(thread: UiThread): boolean {
+  return thread.inProgress || thread.hasBackgroundTasks === true
+}
+
 function getThreadState(thread: UiThread): 'working' | 'unread' | 'idle' {
-  if (thread.inProgress) return 'working'
+  if (isThreadRunning(thread)) return 'working'
   if (thread.unread) return 'unread'
   return 'idle'
 }

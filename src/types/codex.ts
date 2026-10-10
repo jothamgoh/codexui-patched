@@ -75,6 +75,8 @@ export type UiThread = UiThreadSource & {
   runtimeStatus?: 'active' | 'idle' | 'notLoaded' | 'systemError'
   unread: boolean
   inProgress: boolean
+  /** Claude work still running after the reply ended. Shown as running, never as an active turn. */
+  hasBackgroundTasks?: boolean
 }
 
 export type CommandExecutionData = {

@@ -1052,7 +1052,8 @@ function areThreadFieldsEqual(first: UiThread, second: UiThread): boolean {
     first.isInternalSubagent === second.isInternalSubagent &&
     first.parentThreadId === second.parentThreadId &&
     first.unread === second.unread &&
-    first.inProgress === second.inProgress
+    first.inProgress === second.inProgress &&
+    first.hasBackgroundTasks === second.hasBackgroundTasks
   )
 }
 
@@ -1704,11 +1705,11 @@ export function useDesktopState() {
     return true
   }
 
+  /** A known entry, even an empty one, overrides the thread list's snapshot. */
   function setBackgroundTasksForThread(threadId: string, tasks: UiBackgroundTask[]): void {
-    if (tasks.length === 0 && !(threadId in backgroundTasksByThreadId.value)) return
-    backgroundTasksByThreadId.value = tasks.length > 0
-      ? { ...backgroundTasksByThreadId.value, [threadId]: tasks }
-      : omitKey(backgroundTasksByThreadId.value, threadId)
+    if (tasks.length === 0 && backgroundTasksByThreadId.value[threadId]?.length === 0) return
+    backgroundTasksByThreadId.value = { ...backgroundTasksByThreadId.value, [threadId]: tasks }
+    applyThreadFlags()
   }
 
   function applyPageThreadSource(threadId: string, page: ThreadMessagePage): void {
@@ -1723,12 +1724,14 @@ export function useDesktopState() {
       threads: group.threads.map((thread) => {
         const source = threadSourceById.value[thread.id] ?? thread
         const inProgress = inProgressById.value[thread.id] === true
+        const knownTasks = backgroundTasksByThreadId.value[thread.id]
+        const hasBackgroundTasks = knownTasks ? knownTasks.length > 0 : thread.hasBackgroundTasks === true
         const isSelected = selectedThreadId.value === thread.id
         const lastReadIso = readStateByThreadId.value[thread.id]
         const hasReadState = typeof lastReadIso === 'string' && lastReadIso.length > 0
         const unreadByEvent = eventUnreadByThreadId.value[thread.id] === true
         const unread = !source.isInternalSubagent && !isSelected &&
-          !inProgress &&
+          !inProgress && !hasBackgroundTasks &&
           (unreadByEvent || (hasReadState && hasThreadActivityAfterRead(lastReadIso, thread.updatedAtIso)))
 
         return {
@@ -1736,6 +1739,7 @@ export function useDesktopState() {
           isInternalSubagent: source.isInternalSubagent,
           parentThreadId: source.parentThreadId,
           inProgress,
+          hasBackgroundTasks,
           unread,
         }
       }),

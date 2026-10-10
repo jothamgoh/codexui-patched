@@ -530,6 +530,7 @@ export function normalizeThreadV2(summary: Thread): UiThread {
     runtimeStatus,
     unread: false,
     inProgress: runtimeStatus === 'active',
+    hasBackgroundTasks: Array.isArray(rawSummary.backgroundTasks) && rawSummary.backgroundTasks.length > 0,
   }
 }
 

@@ -5,9 +5,8 @@
 #
 # 1. Waits until the calling Claude chat's reply has finished (CLAUDE_CODE_SESSION_ID),
 #    or a fixed delay outside a Claude chat (first argument, default 20 s).
-# 2. Waits up to 3 minutes for every other chat to finish its reply.
-# 3. Runs exactly one kickstart and one health check. No retries.
-# Chats still mid-reply are recorded at shutdown and continued by CodexUI after it starts.
+# 2. Runs exactly one kickstart and one health check. No retries.
+# Other chats still mid-reply are recorded at shutdown and continued by CodexUI after it starts.
 set -u
 
 # Copy this file outside the repository, then replace the service label placeholder.
@@ -25,11 +24,6 @@ if [[ "${1:-}" == "--run" ]]; then
       -d "{\"method\":\"thread/read\",\"params\":{\"threadId\":\"$thread\",\"includeTurns\":false}}" \
       "$base/codex-api/rpc" | /usr/bin/grep -q '"status":{"type":"active"}'
   }
-  others_busy() {
-    local out
-    out=$(/usr/bin/curl --silent --fail --max-time 5 "$base/codex-api/active-turns") || return 1
-    [[ "$out" == *'"data":['* && "$out" != *'"data":[]'* ]]
-  }
   if [[ -n "$thread" ]]; then
     waited=0
     while caller_busy; do
@@ -40,9 +34,6 @@ if [[ "${1:-}" == "--run" ]]; then
   else
     /bin/sleep "$delay"
   fi
-  waited=0
-  while others_busy && (( waited < 180 )); do /bin/sleep 2; (( waited += 2 )); done
-  if others_busy; then echo "$(/bin/date) other chats still replying; they will be continued after the restart"; fi
   echo "$(/bin/date) restarting $label"
   /usr/bin/sudo -n /bin/launchctl kickstart -k "system/$label"
   /bin/sleep 8
@@ -72,7 +63,7 @@ thread="${CLAUDE_CODE_SESSION_ID:+claude-$CLAUDE_CODE_SESSION_ID}"
   /bin/zsh "${0:A}" --run "$thread" "${1:-20}" >>"$log" 2>&1 </dev/null &!
 
 if [[ -n "$thread" ]]; then
-  echo "CodexUI restarts once this reply and other running chats finish (at most 3 extra minutes). Log: $log"
+  echo "CodexUI restarts as soon as this reply finishes. Log: $log"
 else
-  echo "CodexUI restarts in ${1:-20}s, after running chats finish (at most 3 extra minutes). Log: $log"
+  echo "CodexUI restarts in ${1:-20}s. Log: $log"
 fi

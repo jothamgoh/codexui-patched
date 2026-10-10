@@ -1797,11 +1797,6 @@ export function createCodexBridgeMiddleware(): CodexBridgeMiddleware {
 
       const url = new URL(req.url, 'http://localhost')
 
-      if (req.method === 'GET' && url.pathname === '/codex-api/active-turns') {
-        setJson(res, 200, { data: shared.activeTurns.threadIds() })
-        return
-      }
-
       if (req.method === 'GET' && url.pathname === '/codex-api/runtime-config') {
         setJson(res, 200, { data: readCodexUiRuntimeConfig() })
         return

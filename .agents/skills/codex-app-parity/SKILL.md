@@ -1408,3 +1408,10 @@ After each feature implementation session that uses this skill:
 - The integrated ChatGPT/Codex renderer `26.924.22138` has no multi-account Claude rotation or per-account eligibility control. Keep this CodexUI extension inside the existing Claude account manager rather than adding it to native model or account sign-in surfaces.
 - claude-swap's `disable` and `enable` commands retain the saved login and only change automatic eligibility. Use explicit **Disable auto** / **Enable auto** labels: disabled accounts remain valid deliberate manual-switch targets.
 - Changing rotation metadata does not replace credentials or require closing Claude processes. Serialize it with account operations, refresh the public account snapshot, and do not invalidate chats or runtime state.
+
+## Findings: Claude in Chrome for CodexUI sessions (2026-10-10)
+
+- The integrated ChatGPT/Codex renderer has no equivalent control for enabling Claude Code's Chrome integration. This remains a Claude-provider behavior in CodexUI.
+- The Claude Agent SDK accepts CLI flags through `Options.extraArgs`, using `null` for boolean flags. Pass `chrome: null` only when creating a conversational runner so background model, command, account, and usage probes do not attach to Chrome.
+- Claude Code's built-in whole-computer control is limited to interactive sessions. CodexUI's headless Agent SDK runners need a separate desktop-control implementation; the Chrome flag must not be presented as whole-computer access.
+- Codex's installed unified Computer Use plugin exposes its signed native bridge as a reusable `cua_repl` MCP server. Load only that server for Claude, restrict it to the computer surface so Chrome stays with Claude's native integration, and gate every control call with a blocking CodexUI approval.

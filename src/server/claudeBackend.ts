@@ -20,6 +20,7 @@ import type {
   SpawnOptions,
 } from '@anthropic-ai/claude-agent-sdk'
 import { getCodexUiChildEnv } from './envFile'
+import { loadClaudeComputerUseMcpConfig } from './claudeComputerUse'
 import { spawnThroughHost } from './claudeProcessHost'
 import { ClaudeAccountSwitcher, resolveCSwapExecutable, type CSwapResult } from './claudeAccountSwitcher'
 import {
@@ -639,6 +640,11 @@ type QuestionRequest = {
   resolve: (answers: Record<string, string> | null) => void
 }
 
+type PermissionRequest = {
+  pending: ClaudePendingServerRequest
+  resolve: (accepted: boolean) => void
+}
+
 // ── Backend ─────────────────────────────────────────────────────────────
 
 /** A CodexUI capability offered to Claude chats as an in-process MCP tool. */
@@ -682,6 +688,7 @@ export class ClaudeBackend {
   private readonly transcriptPaths = new Map<string, string>()
   private readonly transcriptCache = new Map<string, ParsedTranscript>()
   private readonly questions = new Map<number, QuestionRequest>()
+  private readonly permissions = new Map<number, PermissionRequest>()
   /** Best-known chat names, for notification titles. */
   private readonly sessionTitles = new Map<string, string>()
   private readonly humanSessions = new Map<string, { human: boolean; lastModified: number }>()
@@ -1744,7 +1751,8 @@ export class ClaudeBackend {
     cwd: string,
     settingsKey: string,
   ): Promise<SessionRunner> {
-    const { query } = await this.sdk()
+    const sdk = await this.sdk()
+    const computerUseMcp = await loadClaudeComputerUseMcpConfig()
     const runtime = await this.readRuntime().catch(() => null)
     const modelInfo = runtime?.models.find((model) => model.value === toModelValue(stored.model))
     const transcriptPath = await this.findTranscriptPath(sessionId, cwd)
@@ -1789,6 +1797,27 @@ export class ClaudeBackend {
       }
     }
 
+    const approveComputerUse: HookCallback = async (hookInput, toolUseId, { signal }) => {
+      const record = asRecord(hookInput)
+      const toolInput = asRecord(record?.tool_input) ?? {}
+      const accepted = await this.askComputerUsePermission(
+        runner,
+        toolUseId ?? '',
+        'Allow Claude to control this Mac?',
+        'Claude requested a Computer Use action. Review the current task before allowing it.',
+        signal,
+      )
+      return {
+        hookSpecificOutput: {
+          hookEventName: 'PreToolUse',
+          permissionDecision: accepted ? 'allow' : 'deny',
+          ...(accepted
+            ? { updatedInput: toolInput }
+            : { permissionDecisionReason: 'Computer Use was not approved.' }),
+        },
+      }
+    }
+
     const options: Options = {
       ...this.baseOptions(cwd),
       model: toModelValue(stored.model),
@@ -1797,25 +1826,46 @@ export class ClaudeBackend {
       ...(exists && stored.rewindAt ? { resumeSessionAt: stored.rewindAt } : {}),
       permissionMode: 'bypassPermissions',
       allowDangerouslySkipPermissions: true,
+      // Claude in Chrome is a Claude Code capability. Enable it only for
+      // conversational runners, not the short-lived metadata/usage queries.
+      extraArgs: { chrome: null },
       includePartialMessages: true,
       // Stream readable reasoning, as Codex does, where the model supports it.
       ...(modelInfo?.supportsAdaptiveThinking ? { thinking: { type: 'adaptive' as const, display: 'summarized' as const } } : {}),
-      hooks: { PreToolUse: [{ matcher: 'AskUserQuestion', hooks: [askQuestion] }] },
+      hooks: {
+        PreToolUse: [
+          { matcher: 'AskUserQuestion', hooks: [askQuestion] },
+          ...(computerUseMcp ? [{ matcher: 'mcp__cua_repl__js', hooks: [approveComputerUse] }] : []),
+        ],
+      },
+      ...(computerUseMcp ? {
+        onElicitation: async (request, { signal }) => {
+          if (request.serverName !== 'cua_repl' || request.mode === 'url') return { action: 'decline' as const }
+          const accepted = await this.askComputerUsePermission(
+            runner,
+            '',
+            request.title || 'Allow Claude to control this Mac?',
+            request.description || request.message || 'Computer Use needs your approval to continue.',
+            signal,
+          )
+          return { action: accepted ? 'accept' as const : 'decline' as const }
+        },
+      } : {}),
       // Headless Claude Code offers AskUserQuestion only when its host can
       // answer permission prompts. Bypass mode never prompts for other tools,
       // and the hook above answers the question before any prompt would.
       permissionPromptToolName: 'stdio',
     }
+    const mcpServers: NonNullable<Options['mcpServers']> = {}
+    if (computerUseMcp) mcpServers.cua_repl = computerUseMcp
     if (this.tools.length > 0) {
-      const { createSdkMcpServer, tool } = await this.sdk()
-      options.mcpServers = {
-        codexui: createSdkMcpServer({
+      mcpServers.codexui = sdk.createSdkMcpServer({
           name: 'codexui',
           version: '1.0.0',
-          tools: this.tools.map((hostTool) => tool(
+          tools: this.tools.map((hostTool) => sdk.tool(
             hostTool.name,
             hostTool.description,
-            hostTool.shape as Parameters<typeof tool>[2],
+            hostTool.shape as Parameters<typeof sdk.tool>[2],
             async (args) => {
               try {
                 const text = await hostTool.handler(
@@ -1828,10 +1878,10 @@ export class ClaudeBackend {
               }
             },
           )),
-        }),
-      }
+        })
     }
-    runner.query = query({ prompt: input.stream, options })
+    if (Object.keys(mcpServers).length > 0) options.mcpServers = mcpServers
+    runner.query = sdk.query({ prompt: input.stream, options })
     this.runners.set(sessionId, runner)
     void this.consumeRunner(runner)
     return runner
@@ -1900,7 +1950,7 @@ export class ClaudeBackend {
     this.emit('thread/status/changed', { threadId: turn.threadId, status: { type: 'idle' } })
     this.invalidateList()
     void this.recordGoalProgress(turn, status).catch(() => undefined)
-    this.cancelQuestions(turn.turnId)
+    this.cancelRequests(turn.turnId)
     if (!runner.closed) {
       runner.idleTimer = setTimeout(() => this.closeRunner(runner.sessionId, runner), RUNNER_IDLE_MS)
       runner.idleTimer.unref?.()
@@ -2134,7 +2184,7 @@ export class ClaudeBackend {
     const turn = runner?.activeTurn
     if (!runner || !turn) return {}
     turn.interrupted = true
-    this.cancelQuestions(turn.turnId)
+    this.cancelRequests(turn.turnId)
     await runner.query.interrupt().catch(() => undefined)
     // Claude Code normally ends the turn with a result; do not wait forever.
     runner.interruptTimer = setTimeout(() => {
@@ -2194,7 +2244,44 @@ export class ClaudeBackend {
     return answers
   }
 
-  private cancelQuestions(turnId: string): void {
+  private async askComputerUsePermission(
+    runner: SessionRunner,
+    itemId: string,
+    title: string,
+    reason: string,
+    signal: AbortSignal,
+  ): Promise<boolean> {
+    const turn = runner.activeTurn
+    if (!turn || signal.aborted) return false
+    const id = ++this.nextRequestId
+    const pending: ClaudePendingServerRequest = {
+      id,
+      method: 'item/permissions/requestApproval',
+      receivedAtIso: new Date().toISOString(),
+      params: {
+        threadId: turn.threadId,
+        turnId: turn.turnId,
+        itemId,
+        title,
+        reason,
+        permissionKind: 'computerUse',
+        availableDecisions: ['accept', 'decline'],
+      },
+    }
+    const accepted = await new Promise<boolean>((resolve) => {
+      this.permissions.set(id, { pending, resolve })
+      signal.addEventListener('abort', () => resolve(false), { once: true })
+      this.emit('server/request', pending)
+    })
+    if (this.permissions.delete(id)) {
+      this.emit('server/request/resolved', {
+        id, method: pending.method, threadId: turn.threadId, mode: accepted ? 'manual' : 'cancelled', resolvedAtIso: new Date().toISOString(),
+      })
+    }
+    return accepted
+  }
+
+  private cancelRequests(turnId: string): void {
     for (const [id, request] of this.questions) {
       if (asRecord(request.pending.params)?.turnId !== turnId) continue
       request.resolve(null)
@@ -2205,19 +2292,34 @@ export class ClaudeBackend {
         })
       }
     }
+    for (const [id, request] of this.permissions) {
+      if (asRecord(request.pending.params)?.turnId !== turnId) continue
+      request.resolve(false)
+      if (this.permissions.delete(id)) {
+        this.emit('server/request/resolved', {
+          id, method: request.pending.method, threadId: readString(asRecord(request.pending.params)?.threadId),
+          mode: 'cancelled', resolvedAtIso: new Date().toISOString(),
+        })
+      }
+    }
   }
 
   listPendingServerRequests(): ClaudePendingServerRequest[] {
-    return [...this.questions.values()].map((request) => request.pending)
+    return [...this.questions.values(), ...this.permissions.values()].map((request) => request.pending)
   }
 
   ownsServerRequest(id: unknown): boolean {
-    return typeof id === 'number' && this.questions.has(id)
+    return typeof id === 'number' && (this.questions.has(id) || this.permissions.has(id))
   }
 
   async respondToServerRequest(payload: unknown): Promise<void> {
     const body = asRecord(payload)
     const id = body?.id
+    const permission = typeof id === 'number' ? this.permissions.get(id) : undefined
+    if (permission && typeof id === 'number') {
+      permission.resolve(readString(asRecord(body?.result)?.decision) === 'accept')
+      return
+    }
     const request = typeof id === 'number' ? this.questions.get(id) : undefined
     if (!request || typeof id !== 'number') throw new Error('This Claude question is no longer waiting for an answer.')
     if (asRecord(body?.error)) {

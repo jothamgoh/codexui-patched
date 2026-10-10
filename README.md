@@ -87,6 +87,19 @@ by Claude Code itself under `~/.claude/projects`, so the CLI can resume them
 too. The sidebar lists interactive Claude sessions and the ones started here,
 not other tools' headless runs.
 
+Claude chats enable Claude Code's native Chrome integration. To also let Claude
+control native macOS apps through the same OpenAI Computer Use service used by
+Codex, install and enable Codex's bundled Computer Use plugin, then add this to
+the private CodexUI environment file:
+
+```bash
+CODEXUI_CLAUDE_COMPUTER_USE_MCP_FILE=auto
+```
+
+CodexUI loads only the plugin's `cua_repl` server, limits it to native computer
+control, and asks for approval before every control call. Restart CodexUI to
+apply this setting to new Claude runners.
+
 On macOS, Claude Code keeps its sign-in in the login keychain, which a
 LaunchDaemon cannot read. If CodexUI runs as a LaunchDaemon, also install the
 [Claude host LaunchAgent](deployment/macos/com.codexui.claude-host.plist.example)

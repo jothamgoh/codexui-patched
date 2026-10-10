@@ -1331,7 +1331,8 @@ export function useDesktopState() {
     if (!threadId) return null
     const pendingRequest = selectedThreadServerRequests.value.find((request) =>
       request.threadId === threadId && (request.method === 'item/commandExecution/requestApproval'
-        || request.method === 'item/fileChange/requestApproval' || request.method === 'item/tool/requestUserInput'),
+        || request.method === 'item/fileChange/requestApproval' || request.method === 'item/permissions/requestApproval'
+        || request.method === 'item/tool/requestUserInput'),
     )
     if (pendingRequest) {
       return {

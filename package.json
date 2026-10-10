@@ -80,6 +80,7 @@
     "test:subagent-activity": "node --test tests/subAgentActivity.test.mjs",
     "test:request-user-input": "node --test tests/requestUserInput.test.mjs",
     "test:e2e:request-user-input": "node tests/requestUserInput.e2e.mjs",
+    "test:e2e:computer-use-approval": "node tests/computerUseApproval.e2e.mjs",
     "test:question-preference": "node --test tests/questionPreference.test.mjs",
     "test:e2e:question-preference": "node tests/questionPreference.e2e.mjs",
     "test:native:question-preference": "node tests/questionPreference.native.mjs",

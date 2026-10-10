@@ -334,7 +334,7 @@
                 <button type="button" class="request-button" v-if="requestAllowsDecision(request, 'cancel')" @click="onRespondApproval(request.id, 'cancel')">Cancel</button>
               </section>
 
-              <section v-else-if="request.method === 'item/fileChange/requestApproval'" class="request-actions">
+              <section v-else-if="request.method === 'item/fileChange/requestApproval' || request.method === 'item/permissions/requestApproval'" class="request-actions">
                 <button type="button" class="request-button request-button-primary" v-if="requestAllowsDecision(request, 'accept')" @click="onRespondApproval(request.id, 'accept')">Accept</button>
                 <button type="button" class="request-button" v-if="requestAllowsDecision(request, 'acceptForSession')" @click="onRespondApproval(request.id, 'acceptForSession')">Accept for Session</button>
                 <button type="button" class="request-button" v-if="requestAllowsDecision(request, 'decline')" @click="onRespondApproval(request.id, 'decline')">Decline</button>
@@ -1648,6 +1648,7 @@ function requestAllowsDecision(request: UiServerRequest, decision: string): bool
 function requestTitle(request: UiServerRequest): string {
   if (request.method === 'item/commandExecution/requestApproval') return 'Permission to run a command'
   if (request.method === 'item/fileChange/requestApproval') return 'Permission to edit files'
+  if (request.method === 'item/permissions/requestApproval' && asRecord(request.params)?.permissionKind === 'computerUse') return 'Permission to control this Mac'
   if (request.method === 'item/tool/call') return 'Tool response needed'
   return request.method
 }

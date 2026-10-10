@@ -307,6 +307,102 @@ test('normalizes the Agent SDK usage response and model-scoped windows', () => {
   ])
 })
 
+test('enables Claude in Chrome only for conversational runners', async () => {
+  const directory = await mkdtemp(join(tmpdir(), 'codexui-claude-chrome-'))
+  const backend = new ClaudeBackend(join(directory, 'threads.json'), { accountSwitcherPath: null })
+  let runnerOptions
+  backend.readRuntime = async () => ({ connected: true, account: {}, models: [] })
+  backend.sdk = async () => ({
+    query: ({ options }) => {
+      runnerOptions = options
+      return {
+        async *[Symbol.asyncIterator]() {},
+        close: () => {},
+        interrupt: async () => {},
+      }
+    },
+  })
+  try {
+    assert.equal(backend.baseOptions(directory).extraArgs, undefined, 'background probes must not attach to Chrome')
+    await backend.createRunner(
+      'claude-11111111-2222-3333-4444-555555555555',
+      '11111111-2222-3333-4444-555555555555',
+      { cwd: directory, model: 'claude-default', effort: null, createdAtMs: Date.now() },
+      directory,
+      `claude-default||${directory}`,
+    )
+    assert.deepEqual(runnerOptions.extraArgs, { chrome: null })
+  } finally {
+    backend.dispose()
+    await rm(directory, { recursive: true, force: true })
+  }
+})
+
+test('loads guarded Mac control for Claude runners and waits for approval', async () => {
+  const directory = await mkdtemp(join(tmpdir(), 'codexui-claude-computer-use-'))
+  const configPath = join(directory, 'computer-use.mcp.json')
+  await writeFile(configPath, JSON.stringify({
+    mcpServers: {
+      cua_repl: {
+        command: process.execPath,
+        args: ['/fixture/cua-repl.mjs'],
+        env: { CUA_REPL_ENABLED_SURFACES: 'browser,computer', KEEP_ME: 'yes' },
+      },
+    },
+  }))
+  const previous = process.env.CODEXUI_CLAUDE_COMPUTER_USE_MCP_FILE
+  process.env.CODEXUI_CLAUDE_COMPUTER_USE_MCP_FILE = configPath
+  const backend = new ClaudeBackend(join(directory, 'threads.json'), { accountSwitcherPath: null })
+  let runnerOptions
+  let releaseQuery
+  backend.readRuntime = async () => ({ connected: true, account: {}, models: [] })
+  backend.sdk = async () => ({
+    query: ({ options }) => {
+      runnerOptions = options
+      return {
+        async *[Symbol.asyncIterator]() { await new Promise((resolve) => { releaseQuery = resolve }) },
+        close: () => { releaseQuery?.() },
+        interrupt: async () => {},
+      }
+    },
+  })
+  try {
+    const threadId = 'claude-11111111-2222-3333-4444-555555555556'
+    const runner = await backend.createRunner(
+      threadId,
+      '11111111-2222-3333-4444-555555555556',
+      { cwd: directory, model: 'claude-default', effort: null, createdAtMs: Date.now() },
+      directory,
+      `claude-default||${directory}`,
+    )
+    backend.beginTurn(runner, 'turn-1', directory, null)
+
+    assert.equal(runnerOptions.mcpServers.cua_repl.command, process.execPath)
+    assert.equal(runnerOptions.mcpServers.cua_repl.env.KEEP_ME, 'yes')
+    assert.equal(runnerOptions.mcpServers.cua_repl.env.CUA_REPL_ENABLED_SURFACES, 'computer')
+    assert.equal(runnerOptions.mcpServers.cua_repl.alwaysLoad, true)
+
+    const computerHook = runnerOptions.hooks.PreToolUse.find((matcher) => matcher.matcher === 'mcp__cua_repl__js').hooks[0]
+    const hookResult = computerHook(
+      { hook_event_name: 'PreToolUse', tool_name: 'mcp__cua_repl__js', tool_input: { code: 'await cua.getState()' } },
+      'tool-1',
+      { signal: new AbortController().signal },
+    )
+    await new Promise((resolve) => setImmediate(resolve))
+    const [pending] = backend.listPendingServerRequests()
+    assert.equal(pending.method, 'item/permissions/requestApproval')
+    assert.equal(pending.params.permissionKind, 'computerUse')
+    assert.deepEqual(pending.params.availableDecisions, ['accept', 'decline'])
+    await backend.respondToServerRequest({ id: pending.id, result: { decision: 'accept' } })
+    assert.equal((await hookResult).hookSpecificOutput.permissionDecision, 'allow')
+  } finally {
+    backend.dispose()
+    if (previous === undefined) delete process.env.CODEXUI_CLAUDE_COMPUTER_USE_MCP_FILE
+    else process.env.CODEXUI_CLAUDE_COMPUTER_USE_MCP_FILE = previous
+    await rm(directory, { recursive: true, force: true })
+  }
+})
+
 async function withFakeClaude(script, run) {
   const directory = await mkdtemp(join(tmpdir(), 'codexui-fake-claude-'))
   const executable = join(directory, 'claude')

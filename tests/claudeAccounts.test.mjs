@@ -455,7 +455,7 @@ test('a hard-limit result retires its background work, switches accounts, and co
   })
   const continuation = await resumed
   assert.equal(continuation.request.threadId, `claude-${session}`)
-  assert.match(continuation.request.input[0].text, /Continue where you left off/u)
+  assert.equal(continuation.request.input[0].text, 'Continue where you left off. The previous session hit its usage limit, so it switched to another account. Do not redo work that is already done.')
   assert.deepEqual(continuation.extra.limitRecoveryAccountNumbers, [1])
   assert.equal(runner.activeTurn, null)
   assert.equal(runner.closed, true)

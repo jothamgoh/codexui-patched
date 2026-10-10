@@ -89,7 +89,7 @@ const TRANSCRIPT_CACHE_BYTES = 96 * 1024 * 1024
 /** A transcript written this recently by another Claude Code process is busy. */
 const EXTERNAL_ACTIVITY_MS = 30_000
 const CLAUDE_SESSION_POLL_MS = 5_000
-const CLAUDE_LIMIT_CONTINUATION = 'Continue where you left off. The previous Claude account reached its session limit, so CodexUI switched to another saved account. Do not repeat work that is already complete.'
+const CLAUDE_LIMIT_CONTINUATION = 'Continue where you left off. The previous session hit its usage limit, so it switched to another account. Do not redo work that is already done.'
 /** Writes this soon after CodexUI's own activity (titles, hooks) are its own. */
 const OWN_WRITE_SLACK_MS = 10_000
 const HUMAN_PROMPT_SCAN_BYTES = 256 * 1024

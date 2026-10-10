@@ -73,6 +73,7 @@ async function runServiceWorkerPush(payload, { focused = false, failShow = false
 test('the service worker reports each push it receives and whether it showed it', async () => {
   const always = await runServiceWorkerPush({ title: 'Done', tag: 'turn-1', mode: 'always' })
   assert.equal(always.shown.length, 1)
+  assert.equal(always.shown[0].options.renotify, true, 'a repeated tag still pops up instead of replacing silently')
   const receipt = { endpoint: 'https://push.example.test/device', tag: 'turn-1', shown: true, permission: 'granted', error: '' }
   assert.deepEqual(always.receipts, [{ url: '/codex-api/push/receipt', body: { ...receipt, via: 'worker' } }])
   assert.deepEqual(JSON.parse(JSON.stringify(always.pageMessages)), [{ type: 'codexui-push-receipt', receipt }], 'open pages can forward it when a gateway blocks the worker')

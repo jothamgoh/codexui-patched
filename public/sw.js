@@ -1,6 +1,6 @@
 // Reported to the server on each page load, so a device still running an
 // older worker can be told apart from one that never receives pushes.
-const SW_VERSION = 'receipts-2'
+const SW_VERSION = 'receipts-3'
 const NOTIFICATION_ICON = '/icons/agents-192.png'
 const NOTIFICATION_BADGE = '/icons/agents-192.png'
 
@@ -51,6 +51,9 @@ async function showPushNotification(event) {
     await self.registration.showNotification(payload.title || 'Agents', {
       body: payload.body || 'Codex finished responding',
       tag: payload.tag || undefined,
+      // A same-tag alert (every Send test, a repeated board event) replaces the
+      // previous one silently in Chrome unless asked to alert again.
+      renotify: Boolean(payload.tag),
       icon: payload.icon || NOTIFICATION_ICON,
       badge: payload.badge || NOTIFICATION_BADGE,
       data: {

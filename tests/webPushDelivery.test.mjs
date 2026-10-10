@@ -45,11 +45,12 @@ test('the service worker remains the single Web Push display source', () => {
 async function runServiceWorkerPush(payload, { focused = false, failShow = false } = {}) {
   const listeners = {}
   const receipts = []
+  const pageMessages = []
   const shown = []
   const self = {
     addEventListener: (type, handler) => { listeners[type] = handler },
     skipWaiting() {},
-    clients: { claim: async () => {}, matchAll: async () => [{ focused }] },
+    clients: { claim: async () => {}, matchAll: async () => [{ focused, postMessage: (message) => pageMessages.push(message) }] },
     Notification: { permission: 'granted' },
     location: { origin: 'https://agents.example.test' },
     registration: {
@@ -65,13 +66,15 @@ async function runServiceWorkerPush(payload, { focused = false, failShow = false
   let done
   listeners.push({ data: { json: () => payload }, waitUntil: (promise) => { done = promise } })
   await done?.catch(() => {})
-  return { receipts, shown }
+  return { receipts, pageMessages, shown }
 }
 
 test('the service worker reports each push it receives and whether it showed it', async () => {
   const always = await runServiceWorkerPush({ title: 'Done', tag: 'turn-1', mode: 'always' })
   assert.equal(always.shown.length, 1)
-  assert.deepEqual(always.receipts, [{ url: '/codex-api/push/receipt', body: { endpoint: 'https://push.example.test/device', tag: 'turn-1', shown: true, permission: 'granted', error: '' } }])
+  const receipt = { endpoint: 'https://push.example.test/device', tag: 'turn-1', shown: true, permission: 'granted', error: '' }
+  assert.deepEqual(always.receipts, [{ url: '/codex-api/push/receipt', body: { ...receipt, via: 'worker' } }])
+  assert.deepEqual(JSON.parse(JSON.stringify(always.pageMessages)), [{ type: 'codexui-push-receipt', receipt }], 'open pages can forward it when a gateway blocks the worker')
 
   const focused = await runServiceWorkerPush({ title: 'Done', tag: 'turn-2', mode: 'unfocused' }, { focused: true })
   assert.equal(focused.shown.length, 0)

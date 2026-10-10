@@ -26,6 +26,7 @@ type PushReceipt = {
   tag: string
   shown: boolean
   permission: string
+  via: 'worker' | 'page'
   error?: string
 }
 
@@ -690,10 +691,11 @@ export function createWebPushTurnNotifier(): WebPushTurnNotifier {
           tag: readString(body?.tag).slice(0, 200),
           shown: body?.shown === true,
           permission: readString(body?.permission).slice(0, 20),
+          via: readString(body?.via) === 'page' ? 'page' : 'worker',
           ...(readString(body?.error) ? { error: readString(body?.error).slice(0, 300) } : {}),
         }
         receipts.set(endpoint, receipt)
-        console.log(`[web-push] ${entry.deviceName || 'Device'} received a push: ${receipt.shown ? 'shown' : 'not shown'}, permission ${receipt.permission || 'unknown'}${receipt.error ? `, error ${receipt.error}` : ''}`)
+        console.log(`[web-push] ${entry.deviceName || 'Device'} received a push (reported by ${receipt.via}): ${receipt.shown ? 'shown' : 'not shown'}, permission ${receipt.permission || 'unknown'}${receipt.error ? `, error ${receipt.error}` : ''}`)
         setJson(res, 200, { ok: true })
         return
       }

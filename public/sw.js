@@ -63,16 +63,21 @@ async function reportReceipt(tag, shown, error) {
   try {
     const subscription = await self.registration.pushManager.getSubscription()
     if (!subscription) return
+    const receipt = {
+      endpoint: subscription.endpoint,
+      tag: tag || '',
+      shown,
+      permission: self.Notification?.permission || '',
+      error,
+    }
+    // Open pages forward it too: a gateway such as Cloudflare Access may let
+    // page requests through but not the worker's.
+    const pages = await self.clients.matchAll({ type: 'window', includeUncontrolled: true })
+    for (const page of pages) page.postMessage({ type: 'codexui-push-receipt', receipt })
     await fetch('/codex-api/push/receipt', {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({
-        endpoint: subscription.endpoint,
-        tag: tag || '',
-        shown,
-        permission: self.Notification?.permission || '',
-        error,
-      }),
+      body: JSON.stringify({ ...receipt, via: 'worker' }),
     })
   } catch {
     // A receipt is diagnostic only; never let it block the notification.

@@ -427,7 +427,11 @@
             </div>
           </template>
 
-          <p v-if="status === 'blocked'" class="notification-note">
+          <p v-if="status === 'blocked' && isIOS" class="notification-note">
+            On iPhone, open Settings → Notifications → Agents and turn on Allow Notifications, then reopen this panel.
+            If Agents is not listed there, remove it from the Home Screen, add it again from Safari, and tap Allow when asked.
+          </p>
+          <p v-else-if="status === 'blocked'" class="notification-note">
             Allow Agents notifications in your browser and macOS settings, then reopen this panel.
           </p>
           <p v-if="errorMessage" class="notification-error" role="alert">{{ errorMessage }}</p>
@@ -600,6 +604,7 @@ const {
   errorMessage,
   testMessage,
   isEnabled,
+  isIOS,
   initializeWebPushNotifications,
   enableWebPushNotifications,
   setTurnNotificationMode,

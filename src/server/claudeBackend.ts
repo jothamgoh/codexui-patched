@@ -1602,6 +1602,15 @@ export class ClaudeBackend {
     }
   }
 
+  /**
+   * The previous CodexUI process ran this chat, and the Claude host stopped its
+   * Claude process when that server went away. Its last transcript writes are
+   * ours, so the external-activity guard must not refuse the continue message.
+   */
+  adoptInterruptedSession(threadId: string): void {
+    this.ownActivityMs.set(toSessionId(threadId), Date.now())
+  }
+
   private async setName(threadId: string, name: string) {
     const trimmed = name.trim()
     if (!trimmed) return {}

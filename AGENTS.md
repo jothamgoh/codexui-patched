@@ -58,7 +58,7 @@ If neither handoff is available, leave the restart for the user. Verify health a
 reconnecting.
 
 On shutdown the server records chats that were still mid-reply in
-`$CODEX_HOME/codexui-interrupted-turns.json`. About 35 seconds after the next start it sends each
+`$CODEX_HOME/codexui-interrupted-turns.json`. A few seconds after the next start it sends each
 one a "continue" message (`src/server/restartResume.ts`). Project-board chats recover through
 their own service, and Codex helper sub-chats through their parent, so both are skipped.
 

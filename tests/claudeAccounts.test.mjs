@@ -356,3 +356,30 @@ test('background tasks keep the Claude process alive and block account changes u
   clearTimeout(runner.idleTimer)
   backend.runners.clear(); backend.dispose(); f.manager.dispose()
 })
+
+test('a chat the previous server was running can be continued at once, unlike one active elsewhere', async () => {
+  const f = await fixture()
+  const configDir = join(f.scratch, 'claude')
+  const backend = new ClaudeBackend(join(f.scratch, 'threads.json'), { accountSwitcherPath: '/fixture/cswap', claudeConfigDir: configDir })
+  backend.runAccountCommand = f.run
+  backend.readRuntime = async () => ({ connected: true, account: {}, models: [] })
+  backend.refreshClaudeSessionStates = async () => ({ uncertain: false, states: new Map() })
+  const cwd = '/work/project'
+  const session = 'interrupted-by-restart'
+  await backend.store.update(session, { cwd, model: 'claude-sonnet', effort: 'low', createdAtMs: 1 })
+  const projectDir = join(configDir, 'projects', cwd.replace(/[^a-zA-Z0-9]/gu, '-'))
+  await mkdir(projectDir, { recursive: true })
+  await writeFile(join(projectDir, `${session}.jsonl`), '')
+  backend.createRunner = async (threadId, sessionId, stored, runnerCwd, settingsKey) => {
+    const runner = { sessionId, threadId, cwd: runnerCwd, settingsKey, query: {}, closed: false, totalUsage: {}, contextWindow: 200000, input: { push: () => true }, activeTurn: null, pushedCommands: new Map(), backgroundTasks: [], idleTimer: null }
+    backend.runners.set(sessionId, runner)
+    return runner
+  }
+  const send = () => backend.rpc('turn/start', { threadId: `claude-${session}`, input: [{ type: 'text', text: 'continue' }] })
+  await assert.rejects(send(), /active in another app/u, 'a chat written moments ago by an unknown process is refused')
+  backend.adoptInterruptedSession(`claude-${session}`)
+  await send()
+  assert.equal(backend.runners.has(session), true)
+  await backend.store.writeChain
+  backend.runners.clear(); backend.dispose(); f.manager.dispose()
+})

@@ -45,7 +45,7 @@ import {
 } from './reviewPatch'
 import { ReviewMutationConflictError, ReviewMutationGate } from './reviewMutationGate'
 import { BackendRouter } from './backendRouter'
-import { ClaudeBackend } from './claudeBackend'
+import { ClaudeBackend, isClaudeThreadId } from './claudeBackend'
 import { createClaudeAutomationTool } from './claudeAutomationTool'
 import { readReviewClientScope, reviewScopeMatches } from './reviewScope'
 import { ActiveTurnTracker, continueInterruptedTurns, recordInterruptedTurns, takeInterruptedTurns } from './restartResume'
@@ -1620,8 +1620,8 @@ type SharedBridgeState = {
 
 /** Chats mid-reply at shutdown, continued once after the next start. */
 const INTERRUPTED_TURNS_FILE = 'codexui-interrupted-turns.json'
-/** Claude refuses a send within 30 s of another process writing the chat; the old one just stopped. */
-const RESTART_CONTINUE_DELAY_MS = 35_000
+/** Lets both backends finish starting. The old Claude processes stopped within 5 s of the old server. */
+const RESTART_CONTINUE_DELAY_MS = 3_000
 
 const SHARED_BRIDGE_KEY = '__codexRemoteSharedBridge__'
 
@@ -1718,6 +1718,9 @@ function getSharedBridgeState(): SharedBridgeState {
   if (interrupted.length > 0) {
     console.log(`[restart-resume] Continuing ${String(interrupted.length)} chat(s) stopped by the last restart.`)
     const router = new BackendRouter(appServer, claude)
+    for (const threadId of interrupted) {
+      if (isClaudeThreadId(threadId)) claude.adoptInterruptedSession(threadId)
+    }
     setTimeout(() => {
       void continueInterruptedTurns(
         interrupted,

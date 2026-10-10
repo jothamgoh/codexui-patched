@@ -7,7 +7,8 @@ import { isInternalSubagentThread } from '../utils/codexThreadSource'
  * restart does not silently end their work.
  */
 export const RESTART_CONTINUE_TEXT =
-  'CodexUI restarted while you were working, which stopped your last reply or background tasks. '
+  // Names no app: the chat is usually working in another project, so "CodexUI" would mislead it.
+  'Your session was interrupted by a restart, which stopped your last reply or any background tasks. '
   + 'Continue where you left off, and restart any background task that was still needed.'
 
 /** Ignore a file older than this: the stop was not a restart. */

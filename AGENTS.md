@@ -46,9 +46,11 @@ instructions provide, and launch it exactly once:
 - **Detached restart (Claude chats).** A Claude chat runs under the separate Claude host agent,
   not under the CodexUI service, so a detached process it starts survives the restart. Run the
   local copy of `deployment/macos/restart-codexui-detached.sh.example`. It returns at once,
-  waits a short delay so the reply can finish, performs one `kickstart -k` and one health check,
-  and refuses a second request within three minutes. Finish the release workflow first, start
-  it as the last action of the turn, and tell the user to refresh after about a minute.
+  waits until the calling chat's reply has finished (it reads `CLAUDE_CODE_SESSION_ID` and polls
+  that chat's status, giving up after 15 minutes), then performs one `kickstart -k` and one
+  health check, and refuses a second request within three minutes. Finish the release workflow
+  first, start it as the last action of the turn, and tell the user to refresh after about a
+  minute.
 - **Separate Terminal.** From a Codex chat, or when no detached script exists, open the local
   one-shot `.command` file in Terminal.
 

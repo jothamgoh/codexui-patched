@@ -86,12 +86,15 @@ test('the service worker reports each push it receives and whether it showed it'
   assert.match(failed.receipts[0].body.error, /blocked/u)
 })
 
-async function initializeWithPermission(permission) {
+async function initializeWithPermission(permission, { workerVersion } = {}) {
   const subscribes = []
   const permissionRequests = []
   const storage = new Map()
   const subscription = { endpoint: 'https://push.example.test/stale', toJSON: () => ({ endpoint: 'https://push.example.test/stale', keys: { p256dh: 'k', auth: 'a' } }) }
-  const registration = { pushManager: { getSubscription: async () => subscription } }
+  const active = workerVersion === undefined ? null : {
+    postMessage: (message, [port]) => { if (message.type === 'codexui-sw-version' && workerVersion) port.postMessage({ version: workerVersion }) },
+  }
+  const registration = { active, pushManager: { getSubscription: async () => subscription } }
   Object.assign(globalThis, {
     window: globalThis,
     isSecureContext: true,
@@ -129,4 +132,17 @@ test('choosing an alert mode never asks for permission; only the Enable button d
   assert.match(push.errorMessage.value, /Enable notifications/u)
   await push.enableWebPushNotifications()
   assert.deepEqual(permissionRequests, ['asked'])
+})
+
+test('each page load reports which service worker version is running', async () => {
+  const current = await initializeWithPermission('granted', { workerVersion: 'receipts-2' })
+  assert.equal(current.subscribes[0].workerVersion, 'receipts-2')
+  const outdated = await initializeWithPermission('granted', { workerVersion: '' })
+  assert.equal(outdated.subscribes[0].workerVersion, 'no-answer', 'an older worker that cannot answer is visible')
+
+  let reply
+  const listeners = {}
+  vm.runInNewContext(serviceWorkerSource, { self: { addEventListener: (type, handler) => { listeners[type] = handler }, skipWaiting() {}, clients: {} }, URL, console })
+  listeners.message({ data: { type: 'codexui-sw-version' }, ports: [{ postMessage: (message) => { reply = message } }] })
+  assert.match(reply.version, /^receipts-/u)
 })

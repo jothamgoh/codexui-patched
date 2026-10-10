@@ -1,3 +1,6 @@
+// Reported to the server on each page load, so a device still running an
+// older worker can be told apart from one that never receives pushes.
+const SW_VERSION = 'receipts-2'
 const NOTIFICATION_ICON = '/icons/agents-192.png'
 const NOTIFICATION_BADGE = '/icons/agents-192.png'
 
@@ -7,6 +10,10 @@ self.addEventListener('install', () => {
 
 self.addEventListener('activate', (event) => {
   event.waitUntil(self.clients.claim())
+})
+
+self.addEventListener('message', (event) => {
+  if (event.data?.type === 'codexui-sw-version') event.ports[0]?.postMessage({ version: SW_VERSION })
 })
 
 self.addEventListener('push', (event) => {

@@ -113,6 +113,26 @@ async function loadConfig(): Promise<void> {
   vapidPublicKey = config.publicKey
 }
 
+/** The active worker's SW_VERSION (public/sw.js); 'none' or 'no-answer' when an older one runs. */
+async function readWorkerVersion(registration: ServiceWorkerRegistration): Promise<string> {
+  const worker = registration.active
+  if (!worker || typeof MessageChannel === 'undefined') return 'none'
+  return new Promise((resolve) => {
+    const channel = new MessageChannel()
+    const finish = (version: string): void => {
+      clearTimeout(timer)
+      channel.port1.close()
+      resolve(version)
+    }
+    const timer = setTimeout(() => finish('no-answer'), 2000)
+    channel.port1.onmessage = (event: MessageEvent) => {
+      const version = (event.data as { version?: unknown } | null)?.version
+      finish(typeof version === 'string' ? version.slice(0, 40) : 'no-answer')
+    }
+    worker.postMessage({ type: 'codexui-sw-version' }, [channel.port2])
+  })
+}
+
 async function initializeWebPushNotifications(force = false): Promise<void> {
   if (isInitialized.value && !force) return
   isInitialized.value = true
@@ -159,7 +179,7 @@ async function initializeWebPushNotifications(force = false): Promise<void> {
 
     const currentMode = mode.value === 'off' ? 'unfocused' : mode.value
     if (mode.value === 'off') saveMode(currentMode)
-    await saveWebPushSubscription(subscription.toJSON(), currentMode, deviceName(), Notification.permission)
+    await saveWebPushSubscription(subscription.toJSON(), currentMode, deviceName(), Notification.permission, await readWorkerVersion(registration))
     saveEnabled(true)
     status.value = 'enabled'
   } catch (error) {

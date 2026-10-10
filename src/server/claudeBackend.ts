@@ -21,6 +21,7 @@ import type {
 } from '@anthropic-ai/claude-agent-sdk'
 import { getCodexUiChildEnv } from './envFile'
 import { spawnThroughHost } from './claudeProcessHost'
+import { CLAUDE_USAGE_POLL_MS, ClaudeAccountSwitcher, resolveCSwapExecutable, type CSwapResult } from './claudeAccountSwitcher'
 import {
   addUsage,
   asRecord,
@@ -68,7 +69,6 @@ const DEFAULT_MODEL_ID = 'claude-default'
 const ENCODED_MODEL_PREFIX = 'claude-model:'
 const SKILL_PATH_PREFIX = 'claude-command:'
 const RUNTIME_CACHE_MS = 10 * 60_000
-const USAGE_CACHE_MS = 5 * 60_000
 const LIST_CACHE_MS = 2_500
 const COMMANDS_CACHE_MS = 10 * 60_000
 const RUNNER_IDLE_MS = 15 * 60_000
@@ -656,6 +656,7 @@ export type ClaudeBackendOptions = {
   /** Spawn Claude Code through a login-session host listening here. */
   hostSocketPath?: string
   tools?: ClaudeHostTool[]
+  accountSwitcherPath?: string | null
 }
 
 export class ClaudeBackend {
@@ -665,9 +666,16 @@ export class ClaudeBackend {
   private readonly store: ClaudeThreadStore
   private readonly hostSocketPath: string
   private readonly tools: ClaudeHostTool[]
+  readonly accounts: ClaudeAccountSwitcher
+  private readonly metadataQueries = new Set<Query>()
+  private accountGeneration = 0
+  private changingAccount = false
   private runtimeCache: { at: number; value: ClaudeRuntimeState } | null = null
   private runtimePending: Promise<ClaudeRuntimeState> | null = null
   private usageCache: { at: number; value: ClaudeUsage } | null = null
+  private usagePending: Promise<ClaudeUsage | null> | null = null
+  private usageNextReadAt = 0
+  private usageFailures = 0
   private listCache: { at: number; key: string; value: Promise<SDKSessionInfo[]> } | null = null
   private readonly commandsCache = new Map<string, { at: number; value: Promise<SlashCommand[]> }>()
   private readonly transcriptPaths = new Map<string, string>()
@@ -685,6 +693,16 @@ export class ClaudeBackend {
     this.store = new ClaudeThreadStore(storeFilePath)
     this.hostSocketPath = options.hostSocketPath?.trim() ?? ''
     this.tools = options.tools ?? []
+    this.accounts = new ClaudeAccountSwitcher({
+      stateFilePath: join(dirname(storeFilePath), 'codexui-claude-accounts.json'),
+      executable: options.accountSwitcherPath === undefined ? resolveCSwapExecutable() : options.accountSwitcherPath,
+      run: (command, args) => this.runAccountCommand(command, args),
+      isBusy: () => Boolean(this.login) || [...this.runners.values()].some((runner) => Boolean(runner.activeTurn) || runner.pushedCommands.size > 0),
+      isAuthenticating: () => Boolean(this.login) || this.changingAccount,
+      prepareSwitch: () => this.prepareAccountChange(),
+      accountChanged: () => this.accountChanged(),
+    })
+    this.accounts.start()
   }
 
   private sdk(): Promise<SdkModule> {
@@ -744,9 +762,71 @@ export class ClaudeBackend {
     })
   }
 
+  private async runAccountCommand(command: string, args: string[]): Promise<CSwapResult> {
+    const child = this.spawnChild(command, args, { env: getCodexUiChildEnv() })
+    return new Promise((resolve, reject) => {
+      let stdout = ''
+      let settled = false
+      const timer = setTimeout(() => {
+        child.kill('SIGTERM')
+        finish(new Error('Claude account management timed out. Try refreshing accounts.'))
+      }, 90_000)
+      timer.unref?.()
+      const finish = (error?: Error, code: number | null = null): void => {
+        if (settled) return
+        settled = true
+        clearTimeout(timer)
+        if (error) reject(error)
+        else resolve({ code, stdout })
+      }
+      child.stdout.on('data', (chunk: Buffer) => {
+        stdout += chunk.toString()
+        if (stdout.length > 1024 * 1024) {
+          child.kill('SIGTERM')
+          finish(new Error('Claude account response was too large.'))
+        }
+      })
+      // Never return or log raw CLI errors: account tools handle credentials.
+      child.stderr.on('data', () => undefined)
+      child.once('error', () => finish(new Error('Could not start claude-swap in the Claude host.')))
+      child.once('close', (code) => finish(undefined, code))
+      child.stdin.on('error', () => undefined)
+      child.stdin.end(args[0] === 'remove' ? 'y\n' : '')
+    })
+  }
+
+  private async prepareAccountChange(): Promise<void> {
+    if ([...this.runners.values()].some((runner) => runner.activeTurn || runner.pushedCommands.size > 0)) {
+      throw new Error('Wait for Claude replies to finish before changing accounts.')
+    }
+    this.changingAccount = true
+    this.accountGeneration += 1
+    for (const query of this.metadataQueries) query.close()
+    this.metadataQueries.clear()
+    for (const runner of [...this.runners.values()]) {
+      this.closeRunner(runner.sessionId, runner)
+      runner.query.close()
+    }
+    if (this.runtimePending) await this.runtimePending.catch(() => undefined)
+    this.runtimeCache = null
+    this.usageCache = null
+    this.commandsCache.clear()
+  }
+
+  private accountChanged(): void {
+    this.accountGeneration += 1
+    this.runtimeCache = null
+    this.usageCache = null
+    this.commandsCache.clear()
+    this.changingAccount = false
+    this.emit('account/updated', { provider: 'claude' })
+  }
+
   // ── Runtime metadata ──
 
   private async readRuntime(force = false): Promise<ClaudeRuntimeState> {
+    if (this.changingAccount || this.login) throw new Error('Claude account sign-in or switching is in progress.')
+    const generation = this.accountGeneration
     const cached = this.runtimeCache
     if (!force && cached && Date.now() - cached.at < RUNTIME_CACHE_MS) return cached.value
     if (!force && cached?.value.connected) {
@@ -758,24 +838,28 @@ export class ClaudeBackend {
     if (this.runtimePending) return this.runtimePending
     const pending = (async () => {
       const { query } = await this.sdk()
+      if (generation !== this.accountGeneration || this.changingAccount || this.login) throw new Error('Claude account changed. Refresh accounts.')
       const runtimeQuery = query({ prompt: emptyInput(), options: this.baseOptions() })
+      this.metadataQueries.add(runtimeQuery)
       try {
         const [models, account] = await Promise.race([
           Promise.all([runtimeQuery.supportedModels(), runtimeQuery.accountInfo()]),
           rejectAfter(45_000, 'Claude Code did not respond.'),
         ])
         const value = { account, connected: isClaudeConnected(account), models }
+        if (generation !== this.accountGeneration) throw new Error('Claude account changed. Refresh to read the new account.')
         this.runtimeCache = { at: Date.now(), value }
         return value
       } finally {
         runtimeQuery.close()
+        this.metadataQueries.delete(runtimeQuery)
       }
     })()
     this.runtimePending = pending
     try {
       return await pending
     } catch (error) {
-      if (cached) return cached.value
+      if (cached && generation === this.accountGeneration) return cached.value
       throw error
     } finally {
       if (this.runtimePending === pending) this.runtimePending = null
@@ -798,34 +882,68 @@ export class ClaudeBackend {
     }
   }
 
-  async readUsage(force = false): Promise<ClaudeUsage | null> {
+  async readUsage(_force = false): Promise<ClaudeUsage | null> {
+    const generation = this.accountGeneration
     const runtime = await this.readRuntime()
     if (!runtime.connected || runtime.account.apiProvider !== 'firstParty') return null
-    if (!force && this.usageCache && Date.now() - this.usageCache.at < USAGE_CACHE_MS) {
-      return this.usageCache.value
+    const pool = await this.accounts.snapshot()
+    if (pool.installed) {
+      // One collector for both the active plan card and all saved accounts.
+      // Never stack the SDK's usage requests on top of cswap's requests.
+      const active = pool.accounts.find((account) => account.active)
+      return {
+        plan: runtime.account.subscriptionType ?? null,
+        limits: (active?.limits ?? []).map((limit) => ({ ...limit, key: limit.label === '5 hours' ? 'five_hour' : 'seven_day' })),
+        ...(active?.usageIsStale || active?.usageRateLimited ? { notice: 'Showing cached Claude usage while usage checks recover.' }
+          : !active ? { notice: 'Save current login to see Claude usage.' } : {}),
+      }
     }
+    if (this.usagePending) return this.usagePending
+    if (Date.now() < this.usageNextReadAt) return this.usageCache?.value ?? { plan: runtime.account.subscriptionType ?? null, limits: [], notice: 'Claude usage checks are cooling down. Try again later.' }
+    this.usageNextReadAt = Date.now() + CLAUDE_USAGE_POLL_MS
+    const pending = this.readSdkUsage(runtime, generation)
+    this.usagePending = pending
+    try { return await pending } finally { if (this.usagePending === pending) this.usagePending = null }
+  }
+
+  private async readSdkUsage(runtime: ClaudeRuntimeState, generation: number): Promise<ClaudeUsage | null> {
     const { query } = await this.sdk()
+    if (generation !== this.accountGeneration || this.changingAccount || this.login) return null
     const usageQuery = query({ prompt: emptyInput(), options: this.baseOptions() })
+    this.metadataQueries.add(usageQuery)
     try {
       const response = await Promise.race([
         usageQuery.usage_EXPERIMENTAL_MAY_CHANGE_DO_NOT_RELY_ON_THIS_API_YET({ skipBehaviors: true }),
         rejectAfter(45_000, 'Claude usage did not respond.'),
       ])
       const value = normalizeClaudeUsage(response, runtime.account.subscriptionType ?? null)
+      if (generation !== this.accountGeneration) return null
       this.usageCache = { at: Date.now(), value }
+      this.usageFailures = 0
       return value
-    } catch {
+    } catch (error) {
+      if (generation !== this.accountGeneration) return null
+      this.usageFailures += 1
+      const detail = asRecord(error)
+      const limited = detail?.status === 429 || /429|rate.?limit/iu.test(error instanceof Error ? error.message : '')
+      const headers = detail?.headers
+      const retryAfter = headers instanceof Headers ? headers.get('retry-after') : readString(asRecord(headers)?.['retry-after'])
+      const serverDelay = retryAfter && Number.isFinite(Number(retryAfter)) ? Number(retryAfter) * 1000 : Math.max(0, Date.parse(retryAfter || '') - Date.now()) || 0
+      const delay = Math.max(serverDelay, limited ? 60 * 60_000 : Math.min(60 * 60_000, CLAUDE_USAGE_POLL_MS * 2 ** Math.min(this.usageFailures - 1, 3)))
+      this.usageNextReadAt = Date.now() + delay
+      const notice = limited ? 'Claude usage checks hit a 429. Showing cached usage; checks will resume after the cooldown.' : 'Claude usage refresh failed. Showing cached usage until the next check.'
       if (this.usageCache) {
-        const age = Math.max(1, Math.round((Date.now() - this.usageCache.at) / 60_000))
-        return { ...this.usageCache.value, notice: `Claude usage refresh failed. Showing data from ${String(age)} min ago.` }
+        this.usageCache = { ...this.usageCache, value: { ...this.usageCache.value, notice } }
+        return this.usageCache.value
       }
       return {
         plan: runtime.account.subscriptionType ?? null,
         limits: [],
-        notice: 'Claude usage is temporarily unavailable.',
+        notice: limited ? 'Claude usage checks hit a 429. Checks are paused; Claude chats still work.' : 'Claude usage is temporarily unavailable. Checks will retry after the cooldown.',
       }
     } finally {
       usageQuery.close()
+      this.metadataQueries.delete(usageQuery)
     }
   }
 
@@ -836,17 +954,24 @@ export class ClaudeBackend {
 
   /** Claude Code's skills and slash commands for a folder, as composer skills. */
   async listSkills(cwd: string): Promise<Record<string, unknown>> {
+    if (this.changingAccount || this.login) throw new Error('Finish Claude sign-in or switching before loading skills.')
+    const generation = this.accountGeneration
     const key = cwd || homedir()
     const cached = this.commandsCache.get(key)
     let pending = cached && Date.now() - cached.at < COMMANDS_CACHE_MS ? cached.value : null
     if (!pending) {
       pending = (async () => {
         const { query } = await this.sdk()
+        if (generation !== this.accountGeneration || this.changingAccount || this.login) throw new Error('Claude account changed. Refresh skills.')
         const commandsQuery = query({ prompt: emptyInput(), options: this.baseOptions(existsSync(key) ? key : undefined) })
+        this.metadataQueries.add(commandsQuery)
         try {
-          return await Promise.race([commandsQuery.supportedCommands(), rejectAfter(45_000, 'Claude Code did not list its commands.')])
+          const commands = await Promise.race([commandsQuery.supportedCommands(), rejectAfter(45_000, 'Claude Code did not list its commands.')])
+          if (generation !== this.accountGeneration) throw new Error('Claude account changed. Refresh skills.')
+          return commands
         } finally {
           commandsQuery.close()
+          this.metadataQueries.delete(commandsQuery)
         }
       })()
       this.commandsCache.set(key, { at: Date.now(), value: pending })
@@ -872,7 +997,17 @@ export class ClaudeBackend {
   // ── Sign-in ──
 
   async startLogin(): Promise<{ loginId: string; authUrl: string }> {
+    return this.accounts.exclusive(() => this.startLoginUnlocked())
+  }
+
+  private async startLoginUnlocked(): Promise<{ loginId: string; authUrl: string }> {
     this.cancelLogin()
+    if ([...this.runners.values()].some((runner) => runner.activeTurn || runner.pushedCommands.size > 0)) {
+      throw new Error('Wait for Claude replies to finish before adding an account.')
+    }
+    const pool = await this.accounts.snapshot()
+    if (pool.installed && (await this.readProviderStatus().catch(() => null))?.connected) await this.accounts.saveCurrent()
+    try { await this.prepareAccountChange() } finally { this.changingAccount = false }
     const child = this.spawnChild(resolveClaudeExecutable(), ['auth', 'login', '--claudeai'], {
       env: {
         ...getCodexUiChildEnv(),
@@ -929,10 +1064,15 @@ export class ClaudeBackend {
   }
 
   async completeLogin(loginId: string, pastedCode: string): Promise<ClaudeProviderStatus> {
+    return this.accounts.exclusive(() => this.completeLoginUnlocked(loginId, pastedCode))
+  }
+
+  private async completeLoginUnlocked(loginId: string, pastedCode: string): Promise<ClaudeProviderStatus> {
     const login = this.login
     if (!login || login.id !== loginId) throw new Error('This Claude login has expired. Start again.')
     const authorizationCode = pastedCode.trim()
     if (!authorizationCode) throw new Error('Paste the authorization code from Claude.')
+    await this.accounts.drainReads()
     try {
       login.child.stdin.end(`${authorizationCode}\n`)
       await Promise.race([
@@ -944,10 +1084,12 @@ export class ClaudeBackend {
     } finally {
       this.cancelLogin()
     }
-    this.runtimeCache = null
-    this.usageCache = null
+    this.accountChanged()
     const status = await this.readProviderStatus(true)
     if (!status.connected) throw new Error('Claude sign-in completed, but the saved account could not be read.')
+    try { await this.accounts.saveCurrent() } catch {
+      status.notice = 'Signed in, but this account was not saved for switching. Choose Save current login and try again.'
+    }
     return status
   }
 
@@ -959,10 +1101,16 @@ export class ClaudeBackend {
   }
 
   async logout(): Promise<void> {
-    this.cancelLogin()
-    await this.runClaudeCommand(['auth', 'logout'])
-    this.runtimeCache = null
-    this.usageCache = null
+    // Disable rotation before logging out so it cannot silently sign back in.
+    const pool = await this.accounts.snapshot()
+    await this.accounts.configure(false, pool.threshold)
+    await this.accounts.exclusive(async () => {
+      this.cancelLogin()
+      try {
+        await this.prepareAccountChange()
+        await this.runClaudeCommand(['auth', 'logout'])
+      } finally { this.accountChanged() }
+    })
   }
 
   // ── Notifications ──
@@ -1521,6 +1669,10 @@ export class ClaudeBackend {
   // ── Turns ──
 
   private async startTurn(request: Record<string, unknown>, extra: { goalContinuation?: boolean } = {}): Promise<unknown> {
+    return this.accounts.exclusive(() => this.startTurnUnlocked(request, extra))
+  }
+
+  private async startTurnUnlocked(request: Record<string, unknown>, extra: { goalContinuation?: boolean } = {}): Promise<unknown> {
     const threadId = readString(request.threadId)
     const sessionId = toSessionId(threadId)
     const userMessage = await buildUserMessage(request.input, sessionId)
@@ -1533,6 +1685,9 @@ export class ClaudeBackend {
       running.pushedCommands.set(readString(userMessage.uuid), userMessage)
       return { turn: { id: running.activeTurn.turnId, items: [], status: 'inProgress', error: null } }
     }
+
+    if (this.login) throw new Error('Finish or cancel the Claude account login before sending a new message.')
+    await this.accounts.beforeTurn()
 
     const existing = await this.store.get(sessionId)
     const requested = await this.executionSettings(
@@ -1718,6 +1873,7 @@ export class ClaudeBackend {
     if (!turn || turn.settled) return
     turn.settled = true
     runner.activeTurn = null
+    runner.pushedCommands.delete(turn.turnId)
     if (runner.interruptTimer) clearTimeout(runner.interruptTimer)
     runner.interruptTimer = null
     const completedAtMs = Date.now()
@@ -1748,6 +1904,7 @@ export class ClaudeBackend {
       runner.idleTimer = setTimeout(() => this.closeRunner(runner.sessionId, runner), RUNNER_IDLE_MS)
       runner.idleTimer.unref?.()
     }
+    void this.accounts.tick()
   }
 
   private titleFor(sessionId: string): string {
@@ -1819,7 +1976,10 @@ export class ClaudeBackend {
       if (record.state === 'started' && !runner.activeTurn && runner.pushedCommands.has(commandUuid)) {
         this.turnFor(runner, commandUuid)
       }
-      if (record.state === 'completed') runner.pushedCommands.delete(commandUuid)
+      if (record.state === 'completed') {
+        runner.pushedCommands.delete(commandUuid)
+        if (!runner.activeTurn) void this.accounts.tick()
+      }
       return
     }
 
@@ -2074,6 +2234,7 @@ export class ClaudeBackend {
   }
 
   dispose(): void {
+    this.accounts.dispose()
     this.cancelLogin()
     for (const sessionId of [...this.runners.keys()]) this.closeRunner(sessionId)
   }

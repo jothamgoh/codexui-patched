@@ -1,3 +1,5 @@
+import type { ClaudeAccountPool } from '../types/claudeAccounts'
+
 export type ProviderId = 'codex' | 'claude'
 
 export type ProviderStatus = {
@@ -77,3 +79,19 @@ export function completeClaudeLogin(loginId: string, code: string): Promise<Prov
 export function logoutProvider(provider: ProviderId): Promise<{ ok: boolean }> {
   return request(`/codex-api/providers/${provider}/logout`, { method: 'POST' })
 }
+
+export function getClaudeAccounts(force = false): Promise<ClaudeAccountPool> {
+  return request(`/codex-api/providers/claude/accounts${force ? '?force=1' : ''}`)
+}
+
+function accountAction(action: string, body: Record<string, unknown> = {}): Promise<ClaudeAccountPool> {
+  return request(`/codex-api/providers/claude/accounts/${action}`, {
+    method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body),
+  })
+}
+
+export const saveClaudeAccount = (): Promise<ClaudeAccountPool> => accountAction('save')
+export const removeClaudeAccount = (number: number): Promise<ClaudeAccountPool> => accountAction('remove', { number })
+export const switchClaudeAccount = (number: number): Promise<ClaudeAccountPool> => accountAction('switch', { number })
+export const configureClaudeAccounts = (enabled: boolean, threshold: number): Promise<ClaudeAccountPool> => accountAction('settings', { enabled, threshold })
+export const cancelClaudeProviderLogin = (): Promise<{ ok: boolean }> => request('/codex-api/providers/claude/login/cancel', { method: 'POST' })

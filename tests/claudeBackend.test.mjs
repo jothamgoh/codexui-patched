@@ -328,13 +328,53 @@ IFS= read -r code
     const previousPath = process.env.CODEXUI_CLAUDE_PATH
     process.env.CODEXUI_CLAUDE_PATH = executable
     try {
-      const backend = new ClaudeBackend(join(directory, 'threads.json'))
+      const backend = new ClaudeBackend(join(directory, 'threads.json'), { accountSwitcherPath: null })
       backend.readProviderStatus = async () => ({ id: 'claude', connected: true })
       const login = await backend.startLogin()
       assert.equal(login.authUrl, 'https://claude.com/cai/oauth/authorize?state=expected-state')
       const status = await backend.completeLogin(login.loginId, 'authorization-code#pasted-state')
       assert.equal(status.connected, true)
     } finally {
+      if (previousPath === undefined) delete process.env.CODEXUI_CLAUDE_PATH
+      else process.env.CODEXUI_CLAUDE_PATH = previousPath
+    }
+  })
+})
+
+test('adding another account saves both logins without signing out, and cancellation releases the login lock', async () => {
+  await withFakeClaude(`#!/bin/sh
+printf '%s\\n' 'https://claude.com/cai/oauth/authorize?state=fixture'
+IFS= read -r code
+[ "$code" = 'fixture-code' ]
+`, async (executable, directory) => {
+    const previousPath = process.env.CODEXUI_CLAUDE_PATH
+    process.env.CODEXUI_CLAUDE_PATH = executable
+    const backend = new ClaudeBackend(join(directory, 'threads.json'), { accountSwitcherPath: '/fixture/cswap' })
+    let active = 1
+    let saved = 0
+    const calls = []
+    backend.readProviderStatus = async () => ({ id: 'claude', connected: true })
+    backend.runAccountCommand = async (_command, args) => {
+      calls.push(args)
+      if (args[0] === 'add') { saved += 1; active = saved > 1 ? 2 : 1 }
+      return { code: 0, stdout: JSON.stringify({ schemaVersion: 1, accounts: [1, 2].map((number) => ({ number, email: `account${number}@example.test`, active: number === active })) }) }
+    }
+    backend.runClaudeCommand = async () => { throw new Error('must not revoke a saved login') }
+    try {
+      const login = await backend.startLogin()
+      assert.equal(saved, 1, 'old account backed up before opening the new login')
+      assert.equal((await backend.accounts.snapshot()).switching, true)
+      await assert.rejects(backend.rpc('turn/start', { threadId: 'claude-fixture', input: [{ type: 'text', text: 'hi' }] }), /Finish or cancel/u)
+      await backend.completeLogin(login.loginId, 'fixture-code')
+      assert.equal(saved, 2, 'new account automatically registered')
+      assert.equal((await backend.accounts.snapshot()).activeAccountNumber, 2)
+      const pending = await backend.startLogin()
+      backend.cancelLogin()
+      assert.equal(backend.login, null)
+      await assert.rejects(backend.completeLogin(pending.loginId, 'fixture-code'), /expired/u)
+      assert.equal(calls.some((args) => args.includes('logout')), false)
+    } finally {
+      backend.dispose()
       if (previousPath === undefined) delete process.env.CODEXUI_CLAUDE_PATH
       else process.env.CODEXUI_CLAUDE_PATH = previousPath
     }

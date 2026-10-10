@@ -91,7 +91,57 @@ On macOS, Claude Code keeps its sign-in in the login keychain, which a
 LaunchDaemon cannot read. If CodexUI runs as a LaunchDaemon, also install the
 [Claude host LaunchAgent](deployment/macos/com.codexui.claude-host.plist.example)
 and set `CODEXUI_CLAUDE_HOST_SOCKET` in the private env file. The host only
-starts the Claude CLI and listens on a socket readable only by that user.
+starts the Claude CLI and supported account-management commands, and listens
+on a socket readable only by that user.
+
+### Save and switch Claude accounts
+
+Install [claude-swap](https://github.com/realiti4/claude-swap) on the host:
+
+```bash
+uv tool install claude-swap
+```
+
+In **Tools → Accounts**, choose **Save current login**, then **Add another
+account**. Sign into the next Claude account in the opened browser tab and paste
+its authorization code into CodexUI. Each completed login is saved automatically.
+Use a private browser window or another browser profile to select a different
+Claude account. Repeat for the other accounts; use **Add another account** rather
+than signing out, because signing out revokes that login's refresh token.
+
+The **Active Claude account** selector changes the default login for all Claude
+chats on this host. Chats remain in the same local Claude Code transcript folder
+and keep their history and project access. This does not combine or transfer
+Claude website chats. Separate simultaneous account logins require separate
+profiles; this feature deliberately uses one shared default login.
+
+Remove a saved login under **Manage saved accounts → Remove → Confirm remove**.
+This removes it from rotation without deleting local chats or signing out the
+current login.
+
+**Auto switch** defaults to 90% used. Usage is collected at most every fifteen
+minutes for routine checks, shared across tabs and refresh clicks. The active
+usage card reuses claude-swap's measurements instead of calling Anthropic again.
+Account add/remove/switch actions refresh the account inventory; claude-swap's
+own persistent cache and backoff still protect its usage requests. A usage 429
+keeps the last known bars and pauses routine checks for at least an hour or the
+reported retry deadline, whichever is later. Other fetch errors use increasing
+cooldowns. Cached or unknown usage never drives an automatic switch.
+
+The switcher checks the cached result after replies finish. It waits for all
+CodexUI Claude replies and queued messages to finish,
+closes idle Claude processes, then lets claude-swap select an available account.
+A manual selection takes priority and holds for at least five minutes. If every
+account is unavailable, the UI says so. Failed replies are never automatically
+replayed. Existing terminal or Remote Control processes using the same default
+Claude login may observe its change too; they are not stopped by CodexUI.
+
+Credentials stay with claude-swap and the local Claude CLI. The browser receives
+only account names, usage, and switching settings. On macOS, both CLI tools run
+through the login-session Claude host when configured. Settings are stored in
+`CODEX_HOME/codexui-claude-accounts.json`. `CODEXUI_CSWAP_PATH` can override the
+executable. Private `CLAUDE_CONFIG_DIR` profiles do not auto-discover claude-swap,
+so verification cannot change the real login.
 
 ## Is it only for Mac?
 

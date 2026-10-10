@@ -35,17 +35,28 @@
       </div>
 
       <form v-if="pendingClaudeLogin" class="claude-login" @submit.prevent="void finishClaudeLogin()">
-        <p>Finish signing in to Claude, then paste the authorization code here.</p>
+        <p>Choose the account to add, then paste its authorization code here. If the previous account opens, use the login link in a private browser window. Each login is saved for switching.</p>
         <input v-model="claudeCode" autocomplete="off" placeholder="Authorization code" aria-label="Claude authorization code">
         <div class="claude-login-actions">
           <a :href="pendingClaudeLogin.authUrl" target="_blank" rel="noopener noreferrer">Open Claude login</a>
           <button type="submit" :disabled="!claudeCode.trim() || busyProvider === 'claude'">Connect</button>
-          <button type="button" @click="cancelClaudeLogin">Cancel</button>
+          <button type="button" :disabled="busyProvider === 'claude'" @click="void cancelClaudeLogin()">Cancel</button>
         </div>
       </form>
 
       <p v-if="errorMessage" class="provider-error" role="alert">{{ errorMessage }}</p>
     </section>
+
+    <ClaudeAccountControls
+      :pool="claudeAccounts"
+      :disabled="isAccountBusy || isRefreshing || busyProvider === 'claude' || Boolean(pendingClaudeLogin)"
+      :connected="Boolean(statuses?.claude.connected)"
+      @switch="(number) => void updateClaudeAccounts(() => switchClaudeAccount(number))"
+      @configure="(enabled, threshold) => void updateClaudeAccounts(() => configureClaudeAccounts(enabled, threshold))"
+      @save="void updateClaudeAccounts(saveClaudeAccount)"
+      @remove="(number) => void updateClaudeAccounts(() => removeClaudeAccount(number))"
+      @add="void onLogin('claude')"
+    />
 
     <section v-if="statuses?.claude.connected" class="claude-usage" aria-label="Claude usage remaining">
       <header class="claude-usage-header">
@@ -67,6 +78,7 @@
         </div>
       </div>
       <p v-else class="provider-note">{{ claudeUsage?.notice || 'Claude usage is not available for this login method.' }}</p>
+      <p v-if="claudeUsage?.limits.length && claudeUsage.notice" class="provider-note">{{ claudeUsage.notice }}</p>
     </section>
 
     <RateLimitsSummary
@@ -85,10 +97,16 @@ import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
 import type { AccountRateLimitsState } from '../../api/codexGateway'
 import {
   completeClaudeLogin,
+  cancelClaudeProviderLogin,
+  configureClaudeAccounts,
+  getClaudeAccounts,
   getClaudeUsage,
   getProviderStatuses,
   logoutProvider,
   startProviderLogin,
+  saveClaudeAccount,
+  removeClaudeAccount,
+  switchClaudeAccount,
   type ClaudeUsage,
   type ProviderId,
   type ProviderLogin,
@@ -97,6 +115,8 @@ import {
 } from '../../api/providerAccounts'
 import IconTablerRefresh from '../icons/IconTablerRefresh.vue'
 import RateLimitsSummary from './RateLimitsSummary.vue'
+import ClaudeAccountControls from './ClaudeAccountControls.vue'
+import type { ClaudeAccountPool } from '../../types/claudeAccounts'
 
 const props = defineProps<{
   rateLimits: AccountRateLimitsState | null
@@ -115,6 +135,10 @@ const isUsageRefreshing = ref(false)
 const busyProvider = ref<ProviderId | ''>('')
 const logoutConfirm = ref<ProviderId | ''>('')
 const errorMessage = ref('')
+const claudeAccounts = ref<ClaudeAccountPool | null>(null)
+const isAccountBusy = ref(false)
+let accountPoll: ReturnType<typeof setInterval> | null = null
+let isAccountPolling = false
 let codexLoginPoll: ReturnType<typeof setInterval> | null = null
 
 const providerRows = computed<ProviderStatus[]>(() => statuses.value
@@ -124,15 +148,47 @@ const providerRows = computed<ProviderStatus[]>(() => statuses.value
       { id: 'codex', label: 'Codex', connected: false, email: null, organization: null, plan: null, authMethod: null, apiProvider: null },
     ])
 
-onMounted(() => { void refresh() })
-onBeforeUnmount(stopCodexLoginPoll)
+onMounted(() => {
+  void refresh()
+  accountPoll = setInterval(() => { void pollClaudeAccounts() }, 15_000)
+})
+onBeforeUnmount(() => {
+  stopCodexLoginPoll()
+  if (accountPoll) clearInterval(accountPoll)
+})
+
+async function pollClaudeAccounts(): Promise<void> {
+  if (isAccountPolling || isAccountBusy.value || busyProvider.value === 'claude') return
+  isAccountPolling = true
+  try {
+    const next = await getClaudeAccounts()
+    const changed = claudeAccounts.value && next.activeAccountNumber !== claudeAccounts.value.activeAccountNumber
+    claudeAccounts.value = next
+    if (changed) { await refresh(true); emit('providers-changed') }
+  } catch { /* A transient poll failure is retried on the next interval. */ }
+  finally { isAccountPolling = false }
+}
+
+async function updateClaudeAccounts(action: () => Promise<ClaudeAccountPool>): Promise<void> {
+  isAccountBusy.value = true
+  errorMessage.value = ''
+  try {
+    claudeAccounts.value = await action()
+    await refresh(true)
+    emit('providers-changed')
+  } catch (error) {
+    errorMessage.value = error instanceof Error ? error.message : 'Could not update Claude accounts.'
+  } finally { isAccountBusy.value = false }
+}
 
 async function refresh(force = false): Promise<void> {
   if (isRefreshing.value) return
   isRefreshing.value = true
   errorMessage.value = ''
   try {
-    statuses.value = await getProviderStatuses(force)
+    const [providers, accounts] = await Promise.all([getProviderStatuses(force), getClaudeAccounts(force)])
+    statuses.value = providers
+    claudeAccounts.value = accounts
     if (statuses.value.claude.connected) await refreshClaudeUsage(force)
     else claudeUsage.value = null
   } catch (error) {
@@ -186,9 +242,10 @@ async function finishClaudeLogin(): Promise<void> {
   busyProvider.value = 'claude'
   errorMessage.value = ''
   try {
-    await completeClaudeLogin(login.loginId, code)
-    cancelClaudeLogin()
+    const status = await completeClaudeLogin(login.loginId, code)
+    clearClaudeLogin()
     await refresh(true)
+    if (status.notice) errorMessage.value = status.notice
     emit('providers-changed')
   } catch (error) {
     errorMessage.value = error instanceof Error ? error.message : 'Could not complete Claude login.'
@@ -206,7 +263,7 @@ async function onLogout(provider: ProviderId): Promise<void> {
   errorMessage.value = ''
   try {
     await logoutProvider(provider)
-    if (provider === 'claude') cancelClaudeLogin()
+    if (provider === 'claude') clearClaudeLogin()
     await refresh(true)
     emit('providers-changed')
   } catch (error) {
@@ -241,9 +298,16 @@ function stopCodexLoginPoll(): void {
   codexLoginPoll = null
 }
 
-function cancelClaudeLogin(): void {
+function clearClaudeLogin(): void {
   pendingClaudeLogin.value = null
   claudeCode.value = ''
+}
+
+async function cancelClaudeLogin(): Promise<void> {
+  busyProvider.value = 'claude'
+  try { await cancelClaudeProviderLogin(); clearClaudeLogin(); await refresh(true) }
+  catch (error) { errorMessage.value = error instanceof Error ? error.message : 'Could not cancel Claude sign-in.' }
+  finally { busyProvider.value = '' }
 }
 
 function providerMeta(provider: ProviderStatus): string {

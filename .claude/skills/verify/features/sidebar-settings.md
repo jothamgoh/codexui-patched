@@ -10,6 +10,8 @@ settings. The `Accounts` region shows provider sign-in state.
 - `settings-speed` sets the default speed for all devices (`Standard`, `Fast`).
 - `settings-questions` toggles optional questions in new chats for this browser.
 - `settings-accounts` shows Claude and Codex sign-in state with `Refresh accounts`.
+- `settings-claude-accounts` saves Claude logins, selects the active account, and
+  configures automatic switching with usage for every saved account.
 
 ## How to get to it (user POV)
 
@@ -34,6 +36,15 @@ Preconditions:
   UI-only mode, and the Codex email in `--live-auth` mode.
 
 ## Gotchas
+
+- **Saved Claude accounts.** With a scratch `CODEXUI_CSWAP_PATH` fixture, choose
+  `Active Claude account`, toggle `Automatically switch Claude accounts`, and
+  set `Claude automatic switch threshold`. Open `Manage saved accounts`, choose
+  `Remove <email>` then `Confirm remove <email>` to delete a fixture account.
+  Reload to check the selected account and settings, and read
+  `$VERIFY_DIR/codex-home/codexui-claude-accounts.json` for settings side effects.
+  The fixture must use fake accounts and a private metadata file, never real
+  credentials or the real cswap executable. Verify both desktop and phone.
 
 - Font size and the questions toggle live in browser storage. Each `openSession` starts with a
   fresh browser context, so reset only matters within one scenario.

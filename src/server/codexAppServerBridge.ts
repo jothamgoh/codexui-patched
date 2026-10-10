@@ -1801,6 +1801,33 @@ export function createCodexBridgeMiddleware(): CodexBridgeMiddleware {
         return
       }
 
+      if (url.pathname === '/codex-api/providers/claude/accounts' && req.method === 'GET') {
+        setJson(res, 200, { data: await shared.claude.accounts.snapshot(url.searchParams.has('force')) })
+        return
+      }
+
+      if (req.method === 'POST' && url.pathname.startsWith('/codex-api/providers/claude/accounts/')) {
+        const body = asRecord(await readJsonBody(req))
+        try {
+          let data
+          if (url.pathname.endsWith('/settings')) data = await shared.claude.accounts.configure(body?.enabled, body?.threshold)
+          else if (url.pathname.endsWith('/switch')) data = await shared.claude.accounts.requestSwitch(body?.number)
+          else if (url.pathname.endsWith('/save')) data = await shared.claude.accounts.enrollCurrent()
+          else if (url.pathname.endsWith('/remove')) data = await shared.claude.accounts.removeAccount(body?.number)
+          else { setJson(res, 404, { error: 'Unknown account action.' }); return }
+          setJson(res, 200, { data })
+        } catch (error) {
+          setJson(res, 409, { error: getErrorMessage(error, 'Could not update Claude accounts.') })
+        }
+        return
+      }
+
+      if (req.method === 'POST' && url.pathname === '/codex-api/providers/claude/login/cancel') {
+        await shared.claude.accounts.exclusive(async () => shared.claude.cancelLogin())
+        setJson(res, 200, { data: { ok: true } })
+        return
+      }
+
       if (req.method === 'POST' && url.pathname === '/codex-api/providers/codex/login/start') {
         const result = await shared.appServer.rpc('account/login/start', { type: 'chatgpt' })
         setJson(res, 200, { data: result })
@@ -1808,7 +1835,8 @@ export function createCodexBridgeMiddleware(): CodexBridgeMiddleware {
       }
 
       if (req.method === 'POST' && url.pathname === '/codex-api/providers/claude/login/start') {
-        setJson(res, 200, { data: await shared.claude.startLogin() })
+        try { setJson(res, 200, { data: await shared.claude.startLogin() }) }
+        catch (error) { setJson(res, 409, { error: getErrorMessage(error, 'Could not start Claude sign-in.') }) }
         return
       }
 
@@ -1837,8 +1865,10 @@ export function createCodexBridgeMiddleware(): CodexBridgeMiddleware {
       }
 
       if (req.method === 'POST' && url.pathname === '/codex-api/providers/claude/logout') {
-        await shared.claude.logout()
-        setJson(res, 200, { data: { ok: true } })
+        try {
+          await shared.claude.logout()
+          setJson(res, 200, { data: { ok: true } })
+        } catch (error) { setJson(res, 409, { error: getErrorMessage(error, 'Could not sign out of Claude.') }) }
         return
       }
 

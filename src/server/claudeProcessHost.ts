@@ -71,6 +71,19 @@ export function isAllowedClaudeCommand(command: string): boolean {
   }
 }
 
+/** Account management stays in the login session too, with a narrow command surface. */
+export function isAllowedClaudeHostRequest(command: string, args: string[]): boolean {
+  if (isAllowedClaudeCommand(command)) return true
+  if (!command.startsWith('/') || basename(command) !== 'cswap') return false
+  try { if (!statSync(command).isFile()) return false } catch { return false }
+  if (args.length === 1 && args[0] === 'add') return true
+  if (args.length === 2 && args[0] === 'remove' && /^[1-9]\d*$/u.test(args[1] ?? '')) return true
+  if (args.length === 2 && args[0] === 'list' && args[1] === '--json') return true
+  if (args.length === 3 && args[0] === 'switch' && /^[1-9]\d*$/u.test(args[1] ?? '') && args[2] === '--json') return true
+  return args.length === 5 && args.slice(0, 4).join(' ') === 'auto --once --json --threshold'
+    && /^\d{2}$/u.test(args[4] ?? '') && Number(args[4]) >= 50 && Number(args[4]) <= 99
+}
+
 function readSpawnRequest(payload: Buffer): HostSpawnRequest {
   const record = parseJson(payload)
   const command = typeof record.command === 'string' ? record.command : ''
@@ -100,8 +113,8 @@ function serveConnection(socket: Socket): void {
   }
 
   const start = (request: HostSpawnRequest): void => {
-    if (!isAllowedClaudeCommand(request.command)) {
-      fail(`The Claude host only starts the Claude CLI, not ${request.command || 'an empty command'}.`)
+    if (!isAllowedClaudeHostRequest(request.command, request.args)) {
+      fail('The Claude host only starts the Claude CLI and supported account management commands.')
       return
     }
     if (request.cwd && !existsSync(request.cwd)) {

@@ -25,7 +25,7 @@ const { outputFiles } = await build({ entryPoints: [entry], bundle: true, write:
 const { useDesktopState } = await import(`data:text/javascript;base64,${Buffer.from(outputFiles[0].contents).toString('base64')}`)
 const flush = async () => { for (let index = 0; index < 12; index++) await Promise.resolve() }
 const message = (text, overrides = {}) => ({ id: 'answer', role: 'assistant', text, messageType: 'agentMessage', turnId: 'turn-1', turnIndex: 50, orderKey: '000050:000002:000000', ...overrides })
-const page = (messages, isInProgress = true) => ({ messages, isInProgress, activeTurnId: isInProgress ? 'turn-1' : '', turnSummaries: [], startTurnIndex: 50, endTurnIndex: 51, totalTurns: 51, hasEarlier: true })
+const page = (messages, isInProgress = true) => ({ messages, isInProgress, activeTurnId: isInProgress ? 'turn-1' : '', turnSummaries: [], backgroundTasks: [], startTurnIndex: 50, endTurnIndex: 51, totalTurns: 51, hasEarlier: true })
 
 function fixture(t, gateway = {}) {
   const storage = new Map()

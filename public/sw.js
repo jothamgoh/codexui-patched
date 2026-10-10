@@ -35,19 +35,48 @@ async function showPushNotification(event) {
       includeUncontrolled: true,
     })
     if (openClients.some((client) => client.focused === true)) {
+      await reportReceipt(payload.tag, false, '')
       return
     }
   }
 
-  await self.registration.showNotification(payload.title || 'Agents', {
-    body: payload.body || 'Codex finished responding',
-    tag: payload.tag || undefined,
-    icon: payload.icon || NOTIFICATION_ICON,
-    badge: payload.badge || NOTIFICATION_BADGE,
-    data: {
-      url: normalizeDestination(payload.url),
-    },
-  })
+  try {
+    await self.registration.showNotification(payload.title || 'Agents', {
+      body: payload.body || 'Codex finished responding',
+      tag: payload.tag || undefined,
+      icon: payload.icon || NOTIFICATION_ICON,
+      badge: payload.badge || NOTIFICATION_BADGE,
+      data: {
+        url: normalizeDestination(payload.url),
+      },
+    })
+  } catch (error) {
+    await reportReceipt(payload.tag, false, String(error))
+    throw error
+  }
+  await reportReceipt(payload.tag, true, '')
+}
+
+// Tell the server this device got the push and whether it showed it. A lost
+// alert is then either undelivered (no receipt) or hidden by the OS (shown).
+async function reportReceipt(tag, shown, error) {
+  try {
+    const subscription = await self.registration.pushManager.getSubscription()
+    if (!subscription) return
+    await fetch('/codex-api/push/receipt', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({
+        endpoint: subscription.endpoint,
+        tag: tag || '',
+        shown,
+        permission: self.Notification?.permission || '',
+        error,
+      }),
+    })
+  } catch {
+    // A receipt is diagnostic only; never let it block the notification.
+  }
 }
 
 async function openNotificationDestination(rawDestination) {

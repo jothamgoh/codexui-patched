@@ -21,6 +21,14 @@ type BridgeNotification = {
 
 type NotificationMode = 'unfocused' | 'always'
 
+type PushReceipt = {
+  receivedAt: string
+  tag: string
+  shown: boolean
+  permission: string
+  error?: string
+}
+
 type StoredSubscription = {
   subscription: PushSubscription
   mode: NotificationMode
@@ -617,6 +625,10 @@ export function createWebPushTurnNotifier(): WebPushTurnNotifier {
     })
   }
 
+  // What each device's service worker reported for its latest push, so a lost
+  // alert can be placed: never reached the device, or shown but hidden by the OS.
+  const receipts = new Map<string, PushReceipt>()
+
   const handleRequest = (req: IncomingMessage, res: ServerResponse, next: () => void): void => {
     if (!req.url) {
       next()
@@ -652,8 +664,39 @@ export function createWebPushTurnNotifier(): WebPushTurnNotifier {
         return
       }
 
+      if (req.method === 'GET' && url.pathname === '/codex-api/push/receipts') {
+        setJson(res, 200, {
+          data: state.subscriptions.map((entry) => ({
+            deviceName: entry.deviceName,
+            updatedAt: entry.updatedAt,
+            receipt: receipts.get(entry.subscription.endpoint) ?? null,
+          })),
+        })
+        return
+      }
+
       const body = asRecord(await readJsonBody(req))
       const subscription = normalizeSubscription(body?.subscription)
+
+      if (req.method === 'POST' && url.pathname === '/codex-api/push/receipt') {
+        const endpoint = readString(body?.endpoint)
+        const entry = state.subscriptions.find((candidate) => candidate.subscription.endpoint === endpoint)
+        if (!entry) {
+          setJson(res, 404, { error: 'Unknown push subscription' })
+          return
+        }
+        const receipt: PushReceipt = {
+          receivedAt: new Date().toISOString(),
+          tag: readString(body?.tag).slice(0, 200),
+          shown: body?.shown === true,
+          permission: readString(body?.permission).slice(0, 20),
+          ...(readString(body?.error) ? { error: readString(body?.error).slice(0, 300) } : {}),
+        }
+        receipts.set(endpoint, receipt)
+        console.log(`[web-push] ${entry.deviceName || 'Device'} received a push: ${receipt.shown ? 'shown' : 'not shown'}, permission ${receipt.permission || 'unknown'}${receipt.error ? `, error ${receipt.error}` : ''}`)
+        setJson(res, 200, { ok: true })
+        return
+      }
 
       if (req.method === 'POST' && url.pathname === '/codex-api/push/history/read') {
         const ids = Array.isArray(body?.ids)

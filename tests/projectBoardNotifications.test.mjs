@@ -438,6 +438,18 @@ test('board delivery reuses the durable inbox and device/Telegram preferences wi
   assert.equal(globalThis.__boardPushDeliveries.length, sentBefore + 2)
   assert.deepEqual(globalThis.__boardPushDeliveries.slice(-2).map(({ payload }) => [payload.title, payload.body, payload.url]), Array(2).fill(['Lead needs your approval', 'Open the Lead chat to review the request and continue.', '/#/thread/lead?board=board&feature=feature']))
   assert.equal(await createWebPushTurnNotifier().handleProjectBoardNotification(nativeEvent), false)
+
+  // A device's service worker reports each push it receives, and whether it showed it.
+  const { Readable } = await import('node:stream')
+  const call = (method, url, body) => new Promise((resolve) => {
+    const req = Object.assign(Readable.from(body === undefined ? [] : [Buffer.from(JSON.stringify(body))]), { method, url, headers: { 'content-type': 'application/json' } })
+    const res = { statusCode: 200, setHeader() {}, end(text) { resolve({ status: this.statusCode, body: JSON.parse(text) }) } }
+    nativePush.handleRequest(req, res, () => resolve({ status: 'next' }))
+  })
+  assert.equal((await call('POST', '/codex-api/push/receipt', { endpoint: 'https://push.example.test/unknown', shown: true })).status, 404)
+  assert.equal((await call('POST', '/codex-api/push/receipt', { endpoint: 'https://push.example.test/always', tag: 't-1', shown: true, permission: 'granted' })).status, 200)
+  const receipts = (await call('GET', '/codex-api/push/receipts')).body.data
+  assert.deepEqual(receipts.map(({ receipt }) => receipt && { tag: receipt.tag, shown: receipt.shown, permission: receipt.permission }), [{ tag: 't-1', shown: true, permission: 'granted' }, null])
   await nativePush.syncProjectBoardNativeRequests([nativeEvent.id], '2026-09-07T01:01:00Z')
   assert.equal(JSON.parse(await readFile(stateFile, 'utf8')).history[0].readAt, null)
   await nativePush.syncProjectBoardNativeRequests([], '2026-09-07T01:02:00Z')

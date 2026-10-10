@@ -732,6 +732,8 @@ export class ClaudeBackend {
   private readonly computerUseAllowedThreads = new Set<string>()
   /** Each Chrome-capable runner's current turn id, read by the cua relay. */
   private readonly cuaTurnDirectory: string
+  /** Writes per turn file, in order, so a quick next turn never lands before the previous end. */
+  private readonly cuaTurnWrites = new Map<string, Promise<void>>()
   /** Best-known chat names, for notification titles. */
   private readonly sessionTitles = new Map<string, string>()
   private readonly humanSessions = new Map<string, { human: boolean; lastModified: number }>()
@@ -2023,7 +2025,7 @@ export class ClaudeBackend {
   }
 
   private beginTurn(runner: SessionRunner, turnId: string, cwd: string, userMessage: SDKUserMessage | null): LiveTurn {
-    if (runner.cuaTurnFile) void this.recordCuaTurn(runner.cuaTurnFile, turnId)
+    if (runner.cuaTurnFile) this.queueCuaTurn(runner.cuaTurnFile, turnId)
     if (runner.idleTimer) clearTimeout(runner.idleTimer)
     runner.idleTimer = null
     const turn: LiveTurn = {
@@ -2065,6 +2067,7 @@ export class ClaudeBackend {
     const turn = runner.activeTurn
     if (!turn || turn.settled) return
     turn.settled = true
+    if (runner.cuaTurnFile && !runner.closed) this.queueCuaTurn(runner.cuaTurnFile, turn.turnId, true)
     runner.activeTurn = null
     runner.pushedCommands.delete(turn.turnId)
     if (runner.interruptTimer) clearTimeout(runner.interruptTimer)
@@ -2127,10 +2130,25 @@ export class ClaudeBackend {
     }
   }
 
-  private async recordCuaTurn(turnFile: string, turnId: string): Promise<void> {
+  private queueCuaTurn(turnFile: string, turnId: string, ended = false): void {
+    this.queueCuaTurnWrite(turnFile, () => this.recordCuaTurn(turnFile, turnId, ended))
+  }
+
+  private queueCuaTurnRemoval(turnFile: string): void {
+    this.queueCuaTurnWrite(turnFile, () => rm(turnFile, { force: true }).catch(() => undefined))
+  }
+
+  private queueCuaTurnWrite(turnFile: string, write: () => Promise<void>): void {
+    const next = (this.cuaTurnWrites.get(turnFile) ?? Promise.resolve()).then(write)
+    this.cuaTurnWrites.set(turnFile, next)
+    void next.then(() => { if (this.cuaTurnWrites.get(turnFile) === next) this.cuaTurnWrites.delete(turnFile) })
+  }
+
+  /** Tell the cua relay the current turn, and when it ends so it can release Chrome tabs. */
+  private async recordCuaTurn(turnFile: string, turnId: string, ended = false): Promise<void> {
     try {
       await mkdir(dirname(turnFile), { recursive: true, mode: 0o700 })
-      await writeFile(turnFile, turnId, { mode: 0o600 })
+      await writeFile(turnFile, ended ? `${turnId}\nended` : turnId, { mode: 0o600 })
     } catch (error) {
       console.warn('[claude-backend] Could not record the Chrome turn:', error instanceof Error ? error.message : error)
     }
@@ -2185,7 +2203,7 @@ export class ClaudeBackend {
     runner.idleTimer = null
     runner.closed = true
     this.runners.delete(sessionId)
-    if (runner.cuaTurnFile) void rm(runner.cuaTurnFile, { force: true }).catch(() => undefined)
+    if (runner.cuaTurnFile) this.queueCuaTurnRemoval(runner.cuaTurnFile)
     this.setBackgroundTasks(runner, [], { checkAccounts: false })
     runner.input.release()
     if (runner.activeTurn) {
@@ -2219,7 +2237,7 @@ export class ClaudeBackend {
     } finally {
       runner.closed = true
       if (this.runners.get(runner.sessionId) === runner) this.runners.delete(runner.sessionId)
-      if (runner.cuaTurnFile) void rm(runner.cuaTurnFile, { force: true }).catch(() => undefined)
+      if (runner.cuaTurnFile) this.queueCuaTurnRemoval(runner.cuaTurnFile)
       if (runner.idleTimer) clearTimeout(runner.idleTimer)
       const turn = runner.activeTurn
       const hardLimitFailure = Boolean(turn && !turn.interrupted && isClaudeHardLimitError(failure))

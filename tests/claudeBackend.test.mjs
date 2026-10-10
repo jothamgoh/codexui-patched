@@ -35,7 +35,7 @@ const { BackendRouter } = await loadModule('../src/server/backendRouter.ts')
 const transcript = await loadModule('../src/server/claudeTranscript.ts')
 const { startClaudeProcessHost, spawnThroughHost } = await loadModule('../src/server/claudeProcessHost.ts')
 const { scanClaudeSessionRegistry } = await loadModule('../src/server/claudeSessionRegistry.ts')
-const { withTurnMetadata } = await loadModule('../src/server/cuaRelay.ts')
+const { withTurnMetadata, parseTurnFile, turnEndedRequest, isRelayResponse } = await loadModule('../src/server/cuaRelay.ts')
 const cuaRelayBundle = join(bundleDir, `${'../src/server/cuaRelay.ts'.replace(/[^a-z0-9]/giu, '_')}.mjs`)
 const { buildReviewChanges } = await loadModule('../src/utils/reviewDiff.ts')
 const { createClaudeAutomationTool } = await loadModule('../src/server/claudeAutomationTool.ts')
@@ -511,6 +511,50 @@ test('the cua relay process forwards stdio and reads the current turn on each ca
   }
 })
 
+test('the cua relay tells the plugin when a turn ends, as Codex does, and hides the answer from Claude', async () => {
+  assert.deepEqual(parseTurnFile('turn-1'), { turnId: 'turn-1', ended: false })
+  assert.deepEqual(parseTurnFile('turn-1\nended'), { turnId: 'turn-1', ended: true })
+  const request = JSON.parse(turnEndedRequest(1, 'session-1', 'turn-1'))
+  assert.deepEqual(request.params.arguments, { hook_event_name: 'Stop', session_id: 'session-1', turn_id: 'turn-1' })
+  assert.equal(isRelayResponse(JSON.stringify({ jsonrpc: '2.0', id: request.id, result: {} })), true)
+  assert.equal(isRelayResponse(JSON.stringify({ jsonrpc: '2.0', id: 7, result: {} })), false)
+
+  const directory = await mkdtemp(join(tmpdir(), 'codexui-cua-relay-end-'))
+  try {
+    const received = join(directory, 'received.jsonl')
+    const server = join(directory, 'server.mjs')
+    await writeFile(server, `import { appendFileSync } from 'node:fs'
+import { createInterface } from 'node:readline'
+createInterface({ input: process.stdin }).on('line', (line) => {
+  appendFileSync(${JSON.stringify(received)}, line + '\\n')
+  const message = JSON.parse(line)
+  if (message.id !== undefined) process.stdout.write(JSON.stringify({ jsonrpc: '2.0', id: message.id, result: { echoed: message.method } }) + '\\n')
+})
+`)
+    const turnFile = join(directory, 'turn')
+    await writeFile(turnFile, 'turn-a')
+    const relay = spawn(process.execPath, [cuaRelayBundle, 'session-7', turnFile, '--', process.execPath, server], { stdio: ['pipe', 'pipe', 'inherit'] })
+    const output = []
+    createInterface({ input: relay.stdout }).on('line', (line) => output.push(JSON.parse(line)))
+    relay.stdin.write(`${JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'initialize', params: {} })}\n`)
+    relay.stdin.write(`${JSON.stringify({ jsonrpc: '2.0', method: 'notifications/initialized' })}\n`)
+    await writeFile(turnFile, 'turn-a\nended')
+    const sent = async () => (await readFile(received, 'utf8').catch(() => '')).split('\n').filter(Boolean).map((line) => JSON.parse(line))
+    for (let attempt = 0; attempt < 60 && !(await sent()).some((m) => m.params?.name === 'turn_ended'); attempt += 1) await new Promise((resolve) => setTimeout(resolve, 100))
+    const ended = (await sent()).filter((m) => m.params?.name === 'turn_ended')
+    assert.equal(ended.length, 1)
+    assert.deepEqual(ended[0].params.arguments, { hook_event_name: 'Stop', session_id: 'session-7', turn_id: 'turn-a' })
+    await new Promise((resolve) => setTimeout(resolve, 1200))
+    assert.equal((await sent()).filter((m) => m.params?.name === 'turn_ended').length, 1, 'each turn ends once')
+    assert.deepEqual(output.map((m) => m.id), [1], 'Claude sees its own answers only')
+    const exited = new Promise((resolve) => relay.on('exit', resolve))
+    relay.stdin.end()
+    await exited
+  } finally {
+    await rm(directory, { recursive: true, force: true })
+  }
+})
+
 test('Claude chats drive Chrome through the cua relay instead of Claude in Chrome when it is available', async () => {
   const stubRelay = join(bundleDir, 'cuaRelay.js')
   await writeFile(stubRelay, '')
@@ -526,6 +570,9 @@ test('Claude chats drive Chrome through the cua relay instead of Claude in Chrom
       for (let attempt = 0; attempt < 50 && !(await stat(turnFile).catch(() => null)); attempt += 1) await new Promise((resolve) => setTimeout(resolve, 10))
       assert.equal(await readFile(turnFile, 'utf8'), 'turn-1')
       assert.equal((await stat(turnFile)).mode & 0o777, 0o600)
+      backend.finishTurn(backend.runners.get(sessionId), 'completed')
+      for (let attempt = 0; attempt < 50 && (await readFile(turnFile, 'utf8')) !== 'turn-1\nended'; attempt += 1) await new Promise((resolve) => setTimeout(resolve, 10))
+      assert.equal(await readFile(turnFile, 'utf8'), 'turn-1\nended', 'the relay learns the turn ended')
       backend.closeRunner(sessionId)
       for (let attempt = 0; attempt < 50 && await stat(turnFile).catch(() => null); attempt += 1) await new Promise((resolve) => setTimeout(resolve, 10))
       assert.equal(await stat(turnFile).catch(() => null), null, 'a closed chat leaves no turn file')

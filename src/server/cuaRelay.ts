@@ -3,9 +3,9 @@
 // except that each tool call gains the Codex turn metadata the Chrome browser
 // surface requires. Claude Code cannot attach that metadata itself.
 import { spawn } from 'node:child_process'
-import { readFileSync } from 'node:fs'
+import { readFileSync, realpathSync, unwatchFile, watchFile } from 'node:fs'
 import { createInterface } from 'node:readline'
-import { pathToFileURL } from 'node:url'
+import { fileURLToPath } from 'node:url'
 
 type JsonRecord = Record<string, unknown>
 
@@ -45,11 +45,48 @@ export function withTurnMetadata(line: string, sessionId: string, turnId: string
   })
 }
 
-function currentTurnId(turnFile: string, fallback: string): string {
+/** Request ids the relay itself sends; their responses are not Claude's to see. */
+const RELAY_REQUEST_PREFIX = 'codexui-relay-'
+
+/** CodexUI's turn file: the current turn id, then `ended` once that reply finishes. */
+export function parseTurnFile(text: string): { turnId: string; ended: boolean } {
+  const [turnId = '', state = ''] = text.split('\n').map((line) => line.trim())
+  return { turnId, ended: state === 'ended' }
+}
+
+function readTurnFile(turnFile: string): { turnId: string; ended: boolean } {
   try {
-    return readFileSync(turnFile, 'utf8').trim() || fallback
+    return parseTurnFile(readFileSync(turnFile, 'utf8'))
   } catch {
-    return fallback
+    return { turnId: '', ended: false }
+  }
+}
+
+/**
+ * The `turn_ended` call Codex's own plugin hook makes on Stop. It lets the
+ * browser surface detach from its tabs and close the ones it opened; without
+ * it, agent tabs stay attached and stale attachments stop responding.
+ */
+export function turnEndedRequest(requestId: number, sessionId: string, turnId: string): string {
+  return JSON.stringify({
+    jsonrpc: '2.0',
+    id: `${RELAY_REQUEST_PREFIX}${requestId}`,
+    method: 'tools/call',
+    params: {
+      name: 'turn_ended',
+      arguments: { hook_event_name: 'Stop', session_id: sessionId, turn_id: turnId },
+      _meta: { 'x-codex-turn-metadata': { session_id: sessionId, turn_id: turnId } },
+    },
+  })
+}
+
+/** Whether a server line answers a request the relay made itself. */
+export function isRelayResponse(line: string): boolean {
+  try {
+    const id = asRecord(JSON.parse(line))?.id
+    return typeof id === 'string' && id.startsWith(RELAY_REQUEST_PREFIX)
+  } catch {
+    return false
   }
 }
 
@@ -64,19 +101,42 @@ function main(): void {
   }
 
   const child = spawn(command, args, { stdio: ['pipe', 'pipe', 'inherit'] })
-  child.stdout.pipe(process.stdout)
+  createInterface({ input: child.stdout, crlfDelay: Infinity }).on('line', (line) => {
+    if (!isRelayResponse(line)) process.stdout.write(`${line}\n`)
+  })
   child.on('exit', (code, signal) => process.exit(code ?? (signal ? 1 : 0)))
   child.on('error', (error) => {
     process.stderr.write(`cua relay: ${error.message}\n`)
     process.exit(1)
   })
 
+  let initialized = false
+  let nextRequestId = 1
+  let lastEndedTurn = ''
+  // Checked on every change and once the server is ready, so an end written
+  // before the relay started watching is not missed.
+  const endTurnIfDone = (): void => {
+    if (!turnFile || !initialized) return
+    const { turnId, ended } = readTurnFile(turnFile)
+    if (!ended || !turnId || turnId === lastEndedTurn) return
+    lastEndedTurn = turnId
+    child.stdin.write(`${turnEndedRequest(nextRequestId++, sessionId, turnId)}\n`)
+  }
   const lines = createInterface({ input: process.stdin, crlfDelay: Infinity })
   lines.on('line', (line) => {
-    const turnId = turnFile ? currentTurnId(turnFile, sessionId) : sessionId
+    const turnId = turnFile ? readTurnFile(turnFile).turnId || sessionId : sessionId
     child.stdin.write(`${withTurnMetadata(line, sessionId, turnId)}\n`)
+    if (!initialized && line.includes('"notifications/initialized"')) {
+      initialized = true
+      endTurnIfDone()
+    }
   })
-  lines.on('close', () => child.stdin.end())
+  lines.on('close', () => {
+    if (turnFile) unwatchFile(turnFile)
+    child.stdin.end()
+  })
+  if (turnFile) watchFile(turnFile, { interval: 500 }, endTurnIfDone)
 }
 
-if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) main()
+// Compare real paths: macOS temp and home paths can reach this file through symlinks.
+if (process.argv[1] && realpathSync(fileURLToPath(import.meta.url)) === realpathSync(process.argv[1])) main()

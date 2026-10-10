@@ -465,6 +465,63 @@ test('loads guarded Mac control for Claude runners and waits for approval', asyn
   }
 })
 
+async function withComputerUseRunner(env, run) {
+  const directory = await mkdtemp(join(tmpdir(), 'codexui-claude-computer-use-'))
+  const configPath = join(directory, 'computer-use.mcp.json')
+  await writeFile(configPath, JSON.stringify({ mcpServers: { cua_repl: { command: process.execPath } } }))
+  const names = ['CODEXUI_CLAUDE_COMPUTER_USE_MCP_FILE', 'CODEXUI_CLAUDE_COMPUTER_USE_APPROVAL']
+  const previous = Object.fromEntries(names.map((name) => [name, process.env[name]]))
+  Object.assign(process.env, { CODEXUI_CLAUDE_COMPUTER_USE_MCP_FILE: configPath, ...env })
+  const backend = new ClaudeBackend(join(directory, 'threads.json'), { accountSwitcherPath: null, claudeConfigDir: directory })
+  let runnerOptions
+  backend.readRuntime = async () => ({ connected: true, account: {}, models: [] })
+  backend.sdk = async () => ({
+    query: ({ options }) => {
+      runnerOptions = options
+      return { async *[Symbol.asyncIterator]() {}, close: () => {}, interrupt: async () => {} }
+    },
+  })
+  try {
+    const runner = await backend.createRunner(
+      'claude-11111111-2222-3333-4444-555555555557',
+      '11111111-2222-3333-4444-555555555557',
+      { cwd: directory, model: 'claude-default', effort: null, createdAtMs: Date.now() },
+      directory,
+      `claude-default||${directory}`,
+    )
+    backend.beginTurn(runner, 'turn-1', directory, null)
+    await run({ backend, runnerOptions })
+  } finally {
+    backend.dispose()
+    for (const name of names) {
+      if (previous[name] === undefined) delete process.env[name]
+      else process.env[name] = previous[name]
+    }
+    await rm(directory, { recursive: true, force: true })
+  }
+}
+
+test('gives Claude unattended Mac control when approval is set to never', async () => {
+  await withComputerUseRunner({ CODEXUI_CLAUDE_COMPUTER_USE_APPROVAL: 'never' }, async ({ backend, runnerOptions }) => {
+    assert.equal(runnerOptions.mcpServers.cua_repl.command, process.execPath)
+    assert.equal(runnerOptions.hooks.PreToolUse.some((matcher) => matcher.matcher === 'mcp__cua_repl__js'), false)
+    const elicited = await runnerOptions.onElicitation(
+      { serverName: 'cua_repl', mode: 'form', message: 'Allow access to Safari?' },
+      { signal: new AbortController().signal },
+    )
+    assert.deepEqual(elicited, { action: 'accept' })
+    assert.deepEqual(backend.listPendingServerRequests(), [])
+  })
+})
+
+test('starts a Claude chat without Mac control when the computer-use plugin is broken', async () => {
+  await withComputerUseRunner({ CODEXUI_CLAUDE_COMPUTER_USE_MCP_FILE: '/missing/computer-use.mcp.json' }, async ({ runnerOptions }) => {
+    assert.ok(runnerOptions, 'the runner must still start')
+    assert.equal(runnerOptions.mcpServers?.cua_repl, undefined)
+    assert.equal(runnerOptions.onElicitation, undefined)
+  })
+})
+
 async function withFakeClaude(script, run) {
   const directory = await mkdtemp(join(tmpdir(), 'codexui-fake-claude-'))
   const executable = join(directory, 'claude')

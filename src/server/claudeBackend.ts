@@ -20,7 +20,7 @@ import type {
   SpawnOptions,
 } from '@anthropic-ai/claude-agent-sdk'
 import { getCodexUiChildEnv } from './envFile'
-import { loadClaudeComputerUseMcpConfig } from './claudeComputerUse'
+import { claudeComputerUseNeedsApproval, loadClaudeComputerUseMcpConfig } from './claudeComputerUse'
 import { spawnThroughHost } from './claudeProcessHost'
 import { ClaudeAccountSwitcher, resolveCSwapExecutable, type CSwapResult } from './claudeAccountSwitcher'
 import {
@@ -1859,7 +1859,12 @@ export class ClaudeBackend {
     settingsKey: string,
   ): Promise<SessionRunner> {
     const sdk = await this.sdk()
-    const computerUseMcp = await loadClaudeComputerUseMcpConfig()
+    // A missing or broken computer-use plugin must not stop the chat itself.
+    const computerUseMcp = await loadClaudeComputerUseMcpConfig().catch((error: unknown) => {
+      console.warn('[claude-backend] Computer use unavailable:', error instanceof Error ? error.message : error)
+      return null
+    })
+    const computerUseApproval = Boolean(computerUseMcp) && claudeComputerUseNeedsApproval()
     const runtime = await this.readRuntime().catch(() => null)
     const modelInfo = runtime?.models.find((model) => model.value === toModelValue(stored.model))
     const transcriptPath = await this.findTranscriptPath(sessionId, cwd)
@@ -1943,12 +1948,13 @@ export class ClaudeBackend {
       hooks: {
         PreToolUse: [
           { matcher: 'AskUserQuestion', hooks: [askQuestion] },
-          ...(computerUseMcp ? [{ matcher: 'mcp__cua_repl__js', hooks: [approveComputerUse] }] : []),
+          ...(computerUseApproval ? [{ matcher: 'mcp__cua_repl__js', hooks: [approveComputerUse] }] : []),
         ],
       },
       ...(computerUseMcp ? {
         onElicitation: async (request, { signal }) => {
           if (request.serverName !== 'cua_repl' || request.mode === 'url') return { action: 'decline' as const }
+          if (!computerUseApproval) return { action: 'accept' as const }
           const accepted = await this.askComputerUsePermission(
             runner,
             '',

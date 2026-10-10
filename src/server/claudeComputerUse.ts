@@ -6,6 +6,7 @@ import type { McpStdioServerConfig } from '@anthropic-ai/claude-agent-sdk'
 import { z } from 'zod'
 
 const CONFIG_ENV = 'CODEXUI_CLAUDE_COMPUTER_USE_MCP_FILE'
+const APPROVAL_ENV = 'CODEXUI_CLAUDE_COMPUTER_USE_APPROVAL'
 const MAX_CONFIG_BYTES = 128 * 1024
 
 const stdioServerSchema = z.object({
@@ -30,6 +31,11 @@ async function newestBundledConfig(): Promise<string> {
     if ((await stat(candidate).catch(() => null))?.isFile()) return candidate
   }
   throw new Error('the installed Codex unified-computer-use plugin has no MCP configuration')
+}
+
+/** `never` gives Claude chats unattended control of this Mac; anything else asks first. */
+export function claudeComputerUseNeedsApproval(): boolean {
+  return process.env[APPROVAL_ENV]?.trim().toLowerCase() !== 'never'
 }
 
 /** Load only the Codex computer-use bridge, never arbitrary MCP entries. */

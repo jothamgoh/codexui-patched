@@ -97,8 +97,19 @@ CODEXUI_CLAUDE_COMPUTER_USE_MCP_FILE=auto
 ```
 
 CodexUI loads only the plugin's `cua_repl` server, limits it to native computer
-control, and asks for approval before every control call. Restart CodexUI to
-apply this setting to new Claude runners.
+control, and gives it to every Claude chat. By default it asks before each
+control call; "Allow for this chat" approves the rest of that chat until CodexUI
+restarts. To give Claude chats full, unattended control of the Mac, also set:
+
+```bash
+CODEXUI_CLAUDE_COMPUTER_USE_APPROVAL=never
+```
+
+Use `never` only on a machine you are happy for any Claude chat to drive, since
+anyone who can send a Claude chat message can then operate its apps. If the
+plugin is missing or its configuration is invalid, Claude chats still start,
+without Mac control, and the server log says why. Restart CodexUI to apply these
+settings to new Claude runners.
 
 On macOS, Claude Code keeps its sign-in in the login keychain, which a
 LaunchDaemon cannot read. If CodexUI runs as a LaunchDaemon, also install the

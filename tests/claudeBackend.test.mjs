@@ -476,7 +476,11 @@ test('loads guarded Mac control for Claude runners and waits for approval', asyn
 test('the cua relay adds Codex turn metadata to tool calls only', () => {
   const meta = { session_id: 'session-1', turn_id: 'turn-1' }
   const call = JSON.parse(withTurnMetadata(JSON.stringify({ jsonrpc: '2.0', id: 4, method: 'tools/call', params: { name: 'js', arguments: { code: '1' }, _meta: { progressToken: 7 } } }), 'session-1', 'turn-1'))
-  assert.deepEqual(call.params, { name: 'js', arguments: { code: '1' }, _meta: { progressToken: 7, 'x-codex-turn-metadata': meta } })
+  assert.deepEqual(call.params, { name: 'js', arguments: { code: '1', timeout_ms: 120000 }, _meta: { progressToken: 7, 'x-codex-turn-metadata': meta } })
+  const chosen = JSON.parse(withTurnMetadata(JSON.stringify({ jsonrpc: '2.0', id: 5, method: 'tools/call', params: { name: 'js', arguments: { code: '1', timeout_ms: 5000 } } }), 'session-1', 'turn-1'))
+  assert.equal(chosen.params.arguments.timeout_ms, 5000, 'a timeout Claude chose is kept')
+  const reset = JSON.parse(withTurnMetadata(JSON.stringify({ jsonrpc: '2.0', id: 6, method: 'tools/call', params: { name: 'js_reset', arguments: {} } }), 'session-1', 'turn-1'))
+  assert.deepEqual(reset.params.arguments, {}, 'only js calls get the longer default')
   const list = JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'tools/list' })
   assert.equal(withTurnMetadata(list, 'session-1', 'turn-1'), list)
   assert.equal(withTurnMetadata('not json', 'session-1', 'turn-1'), 'not json')

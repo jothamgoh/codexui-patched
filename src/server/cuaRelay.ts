@@ -13,7 +13,18 @@ function asRecord(value: unknown): JsonRecord | null {
   return value && typeof value === 'object' && !Array.isArray(value) ? value as JsonRecord : null
 }
 
-/** Add `x-codex-turn-metadata` to a `tools/call` request line; leave every other line as it is. */
+/**
+ * The first `js` call starts the Computer Use and browser services, which can
+ * take a minute on a busy Mac. cua_repl's own 30 s default then resets the
+ * kernel mid-start, so every retry starts over. Calls that set no timeout get
+ * this one; the MCP timeout in claudeComputerUse.ts must stay above it.
+ */
+export const CUA_JS_DEFAULT_TIMEOUT_MS = 120_000
+
+/**
+ * Add `x-codex-turn-metadata` to a `tools/call` request line, and a longer
+ * default timeout to `js` calls; leave every other line as it is.
+ */
 export function withTurnMetadata(line: string, sessionId: string, turnId: string): string {
   let message: JsonRecord | null
   try {
@@ -24,9 +35,13 @@ export function withTurnMetadata(line: string, sessionId: string, turnId: string
   if (message?.method !== 'tools/call') return line
   const params = asRecord(message.params) ?? {}
   const meta = asRecord(params._meta) ?? {}
+  const args = asRecord(params.arguments)
+  const timed = params.name === 'js' && args && typeof args.timeout_ms !== 'number'
+    ? { arguments: { ...args, timeout_ms: CUA_JS_DEFAULT_TIMEOUT_MS } }
+    : {}
   return JSON.stringify({
     ...message,
-    params: { ...params, _meta: { ...meta, 'x-codex-turn-metadata': { session_id: sessionId, turn_id: turnId } } },
+    params: { ...params, ...timed, _meta: { ...meta, 'x-codex-turn-metadata': { session_id: sessionId, turn_id: turnId } } },
   })
 }
 

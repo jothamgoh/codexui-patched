@@ -96,7 +96,7 @@ export async function loadClaudeComputerUseMcpConfig(
         command: process.execPath,
         args: [relay, session.sessionId, session.turnFile, '--', server.command, ...(server.args ?? [])],
         env: { ...server.env, CUA_REPL_ENABLED_SURFACES: 'computer,browser' },
-        timeout: 120_000,
+        timeout: 180_000,
         alwaysLoad: true,
       },
     }
@@ -115,7 +115,7 @@ export async function loadClaudeComputerUseMcpConfig(
         NODE_REPL_INSTRUCTIONS_USE_CASE_BROWSER: '',
         NODE_REPL_INSTRUCTIONS_USE_CASE_CHROME: '',
       },
-      timeout: 120_000,
+      timeout: 180_000,
       alwaysLoad: true,
     },
   }

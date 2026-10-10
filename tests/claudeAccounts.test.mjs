@@ -585,6 +585,8 @@ test('a refused send to a Claude session running in another app does not list it
   backend.runAccountCommand = f.run
   backend.readRuntime = async () => ({ connected: true, account: {}, models: [] })
   const session = 'pipeline-job-in-terminal'
+  // The constructor's real registry scan must not land after the fake busy state.
+  await backend.claudeSessionScan
   backend.refreshClaudeSessionStates = async () => {
     backend.claudeSessionStates = new Map([[session, 'busy']])
     return { uncertain: false, states: backend.claudeSessionStates }

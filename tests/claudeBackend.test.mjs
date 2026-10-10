@@ -1,5 +1,7 @@
 import assert from 'node:assert/strict'
-import { appendFile, chmod, mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises'
+import { appendFile, chmod, mkdir, mkdtemp, readFile, rm, stat, writeFile } from 'node:fs/promises'
+import { spawn } from 'node:child_process'
+import { createInterface } from 'node:readline'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { pathToFileURL } from 'node:url'
@@ -33,6 +35,8 @@ const { BackendRouter } = await loadModule('../src/server/backendRouter.ts')
 const transcript = await loadModule('../src/server/claudeTranscript.ts')
 const { startClaudeProcessHost, spawnThroughHost } = await loadModule('../src/server/claudeProcessHost.ts')
 const { scanClaudeSessionRegistry } = await loadModule('../src/server/claudeSessionRegistry.ts')
+const { withTurnMetadata } = await loadModule('../src/server/cuaRelay.ts')
+const cuaRelayBundle = join(bundleDir, `${'../src/server/cuaRelay.ts'.replace(/[^a-z0-9]/giu, '_')}.mjs`)
 const { buildReviewChanges } = await loadModule('../src/utils/reviewDiff.ts')
 const { createClaudeAutomationTool } = await loadModule('../src/server/claudeAutomationTool.ts')
 
@@ -469,6 +473,64 @@ test('loads guarded Mac control for Claude runners and waits for approval', asyn
   }
 })
 
+test('the cua relay adds Codex turn metadata to tool calls only', () => {
+  const meta = { session_id: 'session-1', turn_id: 'turn-1' }
+  const call = JSON.parse(withTurnMetadata(JSON.stringify({ jsonrpc: '2.0', id: 4, method: 'tools/call', params: { name: 'js', arguments: { code: '1' }, _meta: { progressToken: 7 } } }), 'session-1', 'turn-1'))
+  assert.deepEqual(call.params, { name: 'js', arguments: { code: '1' }, _meta: { progressToken: 7, 'x-codex-turn-metadata': meta } })
+  const list = JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'tools/list' })
+  assert.equal(withTurnMetadata(list, 'session-1', 'turn-1'), list)
+  assert.equal(withTurnMetadata('not json', 'session-1', 'turn-1'), 'not json')
+})
+
+test('the cua relay process forwards stdio and reads the current turn on each call', async () => {
+  const directory = await mkdtemp(join(tmpdir(), 'codexui-cua-relay-'))
+  try {
+    const echo = join(directory, 'echo.mjs')
+    await writeFile(echo, "process.stdin.pipe(process.stdout)\n")
+    const turnFile = join(directory, 'turn')
+    await writeFile(turnFile, 'turn-a')
+    const relay = spawn(process.execPath, [cuaRelayBundle, 'session-9', turnFile, '--', process.execPath, echo], { stdio: ['pipe', 'pipe', 'inherit'] })
+    const lines = createInterface({ input: relay.stdout })[Symbol.asyncIterator]()
+    const send = async (message) => {
+      relay.stdin.write(`${JSON.stringify(message)}\n`)
+      return JSON.parse((await lines.next()).value)
+    }
+    assert.deepEqual(await send({ jsonrpc: '2.0', id: 1, method: 'initialize', params: {} }), { jsonrpc: '2.0', id: 1, method: 'initialize', params: {} })
+    assert.deepEqual((await send({ jsonrpc: '2.0', id: 2, method: 'tools/call', params: { name: 'js' } })).params._meta, { 'x-codex-turn-metadata': { session_id: 'session-9', turn_id: 'turn-a' } })
+    await writeFile(turnFile, 'turn-b')
+    assert.equal((await send({ jsonrpc: '2.0', id: 3, method: 'tools/call', params: { name: 'js' } })).params._meta['x-codex-turn-metadata'].turn_id, 'turn-b')
+    const exited = new Promise((resolve) => relay.on('exit', resolve))
+    relay.stdin.end()
+    assert.equal(await exited, 0, 'closing Claude\'s side ends the relay and its server')
+  } finally {
+    await rm(directory, { recursive: true, force: true })
+  }
+})
+
+test('Claude chats drive Chrome through the cua relay instead of Claude in Chrome when it is available', async () => {
+  const stubRelay = join(bundleDir, 'cuaRelay.js')
+  await writeFile(stubRelay, '')
+  try {
+    await withComputerUseRunner({ CODEXUI_CLAUDE_COMPUTER_USE_APPROVAL: 'never' }, async ({ backend, runnerOptions }) => {
+      const server = runnerOptions.mcpServers.cua_repl
+      const sessionId = '11111111-2222-3333-4444-555555555557'
+      const turnFile = join(backend.cuaTurnDirectory, sessionId)
+      assert.equal(server.command, process.execPath)
+      assert.deepEqual(server.args, [stubRelay, sessionId, turnFile, '--', process.execPath])
+      assert.equal(server.env.CUA_REPL_ENABLED_SURFACES, 'computer,browser')
+      assert.equal(runnerOptions.extraArgs, undefined, 'one Chrome driver, not two')
+      for (let attempt = 0; attempt < 50 && !(await stat(turnFile).catch(() => null)); attempt += 1) await new Promise((resolve) => setTimeout(resolve, 10))
+      assert.equal(await readFile(turnFile, 'utf8'), 'turn-1')
+      assert.equal((await stat(turnFile)).mode & 0o777, 0o600)
+      backend.closeRunner(sessionId)
+      for (let attempt = 0; attempt < 50 && await stat(turnFile).catch(() => null); attempt += 1) await new Promise((resolve) => setTimeout(resolve, 10))
+      assert.equal(await stat(turnFile).catch(() => null), null, 'a closed chat leaves no turn file')
+    })
+  } finally {
+    await rm(stubRelay, { force: true })
+  }
+})
+
 async function withComputerUseRunner(env, run) {
   const directory = await mkdtemp(join(tmpdir(), 'codexui-claude-computer-use-'))
   const configPath = join(directory, 'computer-use.mcp.json')
@@ -482,7 +544,9 @@ async function withComputerUseRunner(env, run) {
   backend.sdk = async () => ({
     query: ({ options }) => {
       runnerOptions = options
-      return { async *[Symbol.asyncIterator]() {}, close: () => {}, interrupt: async () => {} }
+      let release
+      const closed = new Promise((resolve) => { release = resolve })
+      return { async *[Symbol.asyncIterator]() { await closed }, close: () => release(), interrupt: async () => {} }
     },
   })
   try {

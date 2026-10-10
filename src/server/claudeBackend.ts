@@ -1,7 +1,7 @@
 import { randomUUID } from 'node:crypto'
 import { spawn } from 'node:child_process'
 import { existsSync, statSync } from 'node:fs'
-import { mkdir, open, readdir, readFile, rename, stat, writeFile } from 'node:fs/promises'
+import { mkdir, open, readdir, readFile, rename, rm, stat, writeFile } from 'node:fs/promises'
 import { createRequire } from 'node:module'
 import { homedir } from 'node:os'
 import { delimiter, dirname, join } from 'node:path'
@@ -562,6 +562,8 @@ function createInputStream(): InputStream {
 
 type SessionRunner = {
   sessionId: string
+  /** File holding the current turn id for the cua relay, when Chrome goes through it. */
+  cuaTurnFile: string | null
   /** Saved account active when this Claude process started; null if unknown. */
   accountNumber: number | null
   threadId: string
@@ -728,6 +730,8 @@ export class ClaudeBackend {
   private readonly questions = new Map<number, QuestionRequest>()
   private readonly permissions = new Map<number, PermissionRequest>()
   private readonly computerUseAllowedThreads = new Set<string>()
+  /** Each Chrome-capable runner's current turn id, read by the cua relay. */
+  private readonly cuaTurnDirectory: string
   /** Best-known chat names, for notification titles. */
   private readonly sessionTitles = new Map<string, string>()
   private readonly humanSessions = new Map<string, { human: boolean; lastModified: number }>()
@@ -742,6 +746,7 @@ export class ClaudeBackend {
 
   constructor(storeFilePath: string, options: ClaudeBackendOptions = {}) {
     this.store = new ClaudeThreadStore(storeFilePath)
+    this.cuaTurnDirectory = join(dirname(storeFilePath), 'codexui-cua-turns')
     this.hostSocketPath = options.hostSocketPath?.trim() ?? ''
     this.tools = options.tools ?? []
     this.claudeConfigDirectory = options.claudeConfigDir?.trim() || claudeConfigDir()
@@ -1869,10 +1874,14 @@ export class ClaudeBackend {
   ): Promise<SessionRunner> {
     const sdk = await this.sdk()
     // A missing or broken computer-use plugin must not stop the chat itself.
-    const computerUseMcp = await loadClaudeComputerUseMcpConfig().catch((error: unknown) => {
+    const computerUse = await loadClaudeComputerUseMcpConfig({
+      sessionId,
+      turnFile: join(this.cuaTurnDirectory, sessionId),
+    }).catch((error: unknown) => {
       console.warn('[claude-backend] Computer use unavailable:', error instanceof Error ? error.message : error)
       return null
     })
+    const computerUseMcp = computerUse?.server ?? null
     const computerUseApproval = Boolean(computerUseMcp) && claudeComputerUseNeedsApproval()
     const runtime = await this.readRuntime().catch(() => null)
     const modelInfo = runtime?.models.find((model) => model.value === toModelValue(stored.model))
@@ -1896,6 +1905,7 @@ export class ClaudeBackend {
       contextWindow: stored.contextWindow ?? DEFAULT_CONTEXT_WINDOW,
       backgroundTasks: [],
       closed: false,
+      cuaTurnFile: computerUse?.controlsChrome ? join(this.cuaTurnDirectory, sessionId) : null,
     } as unknown as SessionRunner
 
     const askQuestion: HookCallback = async (hookInput, toolUseId, { signal }) => {
@@ -1949,9 +1959,10 @@ export class ClaudeBackend {
       ...(exists && stored.rewindAt ? { resumeSessionAt: stored.rewindAt } : {}),
       permissionMode: 'bypassPermissions',
       allowDangerouslySkipPermissions: true,
-      // Claude in Chrome is a Claude Code capability. Enable it only for
-      // conversational runners, not the short-lived metadata/usage queries.
-      extraArgs: { chrome: null },
+      // Chrome goes through computer use when it can, which works on any Claude
+      // account. Otherwise use Claude in Chrome, which needs the extension signed
+      // into the active account. Only conversational runners get either.
+      ...(computerUse?.controlsChrome ? {} : { extraArgs: { chrome: null } }),
       includePartialMessages: true,
       // Stream readable reasoning, as Codex does, where the model supports it.
       ...(modelInfo?.supportsAdaptiveThinking ? { thinking: { type: 'adaptive' as const, display: 'summarized' as const } } : {}),
@@ -2012,6 +2023,7 @@ export class ClaudeBackend {
   }
 
   private beginTurn(runner: SessionRunner, turnId: string, cwd: string, userMessage: SDKUserMessage | null): LiveTurn {
+    if (runner.cuaTurnFile) void this.recordCuaTurn(runner.cuaTurnFile, turnId)
     if (runner.idleTimer) clearTimeout(runner.idleTimer)
     runner.idleTimer = null
     const turn: LiveTurn = {
@@ -2115,6 +2127,15 @@ export class ClaudeBackend {
     }
   }
 
+  private async recordCuaTurn(turnFile: string, turnId: string): Promise<void> {
+    try {
+      await mkdir(dirname(turnFile), { recursive: true, mode: 0o700 })
+      await writeFile(turnFile, turnId, { mode: 0o600 })
+    } catch (error) {
+      console.warn('[claude-backend] Could not record the Chrome turn:', error instanceof Error ? error.message : error)
+    }
+  }
+
   /** Closing the process would kill background work, so wait until none is left. */
   private scheduleIdleClose(runner: SessionRunner): void {
     if (runner.closed || runner.activeTurn || runner.idleTimer || runner.backgroundTasks.length > 0) return
@@ -2164,6 +2185,7 @@ export class ClaudeBackend {
     runner.idleTimer = null
     runner.closed = true
     this.runners.delete(sessionId)
+    if (runner.cuaTurnFile) void rm(runner.cuaTurnFile, { force: true }).catch(() => undefined)
     this.setBackgroundTasks(runner, [], { checkAccounts: false })
     runner.input.release()
     if (runner.activeTurn) {
@@ -2197,6 +2219,7 @@ export class ClaudeBackend {
     } finally {
       runner.closed = true
       if (this.runners.get(runner.sessionId) === runner) this.runners.delete(runner.sessionId)
+      if (runner.cuaTurnFile) void rm(runner.cuaTurnFile, { force: true }).catch(() => undefined)
       if (runner.idleTimer) clearTimeout(runner.idleTimer)
       const turn = runner.activeTurn
       const hardLimitFailure = Boolean(turn && !turn.interrupted && isClaudeHardLimitError(failure))

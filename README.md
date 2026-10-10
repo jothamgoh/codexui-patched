@@ -87,17 +87,24 @@ by Claude Code itself under `~/.claude/projects`, so the CLI can resume them
 too. The sidebar lists interactive Claude sessions and the ones started here,
 not other tools' headless runs.
 
-Claude chats enable Claude Code's native Chrome integration. To also let Claude
-control native macOS apps through the same OpenAI Computer Use service used by
-Codex, install and enable Codex's bundled Computer Use plugin, then add this to
-the private CodexUI environment file:
+Claude chats can control native macOS apps and Chrome through the same OpenAI
+Computer Use service used by Codex. Install and enable Codex's bundled Computer
+Use plugin, install the ChatGPT Chrome extension for Chrome control, then add
+this to the private CodexUI environment file:
 
 ```bash
 CODEXUI_CLAUDE_COMPUTER_USE_MCP_FILE=auto
 ```
 
-CodexUI loads only the plugin's `cua_repl` server, limits it to native computer
-control, and gives it to every Claude chat. By default it asks before each
+CodexUI loads only the plugin's `cua_repl` server and gives it to every Claude
+chat. Claude Code cannot send the Codex turn metadata that the plugin's Chrome
+surface requires, so CodexUI starts the server through a small relay
+(`src/server/cuaRelay.ts`) that adds the chat's session and current turn to each
+call. Chrome control then works whichever Claude account is active. Claude Code's
+own Claude in Chrome integration is turned off while the relay is available, so
+Claude has one Chrome driver; without the relay it falls back to Claude in Chrome,
+which needs the extension signed in to the active Claude account. As in Codex, the
+plugin's browser safety checks may send visited site addresses to OpenAI. By default it asks before each
 control call; "Allow for this chat" approves the rest of that chat until CodexUI
 restarts. To give Claude chats full, unattended control of the Mac, also set:
 

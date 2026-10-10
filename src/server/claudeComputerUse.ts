@@ -1,7 +1,8 @@
-import { constants } from 'node:fs'
+import { constants, existsSync } from 'node:fs'
 import { access, readFile, readdir, stat } from 'node:fs/promises'
 import { homedir } from 'node:os'
-import { isAbsolute, join } from 'node:path'
+import { dirname, isAbsolute, join } from 'node:path'
+import { fileURLToPath } from 'node:url'
 import type { McpStdioServerConfig } from '@anthropic-ai/claude-agent-sdk'
 import { z } from 'zod'
 
@@ -38,8 +39,30 @@ export function claudeComputerUseNeedsApproval(): boolean {
   return process.env[APPROVAL_ENV]?.trim().toLowerCase() !== 'never'
 }
 
-/** Load only the Codex computer-use bridge, never arbitrary MCP entries. */
-export async function loadClaudeComputerUseMcpConfig(): Promise<McpStdioServerConfig | null> {
+/** The relay ships beside the built CLI as JS, and beside this file as TS in development. */
+function relayScript(): string | null {
+  const directory = dirname(fileURLToPath(import.meta.url))
+  for (const name of ['cuaRelay.js', 'cuaRelay.ts']) {
+    const candidate = join(directory, name)
+    if (existsSync(candidate)) return candidate
+  }
+  return null
+}
+
+export type ClaudeComputerUse = {
+  server: McpStdioServerConfig
+  /** True when the server also drives Chrome through the ChatGPT extension. */
+  controlsChrome: boolean
+}
+
+/**
+ * Load only the Codex computer-use bridge, never arbitrary MCP entries. With a
+ * chat session, Chrome is enabled through a relay that adds the Codex turn
+ * metadata the browser surface requires; without one, only native apps are.
+ */
+export async function loadClaudeComputerUseMcpConfig(
+  session?: { sessionId: string; turnFile: string },
+): Promise<ClaudeComputerUse | null> {
   const configured = process.env[CONFIG_ENV]?.trim()
   if (!configured) return null
   const configPath = configured === 'auto' ? await newestBundledConfig() : configured
@@ -64,19 +87,36 @@ export async function loadClaudeComputerUseMcpConfig(): Promise<McpStdioServerCo
     throw new Error('the configured cua_repl command is not executable')
   })
 
+  const relay = session ? relayScript() : null
+  if (session && relay) {
+    return {
+      controlsChrome: true,
+      server: {
+        type: 'stdio',
+        command: process.execPath,
+        args: [relay, session.sessionId, session.turnFile, '--', server.command, ...(server.args ?? [])],
+        env: { ...server.env, CUA_REPL_ENABLED_SURFACES: 'computer,browser' },
+        timeout: 120_000,
+        alwaysLoad: true,
+      },
+    }
+  }
   return {
-    type: 'stdio',
-    command: server.command,
-    ...(server.args ? { args: server.args } : {}),
-    env: {
-      ...server.env,
-      // Chrome uses Claude Code's native integration. Keep this MCP limited to
-      // native Mac apps so one provider does not expose two browser drivers.
-      CUA_REPL_ENABLED_SURFACES: 'computer',
-      NODE_REPL_INSTRUCTIONS_USE_CASE_BROWSER: '',
-      NODE_REPL_INSTRUCTIONS_USE_CASE_CHROME: '',
+    controlsChrome: false,
+    server: {
+      type: 'stdio',
+      command: server.command,
+      ...(server.args ? { args: server.args } : {}),
+      env: {
+        ...server.env,
+        // Without the relay the browser surface rejects every call, so Chrome
+        // stays with Claude Code's native integration.
+        CUA_REPL_ENABLED_SURFACES: 'computer',
+        NODE_REPL_INSTRUCTIONS_USE_CASE_BROWSER: '',
+        NODE_REPL_INSTRUCTIONS_USE_CASE_CHROME: '',
+      },
+      timeout: 120_000,
+      alwaysLoad: true,
     },
-    timeout: 120_000,
-    alwaysLoad: true,
   }
 }

@@ -486,3 +486,22 @@ test('a Claude app default starts new chats on Claude, keeps Codex config and Co
   await first.pending
   assert.equal(f.state.selectedModelId.value, 'gpt-codex', 'an existing Codex chat without a saved model stays on Codex')
 })
+
+test('archiving the open chat removes it from the sidebar and leaves it', async (t) => {
+  let archived = false
+  const listed = () => archived ? [] : [{ projectName: 'fixture', threads: [{ id: 'chat-1', projectName: 'fixture', cwd: '/fixture', title: 'Fixture', updatedAtIso: '2026-09-06T00:00:00.000Z', createdAtIso: '2026-09-06T00:00:00.000Z', runtimeStatus: 'idle' }] }]
+  const f = fixture(t, {
+    getThreadGroups: async () => listed(),
+    archiveThread: async (threadId) => { assert.equal(threadId, 'chat-1'); archived = true },
+  })
+  await f.state.refreshAll({ loadSelectedThread: false })
+  const first = await f.read()
+  first.response.resolve(page([message('Hello', { phase: 'final_answer' })], false))
+  await first.pending
+  assert.equal(f.state.selectedThreadId.value, 'chat-1')
+  await f.state.archiveThreadById('chat-1')
+  await flush()
+  const ids = f.state.projectGroups.value.flatMap((group) => group.threads).map((thread) => thread.id)
+  assert.deepEqual(ids, [], 'the archived chat is gone from the sidebar')
+  assert.equal(f.state.selectedThreadId.value, '', 'the archived chat is no longer open')
+})

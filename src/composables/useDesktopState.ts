@@ -4334,11 +4334,13 @@ export function useDesktopState() {
   async function archiveThreadById(threadId: string) {
     try {
       await archiveThread(threadId)
+      // Drop it locally first: the list refresh keeps the open, running or
+      // goal-bearing chats it no longer returns, so an archived open chat stayed.
+      sourceGroups.value = sourceGroups.value
+        .map((group) => ({ ...group, threads: group.threads.filter((thread) => thread.id !== threadId) }))
+      if (selectedThreadId.value === threadId) await selectThread('')
+      applyThreadFlags()
       await loadThreads()
-
-      if (selectedThreadId.value === threadId) {
-        await loadMessages(selectedThreadId.value)
-      }
     } catch (unknownError) {
       error.value = unknownError instanceof Error ? unknownError.message : 'Unknown application error'
     }

@@ -521,6 +521,55 @@
           </p>
           <p v-if="telegramError" class="notification-error" role="alert">{{ telegramError }}</p>
         </section>
+
+        <section class="notification-setting-group" aria-label="Voice commands">
+          <div class="notification-toggle-row">
+            <div>
+              <p class="notification-setting-title">Auto-send voice commands</p>
+              <p class="notification-setting-description">
+                A clear send or new chat goes out without a tap. Say “draft” or “don't send” to only type it in.
+              </p>
+            </div>
+            <button
+              class="voice-setting-switch"
+              type="button"
+              role="switch"
+              :aria-checked="voiceSettings?.autoSend === true"
+              aria-label="Auto-send voice commands"
+              :disabled="voiceBusy || !voiceSettings"
+              @click="void saveVoice({ autoSend: !voiceSettings?.autoSend })"
+            >
+              <span class="notification-switch" :data-enabled="voiceSettings?.autoSend === true"><span class="notification-switch-thumb" /></span>
+            </button>
+          </div>
+          <label class="notification-mode-field">
+            <span class="notification-mode-label">Undo window</span>
+            <select
+              class="notification-mode-select voice-setting-select"
+              :value="voiceSettings?.delaySeconds ?? 0"
+              :disabled="voiceBusy || !voiceSettings || !voiceSettings.autoSend"
+              @change="void saveVoice({ delaySeconds: Number(($event.target as HTMLSelectElement).value) as VoiceSendDelay })"
+            >
+              <option v-for="delay in VOICE_SEND_DELAYS" :key="delay" :value="delay">{{ delay === 0 ? 'Send immediately' : `${delay} s to cancel` }}</option>
+            </select>
+          </label>
+          <label class="notification-mode-field">
+            <span class="notification-mode-label">Default project for voice new chats</span>
+            <select
+              class="notification-mode-select voice-setting-select"
+              :value="voiceSettings?.defaultProject ?? ''"
+              :disabled="voiceBusy || !voiceSettings"
+              @change="void saveVoice({ defaultProject: ($event.target as HTMLSelectElement).value })"
+            >
+              <option value="">{{ voiceFallbackProject ? `${voiceFallbackProject.label} (server)` : 'None: ask me' }}</option>
+              <option v-for="project in voiceProjects" :key="project.id" :value="project.id">{{ project.label }}</option>
+            </select>
+          </label>
+          <p class="notification-note">
+            Used when you name no project, for example “find me hotels in Johor Bahru”. A project you name always wins.
+          </p>
+          <p v-if="voiceError" class="notification-error" role="alert">{{ voiceError }}</p>
+        </section>
       </div>
     </PopoverContent>
   </Popover>
@@ -581,7 +630,8 @@ import {
 } from '../../utils/notificationActivity'
 import { planPanelVoiceLanding, type ActivityFocus, type ActivityLanding } from '../../utils/voiceLanding'
 import { IDLE_MIC_STATUS, type VoiceMicStatus } from '../../utils/voiceMic'
-import type { VoiceCommandResponse } from '../../api/voice'
+import { getVoiceSettings, saveVoiceSettings, type VoiceCommandResponse, type VoiceSettingsResponse } from '../../api/voice'
+import { VOICE_SEND_DELAYS, type VoiceProjectOption, type VoiceSendDelay, type VoiceSettings } from '../../types/voice'
 import NotificationRow from './NotificationRow.vue'
 import VoiceCommandMic from './VoiceCommandMic.vue'
 import VoiceNote from './VoiceNote.vue'
@@ -655,6 +705,18 @@ const historyError = ref('')
 const markAllReadBusy = ref(false)
 const telegramConfig = ref<TelegramNotificationConfig | null>(null)
 const telegramBusy = ref(false)
+const voiceSettings = ref<VoiceSettings | null>(null)
+const voiceProjectList = ref<VoiceProjectOption[]>([])
+const voiceFallbackProject = ref<VoiceProjectOption | null>(null)
+const voiceBusy = ref(false)
+const voiceError = ref('')
+/** The workspace roots, plus a saved default that is no longer one of them. */
+const voiceProjects = computed(() => {
+  const saved = voiceSettings.value?.defaultProject ?? ''
+  const listed = voiceProjectList.value
+  if (!saved || listed.some((project) => project.id === saved)) return listed
+  return [...listed, { id: saved, label: saved.split('/').filter(Boolean).at(-1) ?? saved }]
+})
 const telegramError = ref('')
 let refreshTimer: ReturnType<typeof setTimeout> | null = null
 let swipeStartX = 0
@@ -860,6 +922,7 @@ watch(isOpen, (open) => {
   void fetchMissingPinnedThreads()
   void initializeWebPushNotifications(true)
   void refreshTelegramConfig()
+  void refreshVoiceSettings()
 })
 
 watch(() => props.pinnedThreadIds, () => {
@@ -991,6 +1054,34 @@ async function markAllActivityRead(): Promise<void> {
     void refreshHistory()
   } finally {
     markAllReadBusy.value = false
+  }
+}
+
+function applyVoiceSettings(answer: VoiceSettingsResponse): void {
+  voiceSettings.value = answer.settings
+  voiceProjectList.value = answer.projects
+  voiceFallbackProject.value = answer.fallbackProject
+}
+
+async function refreshVoiceSettings(): Promise<void> {
+  voiceError.value = ''
+  try {
+    applyVoiceSettings(await getVoiceSettings())
+  } catch (error) {
+    voiceError.value = error instanceof Error ? error.message : 'Could not load voice settings'
+  }
+}
+
+async function saveVoice(patch: Partial<VoiceSettings>): Promise<void> {
+  if (voiceBusy.value) return
+  voiceBusy.value = true
+  voiceError.value = ''
+  try {
+    applyVoiceSettings(await saveVoiceSettings(patch))
+  } catch (error) {
+    voiceError.value = error instanceof Error ? error.message : 'Could not save voice settings'
+  } finally {
+    voiceBusy.value = false
   }
 }
 
@@ -1952,6 +2043,23 @@ function onModeChange(event: Event): void {
 .notification-switch[data-enabled='true'] {
   border-color: #22c55e;
   background: #22c55e;
+}
+
+.voice-setting-switch {
+  @apply -my-2.5 grid min-h-11 min-w-11 shrink-0 place-items-center rounded-lg disabled:cursor-not-allowed disabled:opacity-50;
+}
+
+.voice-setting-switch .notification-switch {
+  @apply mt-0 block;
+}
+
+.voice-setting-switch:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+.voice-setting-select {
+  @apply min-h-11;
 }
 
 .notification-switch:focus-visible {

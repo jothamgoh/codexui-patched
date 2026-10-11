@@ -63,3 +63,21 @@ test('voice query helpers keep or drop only the code', () => {
   assert.deepEqual(voiceQueryOnly(query), { voice: 'c'.repeat(24) })
   assert.deepEqual(voiceQueryOnly({ board: 'b1' }), {})
 })
+
+const delivery = await loadModule('../src/utils/voiceDelivery.ts')
+
+test('the countdown banner words each delivery state and never shows 0 s while waiting', () => {
+  const base = { kind: 'send', trigger: 'auto', delaySeconds: 5, remainingMs: 4200, label: 'Stripe webhook bug', message: 'deploy it' }
+  assert.equal(delivery.secondsLeft(10_000 + 4200, 10_000), 5)
+  assert.equal(delivery.secondsLeft(10_000 + 1, 10_000), 1)
+  assert.equal(delivery.secondsLeft(10_000, 10_500), 0)
+  assert.equal(delivery.describeDelivery({ ...base, state: 'pending' }, 4).title, 'Sending to Stripe webhook bug in 4 s')
+  assert.equal(delivery.describeDelivery({ ...base, kind: 'new_chat', label: 'obsidian', state: 'pending' }, 3).title, 'Starting new obsidian chat in 3 s')
+  assert.equal(delivery.describeDelivery({ ...base, state: 'sent' }, 0).title, 'Sent ✓ · Stripe webhook bug')
+  assert.equal(delivery.describeDelivery({ ...base, kind: 'new_chat', label: 'obsidian', state: 'sent' }, 0).title, 'Started ✓ · new obsidian chat')
+  assert.equal(delivery.describeDelivery({ ...base, state: 'failed' }, 0).tone, 'problem')
+  assert.equal(delivery.isDeliveryActive({ ...base, state: 'cancelled' }), false, 'a cancelled send is typed in again')
+  assert.equal(delivery.isDeliveryActive({ ...base, state: 'failed' }), false)
+  assert.equal(delivery.isDeliveryActive({ ...base, state: 'sending' }), true)
+  assert.equal(delivery.deliveryPill({ ...base, state: 'sent', kind: 'new_chat' }, 0).pill, 'Started ✓')
+})

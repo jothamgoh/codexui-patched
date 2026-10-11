@@ -59,9 +59,31 @@ RESULTS[code('M')] = stored('M', {
     { ...RESULTS[code('N')], url: `/#/?voice=${code('N')}` },
   ],
 })
+// Auto-send: a send counting down, a new chat counting down, a send that already went, and steps
+// where the sure ones ran by themselves. Each `auto` entry is the delivery the mock server starts with.
+RESULTS[code('D')] = stored('D', { heard: 'tell the stripe webhook chat to deploy it to staging', action: 'send_to_chat', outcome: 'send_ready', threadId: 'thread-webhook', message: 'deploy it to staging', candidates: [ROWS.webhook], basis: 'jev' })
+RESULTS[code('Y')] = stored('Y', { heard: 'find me the best hotels in Johor Bahru', action: 'new_chat', outcome: 'new_chat', message: 'find me the best hotels in Johor Bahru', project: PROJECTS[0], agent: null, basis: 'default' })
+RESULTS[code('K')] = stored('K', { heard: 'tell the stripe webhook chat to deploy it to staging', action: 'send_to_chat', outcome: 'send_ready', threadId: 'thread-webhook', message: 'deploy it to staging', candidates: [ROWS.webhook], basis: 'jev' })
+RESULTS[code('V')] = stored('V', {
+  heard: 'tell the stripe webhook chat to deploy it to staging, new chat in hr-ai to find out why customer emails bounce, and tell the stripe one to merge it',
+  action: 'send_to_chat',
+  outcome: 'steps',
+  steps: [
+    { ...RESULTS[code('P')], url: `/#/thread/thread-webhook?voice=${code('P')}` },
+    { ...RESULTS[code('N')], url: `/#/?voice=${code('N')}` },
+    { ...RESULTS[code('S')], url: `/#/voice/${code('S')}` },
+  ],
+})
+const AUTO = {
+  D: { kind: 'send', label: 'Stripe webhook bug', message: 'deploy it to staging', threadId: 'thread-webhook', delaySeconds: 5 },
+  Y: { kind: 'new_chat', label: 'hr-ai', message: 'find me the best hotels in Johor Bahru', startsThread: 'thread-bounces', delaySeconds: 5 },
+  K: { kind: 'send', label: 'Stripe webhook bug', message: 'deploy it to staging', threadId: 'thread-webhook', delaySeconds: 0 },
+  P: { kind: 'send', label: 'Stripe webhook bug', message: 'deploy it to staging', threadId: 'thread-webhook', delaySeconds: 0 },
+  N: { kind: 'new_chat', label: 'hr-ai', message: 'find out why customer emails bounce', startsThread: 'thread-bounces', delaySeconds: 5 },
+}
+
 /** What the in-app route answers for a result: its code, the link it opens, the result. */
-const PATHS = { O: '/#/thread/thread-webhook', P: `/#/thread/thread-webhook?voice=${code('P')}`, N: `/#/?voice=${code('N')}`, C: `/#/voice/${code('C')}`, M: `/#/voice/${code('M')}` }
-const commandAnswer = (letter) => ({ data: { code: code(letter), url: PATHS[letter] ?? `/#/voice/${code(letter)}`, result: RESULTS[code(letter)] } })
+const PATHS = { O: '/#/thread/thread-webhook', P: `/#/thread/thread-webhook?voice=${code('P')}`, N: `/#/?voice=${code('N')}`, C: `/#/voice/${code('C')}`, M: `/#/voice/${code('M')}`, D: `/#/thread/thread-webhook?voice=${code('D')}`, K: `/#/thread/thread-webhook?voice=${code('K')}` }
 
 // The live panel: two chats running, one waiting for approval, two unread, one pinned, recent history.
 const thread = (id, name, cwd, minutes, status = 'idle') => ({ id, name, preview: name.toLowerCase(), cwd, createdAt: secs(minutes + 60), updatedAt: secs(minutes), source: 'cli', status: { type: status } })
@@ -158,6 +180,38 @@ async function scenario(name, run, panelOverrides = {}) {
   })
   const voiceRequests = []
   const commandRequests = []
+  const sendRequests = []
+  const cancelRequests = []
+  const settingsWrites = []
+  // The mock server's voice state. Auto-send is off unless a scenario turns it on, so the
+  // older scenarios keep testing the pre-typed flow.
+  const voiceSettings = { autoSend: false, delaySeconds: 0, defaultProject: '', ...panel.voiceSettings }
+  /** code -> { kind, label, message, threadId?, startsThread?, delaySeconds, sendAt, state, trigger } */
+  const deliveries = new Map()
+  const startDelivery = (letterOrCode, spec, trigger) => {
+    const key = letterOrCode.length === 24 ? letterOrCode : code(letterOrCode)
+    const delaySeconds = spec.delaySeconds
+    const sendAt = Date.now() + (panel.windowMs ?? delaySeconds * 1000)
+    deliveries.set(key, { ...spec, delaySeconds, sendAt, state: delaySeconds === 0 ? 'sent' : 'pending', trigger, threadId: delaySeconds === 0 ? spec.threadId ?? spec.startsThread : spec.threadId })
+  }
+  // Each `auto` window starts when the app first reads it, so a cold page load does not eat into it.
+  const autoByCode = new Map((panel.auto ?? []).map((letter) => [code(letter), letter]))
+  const deliveryOf = (key) => {
+    if (!deliveries.has(key) && autoByCode.has(key)) startDelivery(key, AUTO[autoByCode.get(key)], 'auto')
+    const entry = deliveries.get(key)
+    if (!entry) return undefined
+    if (entry.state === 'pending' && Date.now() >= entry.sendAt) Object.assign(entry, { state: 'sent', threadId: entry.threadId ?? entry.startsThread })
+    const { kind, state, trigger, delaySeconds, label, message, threadId } = entry
+    return { kind, state, trigger, delaySeconds, label, message, remainingMs: state === 'pending' ? Math.max(0, entry.sendAt - Date.now()) : 0, ...(threadId ? { threadId } : {}) }
+  }
+  const withDelivery = (key) => {
+    const result = RESULTS[key]
+    if (!result) return null
+    const delivery = deliveryOf(key)
+    const steps = result.steps?.map((step) => ({ ...step, ...(deliveryOf(step.code) ? { delivery: deliveryOf(step.code) } : {}) }))
+    return { ...result, ...(delivery ? { delivery } : {}), ...(steps ? { steps } : {}) }
+  }
+  const commandAnswer = (letter) => ({ data: { code: code(letter), url: PATHS[letter] ?? `/#/voice/${code(letter)}`, result: withDelivery(code(letter)) } })
   await page.route('**/codex-api/**', async (route) => {
     const request = route.request()
     const path = new URL(request.url()).pathname
@@ -167,13 +221,42 @@ async function scenario(name, run, panelOverrides = {}) {
       commandRequests.push({ contentType: request.headers()['content-type'] ?? '', bytes: request.postDataBuffer()?.length ?? 0 })
       await new Promise((resolve) => setTimeout(resolve, panel.commandDelayMs ?? 0))
       if (typeof answer === 'number') return route.fulfill({ status: answer, json: { error: 'Transcription failed.' } })
+      // The server starts the countdown as it answers.
+      if (AUTO[answer] && (panel.commandAuto ?? []).includes(answer)) startDelivery(answer, AUTO[answer], 'auto')
       return route.fulfill({ json: commandAnswer(answer) })
     }
-    if (path.startsWith('/codex-api/voice/')) {
-      const voiceCode = path.split('/').at(-1)
+    if (path === '/codex-api/voice/settings') {
+      if (request.method() === 'POST') {
+        const patch = request.postDataJSON()
+        settingsWrites.push(patch)
+        Object.assign(voiceSettings, patch)
+      }
+      return route.fulfill({ json: { data: voiceSettings, projects: PROJECTS, fallbackProject: panel.fallbackProject ?? null } })
+    }
+    const voicePath = /^\/codex-api\/voice\/([A-Za-z0-9_-]{24})(?:\/(cancel|send))?$/u.exec(path)
+    if (voicePath) {
+      const [, voiceCode, verb] = voicePath
       voiceRequests.push({ path, auth: request.headers().authorization ?? null })
-      const result = RESULTS[voiceCode]
-      return route.fulfill(result ? { json: { data: result } } : { status: 404, json: { error: 'This voice result has expired.' } })
+      if (!RESULTS[voiceCode]) return route.fulfill({ status: 404, json: { error: 'This voice result has expired.' } })
+      if (verb === 'cancel') {
+        cancelRequests.push(voiceCode)
+        const targets = [voiceCode, ...(RESULTS[voiceCode].steps ?? []).map((step) => step.code)]
+        for (const key of targets) { const entry = deliveries.get(key); if (entry?.state === 'pending') entry.state = 'cancelled' }
+      }
+      if (verb === 'send') {
+        const body = request.postDataJSON()
+        sendRequests.push({ code: voiceCode, ...body })
+        const result = RESULTS[voiceCode]
+        const row = [...result.candidates, ...Object.values(result.sections).flat()].find((entry) => entry.threadId === body.threadId)
+        const project = PROJECTS.find((entry) => entry.id === body.projectId)
+        const current = deliveryOf(voiceCode)
+        if (!current || current.state === 'cancelled') {
+          startDelivery(voiceCode, row
+            ? { kind: 'send', label: row.title, message: result.message, threadId: row.threadId, delaySeconds: voiceSettings.delaySeconds }
+            : { kind: 'new_chat', label: project.label, message: result.message, startsThread: 'thread-onboarding', delaySeconds: voiceSettings.delaySeconds }, 'tap')
+        }
+      }
+      return route.fulfill({ json: { data: withDelivery(voiceCode) } })
     }
     if (path === '/codex-api/rpc') {
       const body = request.postDataJSON()
@@ -189,7 +272,7 @@ async function scenario(name, run, panelOverrides = {}) {
     return route.fulfill({ json: { data: [] } })
   })
   try {
-    await run(page, { voiceRequests, commandRequests })
+    await run(page, { voiceRequests, commandRequests, sendRequests, cancelRequests, settingsWrites })
     const relevant = errors.filter((error) => !/ResizeObserver|Failed to fetch/u.test(error))
     assert.deepEqual(relevant, [], 'no page errors')
     passed += 1
@@ -271,7 +354,7 @@ try {
     assert.equal(await choices.locator('.notification-row-icon.is-running').count(), 1, 'the panel icon for a running chat')
     for (const row of await choices.locator('.notification-row').all()) assert.ok((await row.boundingBox()).height >= 48)
     await page.screenshot({ path: `${shotsDir}/02-close-call-picker.png` })
-    await page.getByRole('button', { name: 'Not these? Recent chats' }).click()
+    await page.getByRole('group', { name: 'None of these' }).getByRole('button', { name: 'Recent chats' }).click()
     const recent = page.getByRole('region', { name: 'Recent chats' })
     await recent.waitFor()
     assert.equal(await recent.locator('.notification-row').count(), 6, 'panel order: needs you, running, unread, recent')
@@ -616,6 +699,184 @@ try {
     await page.waitForTimeout(200)
     assert.equal(commandRequests.length, 0)
   }, { command: ['O'] })
+
+  // --- Auto-send ----------------------------------------------------------------------
+
+  const deliveryBanner = (page) => page.getByRole('region', { name: 'Voice send' })
+  const tallEnough = async (locator, label) => { const box = await locator.boundingBox(); assert.ok(box.height >= 44, `${label} is ${box.height}px tall`); return box }
+
+  for (const desktop of [false, true]) {
+    await scenario(`auto-send countdown on a chat: Cancel is the main control and leaves the message typed in${desktop ? ' (desktop)' : ''}`, async (page, { cancelRequests }) => {
+      await page.goto(`${base}#/thread/thread-webhook?voice=${code('D')}`)
+      await deliveryBanner(page).getByText(/^Sending to Stripe webhook bug in \d+\s+s$/u).waitFor()
+      await deliveryBanner(page).getByText('“deploy it to staging”').waitFor()
+      assert.equal(await composer(page).inputValue(), '', 'nothing typed in while the server is sending it')
+      const cancel = deliveryBanner(page).getByRole('button', { name: 'Cancel', exact: true })
+      const edit = deliveryBanner(page).getByRole('button', { name: 'Edit', exact: true })
+      const cancelBox = await tallEnough(cancel, 'Cancel')
+      const editBox = await tallEnough(edit, 'Edit')
+      assert.ok(cancelBox.width > editBox.width, 'Cancel is the most prominent control')
+      await waitForHashWithout(page, 'voice=')
+      await page.screenshot({ path: `${shotsDir}/40-auto-send-countdown${desktop ? '-desktop' : ''}.png` })
+      await cancel.click()
+      await page.waitForFunction(() => document.querySelector('textarea.thread-composer-input')?.value === 'deploy it to staging')
+      await page.getByText('Cancelled · nothing was sent.').waitFor()
+      assert.equal(await deliveryBanner(page).count(), 0)
+      assert.deepEqual(cancelRequests, [code('D')])
+      await page.screenshot({ path: `${shotsDir}/41-auto-send-cancelled${desktop ? '-desktop' : ''}.png` })
+    }, { auto: ['D'], windowMs: 5000, desktop })
+  }
+
+  await scenario('Edit stops the send, types the message in and focuses it', async (page, { cancelRequests }) => {
+    await page.goto(`${base}#/thread/thread-webhook?voice=${code('D')}`)
+    await deliveryBanner(page).getByRole('button', { name: 'Edit', exact: true }).click()
+    await page.waitForFunction(() => document.activeElement?.matches('textarea.thread-composer-input') && document.activeElement.value === 'deploy it to staging')
+    assert.equal(cancelRequests.length, 1)
+  }, { auto: ['D'], windowMs: 30_000 })
+
+  await scenario('when the window ends the banner says "Sent ✓" and types nothing in', async (page) => {
+    await page.goto(`${base}#/thread/thread-webhook?voice=${code('D')}`)
+    await deliveryBanner(page).getByText(/^Sending to Stripe webhook bug in \d\s+s$/u).waitFor()
+    await deliveryBanner(page).getByText('Sent ✓ · Stripe webhook bug').waitFor({ timeout: 8000 })
+    assert.equal(await composer(page).inputValue(), '')
+    await page.screenshot({ path: `${shotsDir}/42-auto-send-sent.png` })
+    await deliveryBanner(page).getByRole('button', { name: 'Dismiss' }).click()
+    assert.equal(await deliveryBanner(page).count(), 0)
+  }, { auto: ['D'], windowMs: 1500 })
+
+  await scenario('a send that already went (no undo window) shows "Sent ✓" on the chat', async (page) => {
+    await page.goto(`${base}#/thread/thread-webhook?voice=${code('K')}`)
+    await deliveryBanner(page).getByText('Sent ✓ · Stripe webhook bug').waitFor()
+    assert.equal(await deliveryBanner(page).getByRole('button', { name: 'Cancel', exact: true }).count(), 0)
+  }, { auto: ['K'] })
+
+  await scenario('an auto-started new chat counts down on the home page, then opens the new chat', async (page) => {
+    await page.goto(`${base}#/?voice=${code('Y')}`)
+    await deliveryBanner(page).getByText(/^Starting new hr-ai chat in \d\s+s$/u).waitFor()
+    await page.screenshot({ path: `${shotsDir}/43-auto-new-chat-countdown.png` })
+    await page.waitForFunction(() => window.location.hash === '#/thread/thread-bounces', null, { timeout: 8000 })
+    await deliveryBanner(page).getByText('Started ✓ · new hr-ai chat').waitFor()
+    await page.screenshot({ path: `${shotsDir}/44-auto-new-chat-started.png` })
+  }, { auto: ['Y'], windowMs: 1500 })
+
+  await scenario('the panel mic: a sure send lands on the chat with the countdown and Cancel', async (page) => {
+    await openPanel(page)
+    await sayIntoPanel(page)
+    await page.waitForFunction(() => window.location.hash.startsWith('#/thread/thread-webhook'))
+    await deliveryBanner(page).getByRole('button', { name: 'Cancel', exact: true }).waitFor()
+    await page.screenshot({ path: `${shotsDir}/45-panel-mic-auto-send.png` })
+  }, { command: ['D'], commandAuto: ['D'], windowMs: 30_000 })
+
+  await scenario('send chooser: one tap sends there, and the toast offers Undo', async (page, { sendRequests, cancelRequests }) => {
+    await page.goto(`${base}#/voice/${code('S')}`)
+    await page.getByText('Tap a chat to send it there').waitFor()
+    const editFirst = page.getByRole('button', { name: 'Edit first, then send to Stripe checkout copy' })
+    await tallEnough(editFirst, 'Edit first')
+    await page.screenshot({ path: `${shotsDir}/46-one-tap-send-chooser.png` })
+    await page.getByRole('button', { name: 'Send to Stripe checkout copy', exact: true }).click()
+    const toast = page.getByRole('status', { name: 'Voice send' })
+    await toast.getByText(/^Sending to Stripe checkout copy in \d+\s+s$/u).waitFor()
+    await tallEnough(toast.getByRole('button', { name: 'Undo' }), 'Undo')
+    await page.getByRole('button', { name: 'Send to Stripe checkout copy', exact: true }).getByText(/^In \d+\s+s$/u).waitFor()
+    await page.screenshot({ path: `${shotsDir}/47-one-tap-send-toast.png` })
+    await toast.getByRole('button', { name: 'Undo' }).click()
+    await toast.getByText('Cancelled · nothing was sent').waitFor()
+    assert.deepEqual(sendRequests, [{ code: code('S'), threadId: 'thread-checkout' }])
+    assert.deepEqual(cancelRequests, [code('S')])
+  }, { voiceSettings: { autoSend: true, delaySeconds: 3 }, windowMs: 5000 })
+
+  await scenario('send chooser with no undo window: "Sent ✓" and View opens the chat', async (page, { sendRequests }) => {
+    await page.goto(`${base}#/voice/${code('S')}`)
+    await page.getByRole('button', { name: 'Send to Stripe webhook bug', exact: true }).click()
+    const toast = page.getByRole('status', { name: 'Voice send' })
+    await toast.getByText('Sent ✓ · Stripe webhook bug').waitFor()
+    await page.screenshot({ path: `${shotsDir}/48-one-tap-sent-toast.png` })
+    await toast.getByRole('button', { name: 'View' }).click()
+    await page.waitForFunction(() => window.location.hash === '#/thread/thread-webhook')
+    assert.equal(sendRequests.length, 1)
+  }, { voiceSettings: { autoSend: true, delaySeconds: 0 } })
+
+  await scenario('send chooser: Edit first opens the chat with the message typed in, nothing sent', async (page, { sendRequests }) => {
+    await page.goto(`${base}#/voice/${code('S')}`)
+    await page.getByRole('button', { name: 'Edit first, then send to Stripe webhook bug' }).click()
+    await page.waitForFunction(() => document.querySelector('textarea.thread-composer-input')?.value === 'deploy it to staging')
+    assert.equal(sendRequests.length, 0)
+  }, { voiceSettings: { autoSend: true, delaySeconds: 0 } })
+
+  await scenario('every chooser offers a way out: say it again, or recent chats', async (page) => {
+    await page.goto(`${base}#/voice/${code('C')}`)
+    const none = page.getByRole('group', { name: 'None of these' })
+    await none.getByRole('button', { name: 'Say a voice command' }).waitFor()
+    await none.getByRole('button', { name: 'Recent chats' }).click()
+    await page.getByRole('region', { name: 'Recent chats' }).waitFor()
+  })
+
+  await scenario('project chooser: one tap starts the chat and opens it', async (page, { sendRequests }) => {
+    await page.goto(`${base}#/?voice=${code('U')}`)
+    const chips = page.getByRole('group', { name: 'Start in which project?' })
+    await chips.waitFor()
+    assert.equal(await page.getByRole('listbox', { name: 'Workspace folders' }).count(), 0, 'the folder list stays closed; the chips are one tap')
+    await tallEnough(chips.getByRole('button', { name: 'Start in slack-ai' }), 'project chip')
+    await page.getByRole('button', { name: 'Edit first' }).waitFor()
+    await page.screenshot({ path: `${shotsDir}/49-one-tap-project-chooser.png` })
+    await chips.getByRole('button', { name: 'Start in slack-ai' }).click()
+    await page.waitForFunction(() => window.location.hash === '#/thread/thread-onboarding')
+    await deliveryBanner(page).getByText('Started ✓ · new slack-ai chat').waitFor()
+    assert.deepEqual(sendRequests, [{ code: code('U'), projectId: '/work/slack-ai' }])
+  }, { voiceSettings: { autoSend: true, delaySeconds: 0 } })
+
+  await scenario('project chooser: Edit first keeps the message and lets the chips pick the folder', async (page, { sendRequests }) => {
+    await page.goto(`${base}#/?voice=${code('U')}`)
+    await page.getByRole('button', { name: 'Edit first' }).click()
+    await page.getByRole('group', { name: 'Which project?' }).getByRole('button', { name: 'slack-ai' }).click()
+    await page.getByRole('button', { name: 'Choose workspace folder' }).filter({ hasText: 'slack-ai' }).waitFor()
+    assert.equal(await composer(page).inputValue(), 'check the logs')
+    assert.equal(sendRequests.length, 0)
+  }, { voiceSettings: { autoSend: true, delaySeconds: 0 } })
+
+  await scenario('steps: the sure ones ran by themselves and show it; the rest are one tap', async (page, { sendRequests, cancelRequests }) => {
+    await page.goto(`${base}#/voice/${code('V')}`)
+    const steps = page.getByRole('region', { name: 'Steps' })
+    await steps.getByText('Sent ✓').waitFor()
+    await steps.getByText(/^In \d+\s+s$/u).waitFor()
+    for (const row of await steps.locator('.notification-row').all()) assert.ok((await row.boundingBox()).height >= 48)
+    await tallEnough(steps.getByRole('button', { name: /^Cancel \(\d+\s+s\)$/u }), 'Cancel')
+    await page.screenshot({ path: `${shotsDir}/50-steps-auto-run.png` })
+    await steps.getByRole('button', { name: /^Cancel \(\d+\s+s\)$/u }).click()
+    await page.waitForFunction(() => !/In \d+\s+s/u.test(document.querySelector('[aria-label="Steps"]')?.textContent ?? ''))
+    assert.deepEqual(cancelRequests, [code('V')])
+    assert.equal(await page.getByRole('button', { name: 'Step 2: New chat in hr-ai' }).getByText('Next').count(), 1, 'a cancelled step is a normal step again')
+    await page.getByRole('button', { name: 'Edit step 2 first' }).waitFor()
+    // Step 3 is a send chooser of its own: one tap opens it.
+    await page.getByRole('button', { name: 'Step 3: Send to which chat?' }).click()
+    await page.getByRole('heading', { name: 'Send to which chat?' }).waitFor()
+    assert.equal(sendRequests.length, 0)
+  }, { auto: ['P', 'N'], windowMs: 30_000, voiceSettings: { autoSend: true, delaySeconds: 5 } })
+
+  for (const desktop of [false, true]) {
+    await scenario(`settings: auto-send, the undo window and the default project save to the server${desktop ? ' (desktop)' : ''}`, async (page, { settingsWrites }) => {
+      await openPanel(page)
+      await page.getByRole('tab', { name: 'Settings' }).click()
+      const group = page.getByRole('region', { name: 'Voice commands' })
+      const toggle = group.getByRole('switch', { name: 'Auto-send voice commands' })
+      await toggle.waitFor()
+      assert.equal(await toggle.getAttribute('aria-checked'), 'true')
+      await tallEnough(toggle, 'auto-send switch')
+      const delay = group.getByRole('combobox', { name: 'Undo window' })
+      assert.equal(await delay.inputValue(), '0')
+      assert.deepEqual(await delay.locator('option').allInnerTexts(), ['Send immediately', '3 s to cancel', '5 s to cancel', '10 s to cancel'])
+      const project = group.getByRole('combobox', { name: 'Default project for voice new chats' })
+      assert.equal(await project.locator('option').first().innerText(), 'notes (server)')
+      await group.scrollIntoViewIfNeeded()
+      await page.screenshot({ path: `${shotsDir}/51-voice-settings${desktop ? '-desktop' : ''}.png` })
+      await delay.selectOption('5')
+      await project.selectOption('/work/hr-ai')
+      await toggle.click()
+      await page.waitForFunction(() => document.querySelector('[role="switch"][aria-label="Auto-send voice commands"]')?.getAttribute('aria-checked') === 'false')
+      assert.deepEqual(settingsWrites, [{ delaySeconds: 5 }, { defaultProject: '/work/hr-ai' }, { autoSend: false }])
+      assert.equal(await delay.isDisabled(), true, 'no undo window without auto-send')
+    }, { voiceSettings: { autoSend: true, delaySeconds: 0 }, fallbackProject: { id: '/work/notes', label: 'notes' }, desktop })
+  }
 
   await scenario('an expired result says so instead of guessing', async (page) => {
     await page.goto(`${base}#/voice/${code('Z')}`)

@@ -16,17 +16,17 @@
         <VoiceNote class="voice-picker-note" :heard="result.heard" @result="emit('navigate', $event.url)" />
         <div v-if="result.message" class="voice-picker-message">
           <p><span>Message:</span> “{{ result.message }}”</p>
-          <p class="voice-picker-hint">Tapping a chat opens it with the message typed in. Nothing is sent until you tap Send.</p>
+          <p class="voice-picker-hint">{{ messageHint }}</p>
         </div>
 
         <section v-if="steps.length > 0" class="voice-picker-section" aria-label="Steps">
           <div class="voice-picker-section-header">
             <span>Steps</span>
             <span class="voice-picker-section-count">{{ steps.length }}</span>
+            <button v-if="stepsWaiting" class="voice-picker-cancel-all" type="button" @click="void cancelWaiting()">Cancel ({{ seconds }}&nbsp;s)</button>
           </div>
+          <div v-for="(step, index) in steps" :key="step.code" class="voice-picker-row">
           <NotificationRow
-            v-for="(step, index) in steps"
-            :key="step.code"
             tone="pinned"
             :title="step.title"
             v-bind="stepPill(step, index)"
@@ -34,7 +34,7 @@
             wrap-meta
             :class="{ 'is-done': step.done }"
             :aria-label="`Step ${index + 1}: ${step.title}`"
-            @click="openStep(step)"
+            @click="void tapStep(step)"
           >
             <template #icon>
               <Send v-if="step.kind === 'send'" />
@@ -51,6 +51,8 @@
               </template>
             </template>
           </NotificationRow>
+          <button v-if="step.oneTap" class="voice-picker-edit" type="button" :aria-label="`Edit step ${index + 1} first`" @click="openStep(step)">Edit first</button>
+          </div>
         </section>
 
         <section v-else class="voice-picker-section" :aria-label="listHeading">
@@ -58,16 +60,15 @@
             <span>{{ listHeading }}</span>
             <span class="voice-picker-section-count">{{ rows.length }}</span>
           </div>
+          <div v-for="(row, index) in rows" :key="row.threadId" class="voice-picker-row">
           <NotificationRow
-            v-for="(row, index) in rows"
-            :key="row.threadId"
             :tone="ROW_TONES[row.status]"
             :title="row.title"
             v-bind="rowPill(row, index)"
             :preview="row.summary"
             wrap-meta
-            :aria-label="`Open ${row.title}`"
-            @click="select(row.threadId)"
+            :aria-label="sendsOnTap ? `Send to ${row.title}` : `Open ${row.title}`"
+            @click="void tapRow(row.threadId)"
           >
             <template #meta>
               <span>{{ row.projectName }}</span>
@@ -79,12 +80,25 @@
               </template>
             </template>
           </NotificationRow>
+          <button v-if="sendsOnTap" class="voice-picker-edit" type="button" :aria-label="`Edit first, then send to ${row.title}`" @click="select(row.threadId)">Edit first</button>
+          </div>
           <p v-if="rows.length === 0" class="voice-picker-empty">No chats to show.</p>
         </section>
 
-        <p v-if="steps.length > 0" class="voice-picker-footnote">Each step opens its page. Come back here for the next one.</p>
-        <button v-if="canShowRecent" class="voice-picker-link" type="button" @click="showRecent = true">Not these? Recent chats</button>
+        <p v-if="steps.length > 0" class="voice-picker-footnote">{{ stepsFootnote }}</p>
+        <p v-if="actionError" class="voice-picker-error" role="alert">{{ actionError }}</p>
+        <div class="voice-picker-none" role="group" aria-label="None of these">
+          <span>None of these?</span>
+          <VoiceCommandMic size="compact" @result="emit('navigate', $event.url)" />
+          <span class="voice-picker-none-say">Say it again</span>
+          <button v-if="canShowRecent" class="voice-picker-link" type="button" @click="showRecent = true">Recent chats</button>
+        </div>
       </template>
+    </div>
+
+    <div v-if="toast" class="voice-picker-toast" :class="`is-${toast.tone}`" role="status" aria-label="Voice send">
+      <span class="voice-picker-toast-text">{{ toast.title }}</span>
+      <button v-if="toast.action" type="button" class="voice-picker-toast-action" @click="void toast.action.run()">{{ toast.action.label }}</button>
     </div>
   </section>
 </template>
@@ -92,7 +106,11 @@
 <script setup lang="ts">
 import { computed, ref, watch } from 'vue'
 import { CircleHelp, ListFilter, MessageSquare, Send, SquarePen } from '@lucide/vue'
-import { getVoiceResult, VoiceResultExpiredError } from '../../api/voice'
+import { getVoiceResult, getVoiceSettings, sendVoiceResult, VoiceResultExpiredError } from '../../api/voice'
+import { useVoiceDelivery } from '../../composables/useVoiceDelivery'
+import type { VoiceDelivery } from '../../types/voice'
+import { deliveryPill, describeDelivery, isDeliveryActive } from '../../utils/voiceDelivery'
+import VoiceCommandMic from './VoiceCommandMic.vue'
 import { useRelativeTimeClock } from '../../composables/useRelativeTimeClock'
 import { describeVoiceStep, VOICE_LIST_TYPES, type VoiceChatRow, type VoiceListType, type VoiceStepLink, type VoiceStoredResult } from '../../types/voice'
 import { formatCompactRelativeTime } from '../../utils/relativeTime'
@@ -132,6 +150,13 @@ const result = ref<VoiceStoredResult | null>(null)
 const isLoading = ref(false)
 const loadError = ref('')
 const showRecent = ref(false)
+const actionError = ref('')
+/** Auto-send on: a tap in a chooser sends (or starts) at once, honouring the undo window. */
+const tapSends = ref(false)
+void getVoiceSettings().then((answer) => { tapSends.value = answer.settings.autoSend }).catch(() => { tapSends.value = false })
+const { seconds, cancel, refresh } = useVoiceDelivery(result)
+/** The code whose send the toast follows: this result, or one step. */
+const toastCode = ref('')
 
 async function load(code: string): Promise<void> {
   isLoading.value = true
@@ -175,7 +200,19 @@ const rows = computed<VoiceChatRow[]>(() => {
   return value.candidates
 })
 
-type StepRow = { code: string; url: string; title: string; detail: string; meta: string[]; kind: 'open' | 'send' | 'new' | 'list' | 'unknown'; done: boolean }
+type StepRow = {
+  code: string
+  url: string
+  title: string
+  detail: string
+  meta: string[]
+  kind: 'open' | 'send' | 'new' | 'list' | 'unknown'
+  done: boolean
+  delivery?: VoiceDelivery
+  /** A tap sends it or starts it at once. */
+  oneTap: boolean
+  link: VoiceStepLink
+}
 
 /** Steps already tapped, per result, for this browser session: they show as done when the user comes back. */
 const doneSteps = ref<Set<string>>(new Set())
@@ -200,19 +237,74 @@ function stepMeta(step: VoiceStepLink): string[] {
   return []
 }
 
+/** A send or new chat step that one tap can do: sure of its chat or project, with words, not a draft. */
+function stepSendsOnTap(step: VoiceStepLink): boolean {
+  if (!tapSends.value || step.draftOnly || !step.message || isDeliveryActive(step.delivery)) return false
+  if (step.outcome === 'send_ready') return Boolean(step.candidates[0])
+  return step.outcome === 'new_chat' && Boolean(step.project)
+}
+
 const steps = computed<StepRow[]>(() => (result.value?.outcome === 'steps' ? result.value.steps ?? [] : []).map((step) => ({
   code: step.code,
   url: step.url,
   ...describeVoiceStep(step),
   meta: stepMeta(step),
   kind: stepKind(step),
-  done: doneSteps.value.has(step.code),
+  done: doneSteps.value.has(step.code) || step.delivery?.state === 'sent',
+  delivery: step.delivery,
+  oneTap: stepSendsOnTap(step),
+  link: step,
 })))
 
+const stepsWaiting = computed(() => steps.value.some((step) => step.delivery?.state === 'pending'))
+
 function stepPill(step: StepRow, index: number): { pill: string; pillTone: 'unread' | 'attention' | 'accent' } {
+  if (step.delivery && step.delivery.state !== 'cancelled') return deliveryPill(step.delivery, seconds.value)
   if (step.done) return { pill: 'Done', pillTone: 'unread' }
-  const next = steps.value.findIndex((entry) => !entry.done)
+  const next = steps.value.findIndex((entry) => !entry.done && !(entry.delivery && entry.delivery.state !== 'cancelled'))
   return index === next ? { pill: 'Next', pillTone: 'accent' } : { pill: '', pillTone: 'unread' }
+}
+
+const stepsFootnote = computed(() => {
+  const done = steps.value.filter((step) => step.delivery?.state === 'sent').length
+  if (done === steps.value.length) return 'All done.'
+  return done > 0 ? 'Steps marked ✓ already went out. Tap the others to do them.' : 'Tap a step to do it. Come back here for the next one.'
+})
+
+/** One tap on a step: send or start it when it is sure, otherwise open its page. */
+async function tapStep(step: StepRow): Promise<void> {
+  const delivery = step.delivery
+  if (delivery?.state === 'sent' && delivery.threadId) {
+    emit('navigate', `/#/thread/${encodeURIComponent(delivery.threadId)}`)
+    return
+  }
+  if (delivery?.state === 'pending' || delivery?.state === 'sending') return
+  if (!step.oneTap) {
+    openStep(step)
+    return
+  }
+  const target = step.link.outcome === 'send_ready'
+    ? { threadId: step.link.candidates[0].threadId }
+    : { projectId: step.link.project!.id }
+  await runTap(step.code, target)
+}
+
+async function runTap(code: string, target: { threadId: string } | { projectId: string }): Promise<void> {
+  actionError.value = ''
+  try {
+    const answer = await sendVoiceResult(code, target)
+    toastCode.value = code
+    if (answer.code === result.value?.code) result.value = answer
+    else await refresh()
+  } catch (error) {
+    actionError.value = error instanceof Error ? error.message : 'Could not send it.'
+  }
+}
+
+async function cancelWaiting(): Promise<void> {
+  if (!result.value) return
+  toastCode.value = toastCode.value || result.value.code
+  await cancel(result.value.code).catch(() => null)
 }
 
 function openStep(step: StepRow): void {
@@ -230,11 +322,35 @@ const title = computed(() => {
   return 'Which chat?'
 })
 
+/** A send chooser where one tap sends: auto-send on, words to send, not a draft. */
+const sendsOnTap = computed(() => Boolean(tapSends.value && result.value?.message && !result.value.draftOnly && result.value.outcome === 'picker'))
+
 const subtitle = computed(() => {
   if (!result.value) return 'Voice command'
-  if (result.value.outcome === 'steps') return 'Tap each step to do it. Nothing is sent until you tap Send.'
-  if (isNoMatch.value) return 'No chat matched what you said'
+  if (result.value.outcome === 'steps') return 'Sure steps run by themselves. Tap any other step to do it.'
+  if (isNoMatch.value) return sendsOnTap.value ? 'No chat matched. Tap one to send it there.' : 'No chat matched what you said'
+  if (sendsOnTap.value) return 'Tap a chat to send it there'
   return result.value.message ? 'Pick the chat for this message' : 'A few chats matched what you said'
+})
+
+const messageHint = computed(() => (sendsOnTap.value
+  ? 'Tapping a chat sends the message. Edit first opens it typed in instead.'
+  : 'Tapping a chat opens it with the message typed in. Nothing is sent until you tap Send.'))
+
+/** The toast after a one-tap send: Undo while it waits, View once it has gone. */
+const toast = computed(() => {
+  const value = result.value
+  if (!value || !toastCode.value) return null
+  const delivery = toastCode.value === value.code ? value.delivery : value.steps?.find((step) => step.code === toastCode.value)?.delivery
+  if (!delivery) return null
+  const copy = describeDelivery(delivery, seconds.value)
+  const code = toastCode.value
+  if (delivery.state === 'pending') return { title: copy.title, tone: copy.tone, action: { label: 'Undo', run: () => cancel(code).catch(() => null) } }
+  if (delivery.state === 'sent' && delivery.threadId) {
+    const threadId = delivery.threadId
+    return { title: copy.title, tone: copy.tone, action: { label: 'View', run: async () => emit('navigate', `/#/thread/${encodeURIComponent(threadId)}`) } }
+  }
+  return { title: copy.title, tone: copy.tone, action: null }
 })
 
 const listHeading = computed(() => {
@@ -245,6 +361,8 @@ const listHeading = computed(() => {
 const canShowRecent = computed(() => Boolean(result.value) && result.value?.outcome !== 'steps' && !showRecent.value && !isNoMatch.value)
 
 function rowPill(row: VoiceChatRow, index: number): { pill: string; pillTone: 'unread' | 'attention' | 'accent' } {
+  const delivery = result.value?.delivery
+  if (delivery && delivery.kind === 'send' && delivery.threadId === row.threadId && delivery.state !== 'cancelled') return deliveryPill(delivery, seconds.value)
   if (index === 0 && isCloseCall.value) return { pill: 'Best match', pillTone: 'accent' }
   if (row.status === 'needs_you') return { pill: 'Needs you', pillTone: 'attention' }
   if (row.status === 'unread') return { pill: 'Unread', pillTone: 'unread' }
@@ -261,6 +379,21 @@ function statusParts(row: VoiceChatRow): string[] {
 function select(threadId: string): void {
   if (!result.value) return
   emit('select', { threadId, code: result.value.code, carryMessage: Boolean(result.value.message) })
+}
+
+/** A chooser row: sends there at once when one tap sends; otherwise opens the chat (with the words typed in). */
+async function tapRow(threadId: string): Promise<void> {
+  const delivery = result.value?.delivery
+  if (sendsOnTap.value && !(delivery && delivery.state !== 'cancelled' && delivery.state !== 'failed')) {
+    await runTap(result.value!.code, { threadId })
+    return
+  }
+  if (delivery?.state === 'sent' && delivery.threadId) {
+    emit('navigate', `/#/thread/${encodeURIComponent(delivery.threadId)}`)
+    return
+  }
+  if (sendsOnTap.value) return
+  select(threadId)
 }
 </script>
 
@@ -333,6 +466,56 @@ function select(threadId: string): void {
 
 .voice-picker-section :deep(.notification-row.is-done) {
   opacity: 0.6;
+}
+
+.voice-picker-row {
+  @apply flex items-stretch;
+}
+
+.voice-picker-row > :deep(.notification-row) {
+  @apply min-w-0 flex-1;
+}
+
+.voice-picker-edit {
+  @apply my-1.5 mr-3 flex min-h-11 shrink-0 items-center self-center rounded-md border px-3 text-xs font-medium;
+  border-color: var(--border-strong);
+  color: var(--text-secondary);
+  background: var(--surface-elevated);
+}
+
+.voice-picker-cancel-all {
+  @apply ml-auto flex min-h-11 items-center rounded-md px-3 text-xs font-semibold normal-case tracking-normal;
+  background: var(--accent);
+  color: #fff;
+}
+
+.voice-picker-none {
+  @apply mx-2 mt-1 flex flex-wrap items-center gap-2 border-t px-2 pt-2 text-xs;
+  border-color: var(--border-soft);
+  color: var(--text-muted);
+}
+
+.voice-picker-none .voice-picker-link {
+  @apply mx-0 ml-auto;
+}
+
+.voice-picker-toast {
+  @apply fixed left-1/2 z-50 flex min-h-14 w-[calc(100%-24px)] max-w-md -translate-x-1/2 items-center gap-3 rounded-xl border py-2 pl-4 pr-2 text-sm font-semibold shadow-lg;
+  bottom: calc(16px + env(safe-area-inset-bottom));
+  border-color: var(--border-strong);
+  background: var(--surface-elevated);
+  color: var(--text-primary);
+}
+
+.voice-picker-toast-text {
+  @apply min-w-0 flex-1;
+  overflow-wrap: anywhere;
+}
+
+.voice-picker-toast-action {
+  @apply min-h-11 min-w-16 shrink-0 rounded-lg px-4 text-sm font-bold;
+  background: var(--accent);
+  color: #fff;
 }
 
 .voice-picker-footnote {

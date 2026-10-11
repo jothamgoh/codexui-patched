@@ -316,13 +316,27 @@
                 </div>
               </div>
 
+              <VoiceDeliveryBanner
+                v-if="visibleVoiceDelivery"
+                :key="visibleVoiceDelivery.result.code"
+                v-model:result="visibleVoiceDelivery.result"
+                open-chat
+                @stopped="onVoiceDeliveryStopped"
+                @open="openVoiceChat"
+                @dismiss="voiceDelivery = null"
+              />
               <VoiceDraftBanner
                 v-if="visibleVoiceBanner"
                 :heard="visibleVoiceBanner.heard"
                 :note="visibleVoiceBanner.note"
                 :project-choices="visibleVoiceBanner.projectChoices"
+                :one-tap="visibleVoiceBanner.oneTap"
+                :busy="voiceStartBusy"
                 @dismiss="voiceBanner = null"
                 @choose-project="onChooseVoiceProject"
+                @start-project="onStartVoiceProject"
+                @edit-first="onVoiceEditFirst"
+                @other-project="openNewThreadFolderPicker"
               />
               <ThreadComposer ref="threadComposerRef" :active-thread-id="composerThreadContextId"
                 :cwd="composerCwd"
@@ -428,6 +442,13 @@
                   @steer="steerQueuedMessage"
                   @delete="removeQueuedMessage"
                 />
+                <VoiceDeliveryBanner
+                  v-if="visibleVoiceDelivery"
+                  :key="visibleVoiceDelivery.result.code"
+                  v-model:result="visibleVoiceDelivery.result"
+                  @stopped="onVoiceDeliveryStopped"
+                  @dismiss="voiceDelivery = null"
+                />
                 <VoiceDraftBanner
                   v-if="visibleVoiceBanner"
                   :heard="visibleVoiceBanner.heard"
@@ -507,8 +528,10 @@ import LimitContinuation from './components/content/LimitContinuation.vue'
 import NewThreadFolderPicker from './components/content/NewThreadFolderPicker.vue'
 import VoicePicker from './components/content/VoicePicker.vue'
 import VoiceDraftBanner from './components/content/VoiceDraftBanner.vue'
-import { getVoiceResult } from './api/voice'
-import { isVoiceCode, type VoiceAgent, type VoiceProjectOption } from './types/voice'
+import VoiceDeliveryBanner from './components/content/VoiceDeliveryBanner.vue'
+import { getVoiceResult, getVoiceSettings, sendVoiceResult } from './api/voice'
+import { isVoiceCode, type VoiceAgent, type VoiceProjectOption, type VoiceStoredResult } from './types/voice'
+import { isDeliveryActive } from './utils/voiceDelivery'
 import { modelForVoiceAgent, NEW_THREAD_DRAFT_KEY, planVoicePrefill, queryWithoutVoice, voiceCodeFromQuery, voiceQueryOnly } from './utils/voicePrefill'
 import { activityLinkFromQuery, EXPIRED_VOICE_NOTE, queryWithoutActivityLink, voiceActivityNote, voiceActivityQuery, type ActivityLanding, type ActivityLink, type VoiceActivityNote } from './utils/voiceLanding'
 import { createBoardTeamDraft } from './utils/boardTeamDraft'
@@ -1459,9 +1482,26 @@ async function onStartNewThreadFromToolbar(): Promise<void> {
   focusComposerSoon()
 }
 
-type VoiceBanner = { draftKey: string; heard: string; note?: string; projectChoices: VoiceProjectOption[] }
+/** `oneTap`: tapping a project starts the chat at once (auto-send on); otherwise it only picks the folder. */
+type VoiceBanner = { draftKey: string; heard: string; note?: string; projectChoices: VoiceProjectOption[]; code?: string; oneTap?: boolean }
 const voiceBanner = ref<VoiceBanner | null>(null)
 const visibleVoiceBanner = computed(() => voiceBanner.value?.draftKey === composerThreadContextId.value ? voiceBanner.value : null)
+/** A send or new chat the server is doing for a voice command: shown with its countdown above the composer. */
+const voiceDelivery = ref<{ draftKey: string; result: VoiceStoredResult } | null>(null)
+const visibleVoiceDelivery = computed(() => voiceDelivery.value?.draftKey === composerThreadContextId.value ? voiceDelivery.value : null)
+const voiceStartBusy = ref(false)
+let voiceSettingsRequest: ReturnType<typeof getVoiceSettings> | null = null
+
+/** Whether a tap in a voice chooser sends at once (auto-send on). */
+async function voiceTapSends(): Promise<boolean> {
+  voiceSettingsRequest ??= getVoiceSettings()
+  try {
+    return (await voiceSettingsRequest).settings.autoSend
+  } catch {
+    voiceSettingsRequest = null
+    return false
+  }
+}
 const newThreadFolderPickerRef = ref<{ open: () => void } | null>(null)
 const appliedVoiceLinks = new Set<string>()
 let pendingVoiceAgent: VoiceAgent | null = null
@@ -1486,26 +1526,87 @@ watch(
   },
 )
 
+type VoiceTarget = { route: 'thread'; threadId: string } | { route: 'home' }
+
+const DELIVERY_NOTES: Partial<Record<string, string>> = {
+  failed: "Couldn't send it. Check the message and tap Send.",
+  cancelled: 'Cancelled · nothing was sent.',
+}
+
+/** Types a voice result's message in (with project and agent for a new chat) and shows where it came from. */
+async function prefillFromVoiceResult(result: VoiceStoredResult, target: VoiceTarget, options: { note?: string; focus?: boolean } = {}): Promise<void> {
+  const plan = planVoicePrefill(result, target)
+  if (!plan) return
+  composerDraftStore.setDraftText(plan.draftKey, plan.message)
+  if (plan.cwd) onSelectNewThreadFolder(plan.cwd)
+  if (plan.agent) applyVoiceAgent(plan.agent)
+  // With auto-send on, a project chip starts the chat in one tap instead of the folder list opening.
+  const oneTap = plan.projectChoices.length > 0 && Boolean(plan.message) && !result.draftOnly && await voiceTapSends()
+  voiceBanner.value = {
+    draftKey: plan.draftKey,
+    heard: plan.banner.heard,
+    note: options.note ?? plan.banner.note ?? DELIVERY_NOTES[result.delivery?.state ?? ''],
+    projectChoices: plan.projectChoices,
+    code: result.code,
+    oneTap,
+  }
+  if (options.focus) {
+    await nextTick()
+    threadComposerRef.value?.focusComposer()
+  } else if (plan.openProjectPicker && !oneTap) {
+    await nextTick()
+    newThreadFolderPickerRef.value?.open()
+  } else {
+    focusComposerSoon()
+  }
+}
+
+function currentVoiceTarget(): VoiceTarget {
+  return route.name === 'thread' && routeThreadId.value ? { route: 'thread', threadId: routeThreadId.value } : { route: 'home' }
+}
+
+/** Cancel or Edit on the countdown: the send was stopped, so the message is typed in instead. */
+function onVoiceDeliveryStopped(payload: { result: VoiceStoredResult; edit: boolean }): void {
+  voiceDelivery.value = null
+  void prefillFromVoiceResult(payload.result, currentVoiceTarget(), { note: DELIVERY_NOTES.cancelled, focus: payload.edit })
+}
+
+function openVoiceChat(threadId: string): void {
+  void router.push({ name: 'thread', params: { threadId } })
+}
+
+watch(() => voiceDelivery.value?.result, (result) => {
+  const delivery = result?.delivery
+  if (!result || !delivery) return
+  // Didn't go out: hand the message back, typed in.
+  if (delivery.state === 'failed') {
+    voiceDelivery.value = null
+    void prefillFromVoiceResult(result, currentVoiceTarget())
+    return
+  }
+  // A new chat started from home: go and watch it.
+  if (delivery.state === 'sent' && delivery.kind === 'new_chat' && delivery.threadId && voiceDelivery.value?.draftKey === NEW_THREAD_DRAFT_KEY && isHomeRoute.value) {
+    voiceDelivery.value = { draftKey: delivery.threadId, result }
+    openVoiceChat(delivery.threadId)
+  }
+})
+
 /** Fills in the composer from a `?voice=<code>` link, then drops the code from the URL. */
-async function applyVoiceLink(code: string, target: { route: 'thread'; threadId: string } | { route: 'home' }): Promise<void> {
+async function applyVoiceLink(code: string, target: VoiceTarget): Promise<void> {
   const key = `${code}:${target.route}`
   if (appliedVoiceLinks.has(key)) return
   appliedVoiceLinks.add(key)
   const draftKey = target.route === 'thread' ? target.threadId : NEW_THREAD_DRAFT_KEY
   try {
     if (!isVoiceCode(code)) throw new Error('invalid')
-    const plan = planVoicePrefill(await getVoiceResult(code), target)
-    if (!plan) return
-    composerDraftStore.setDraftText(plan.draftKey, plan.message)
-    if (plan.cwd) onSelectNewThreadFolder(plan.cwd)
-    if (plan.agent) applyVoiceAgent(plan.agent)
-    voiceBanner.value = { draftKey: plan.draftKey, heard: plan.banner.heard, note: plan.banner.note, projectChoices: plan.projectChoices }
-    if (plan.openProjectPicker) {
-      await nextTick()
-      newThreadFolderPickerRef.value?.open()
-    } else {
-      focusComposerSoon()
+    const result = await getVoiceResult(code)
+    // The server is sending it (or has): show the countdown or the outcome, type nothing in.
+    if (isDeliveryActive(result.delivery)) {
+      voiceBanner.value = null
+      voiceDelivery.value = { draftKey, result }
+      return
     }
+    await prefillFromVoiceResult(result, target)
   } catch {
     voiceBanner.value = { draftKey, heard: '', note: 'That voice link has expired. Say it again.', projectChoices: [] }
   } finally {
@@ -1560,6 +1661,33 @@ watch(
 function onChooseVoiceProject(projectId: string): void {
   onSelectNewThreadFolder(projectId)
   if (voiceBanner.value) voiceBanner.value = { ...voiceBanner.value, projectChoices: [] }
+}
+
+/** One tap on a project: the server starts the chat with the spoken message (after the undo window). */
+async function onStartVoiceProject(projectId: string): Promise<void> {
+  const banner = voiceBanner.value
+  if (!banner?.code || voiceStartBusy.value) return
+  voiceStartBusy.value = true
+  try {
+    const result = await sendVoiceResult(banner.code, { projectId })
+    composerDraftStore.setDraftText(NEW_THREAD_DRAFT_KEY, '')
+    voiceBanner.value = null
+    voiceDelivery.value = { draftKey: NEW_THREAD_DRAFT_KEY, result }
+  } catch (error) {
+    voiceBanner.value = { ...banner, note: error instanceof Error ? error.message : 'Could not start the chat.' }
+  } finally {
+    voiceStartBusy.value = false
+  }
+}
+
+/** "Edit first": the chips only pick the folder, and the message is ready to edit. */
+function onVoiceEditFirst(): void {
+  if (voiceBanner.value) voiceBanner.value = { ...voiceBanner.value, oneTap: false }
+  nextTick(() => threadComposerRef.value?.focusComposer())
+}
+
+function openNewThreadFolderPicker(): void {
+  newThreadFolderPickerRef.value?.open()
 }
 
 function onSelectVoiceChat(payload: { threadId: string; code: string; carryMessage: boolean }): void {

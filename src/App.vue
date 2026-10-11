@@ -503,6 +503,7 @@ import VoiceDraftBanner from './components/content/VoiceDraftBanner.vue'
 import { getVoiceResult } from './api/voice'
 import { isVoiceCode, type VoiceAgent, type VoiceProjectOption } from './types/voice'
 import { modelForVoiceAgent, NEW_THREAD_DRAFT_KEY, planVoicePrefill, queryWithoutVoice, voiceCodeFromQuery, voiceQueryOnly } from './utils/voicePrefill'
+import { activityLinkFromQuery, EXPIRED_VOICE_NOTE, queryWithoutActivityLink, voiceActivityNote, type ActivityLanding, type ActivityLink, type VoiceActivityNote } from './utils/voiceLanding'
 import { createBoardTeamDraft } from './utils/boardTeamDraft'
 import BoardPlanDialog, { type BoardPlanDraft } from './components/content/BoardPlanDialog.vue'
 import BoardRunSettings from './components/content/BoardRunSettings.vue'
@@ -835,6 +836,7 @@ const threadComposerRef = ref<{
   focusComposer: () => void
 } | null>(null)
 const notificationSettingsRef = ref<{
+  openActivityCenter: (landing: ActivityLanding) => void
   toggleActivityCenter: () => boolean
   isActivityCenterOpen: () => boolean
   selectActivityShortcut: (index: number) => boolean
@@ -1505,10 +1507,43 @@ async function applyVoiceLink(code: string, target: { route: 'thread'; threadId:
 watch(
   () => [route.name, voiceCodeFromQuery(route.query), routeThreadId.value, selectedThreadId.value] as const,
   ([name, code, threadId, selectedId]) => {
-    if (!code) return
+    // An ?activity= link shows its voice result in the notification panel instead.
+    if (!code || route.query.activity !== undefined) return
     if (name === 'home') void applyVoiceLink(code, { route: 'home' })
     // Wait until the chat is open; an unknown chat falls back home with the code kept.
     else if (name === 'thread' && threadId && selectedId === threadId) void applyVoiceLink(code, { route: 'thread', threadId })
+  },
+  { immediate: true },
+)
+
+let openingActivityLink = ''
+
+/** `?activity=<section>[&voice=<code>]` opens the notification panel on that section. */
+async function openActivityLink(link: ActivityLink): Promise<void> {
+  const panel = notificationSettingsRef.value
+  if (!panel || openingActivityLink === route.fullPath) return
+  openingActivityLink = route.fullPath
+  try {
+    await router.replace({ query: queryWithoutActivityLink(route.query) })
+  } finally {
+    openingActivityLink = ''
+  }
+  let voice: VoiceActivityNote | null = null
+  if (link.code) {
+    try {
+      if (!isVoiceCode(link.code)) throw new Error('invalid')
+      voice = voiceActivityNote(await getVoiceResult(link.code))
+    } catch {
+      voice = EXPIRED_VOICE_NOTE
+    }
+  }
+  panel.openActivityCenter({ focus: link.focus, voice })
+}
+
+watch(
+  () => [activityLinkFromQuery(route.query), notificationSettingsRef.value] as const,
+  ([link, panel]) => {
+    if (link && panel) void openActivityLink(link)
   },
   { immediate: true },
 )

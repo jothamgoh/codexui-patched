@@ -26,6 +26,7 @@
       align="end"
       :side-offset="8"
       class="notification-popover"
+      :class="{ 'is-landing': landing }"
       @open-auto-focus.prevent
     >
       <header class="notification-header">
@@ -37,15 +38,29 @@
           v-if="activeView === 'activity' && unreadAttentionCount > 0"
           class="notification-mark-all"
           type="button"
+          aria-label="Mark all as read"
           :disabled="markAllReadBusy"
           :aria-busy="markAllReadBusy"
           @click="void markAllActivityRead()"
         >
           <LoaderCircle v-if="markAllReadBusy" class="notification-mark-all-icon is-spinning" />
           <MailOpen v-else class="notification-mark-all-icon" />
-          <span>{{ markAllReadBusy ? 'Marking…' : 'Mark all as read' }}</span>
+          <span class="notification-mark-all-label">{{ markAllReadBusy ? 'Marking…' : 'Mark all as read' }}</span>
+          <span class="notification-mark-all-short" aria-hidden="true">{{ markAllReadBusy ? 'Marking…' : 'Read all' }}</span>
+        </button>
+        <button class="notification-close" type="button" aria-label="Close notifications" @click="isOpen = false">
+          <X />
         </button>
       </header>
+
+      <div v-if="landing?.voice" class="notification-voice" role="status" aria-label="Voice command">
+        <Mic class="notification-voice-icon" aria-hidden="true" />
+        <div class="notification-voice-copy">
+          <p v-if="landing.voice.lead" class="notification-voice-lead">{{ landing.voice.lead }}</p>
+          <p v-if="landing.voice.heard" class="notification-voice-heard"><span>Heard:</span> “{{ landing.voice.heard }}”</p>
+          <p v-if="showLandingNote" class="notification-voice-note">{{ landing.voice.note }}</p>
+        </div>
+      </div>
 
       <div class="notification-tabs" role="tablist" aria-label="Notification views">
         <button
@@ -95,14 +110,22 @@
         </div>
       </div>
 
-      <div v-if="activeView === 'activity'" class="notification-activity" role="tabpanel">
+      <div
+        v-if="activeView === 'activity'"
+        ref="activityScrollRef"
+        class="notification-activity"
+        role="tabpanel"
+        @touchstart.passive="stopLandingScroll"
+        @wheel.passive="stopLandingScroll"
+        @pointerdown="stopLandingScroll"
+      >
         <p v-if="helpersLoading" class="px-3 py-2 text-xs text-muted-foreground" role="status">Loading helper activity…</p>
         <div v-else-if="helpersError" class="flex items-center gap-2 px-3 text-xs" role="status">
           <span class="min-w-0 flex-1">{{ helpersError }}</span>
           <button type="button" class="min-h-11 px-2 underline" @click="emit('refreshHelpers')">Retry</button>
         </div>
         <div v-if="hasVisibleActivity" class="notification-sections">
-          <section v-if="needsYouCount > 0" class="notification-section">
+          <section v-if="needsYouCount > 0" class="notification-section" v-bind="sectionMarker('needs_you')">
             <div class="notification-section-header">
               <span>Needs you</span>
               <span class="notification-section-count">{{ needsYouCount }}</span>
@@ -213,7 +236,7 @@
               </div>
             </section>
 
-            <section v-if="listedRunningThreads.length > 0" class="notification-section" aria-label="Chats running">
+            <section v-if="listedRunningThreads.length > 0" class="notification-section" aria-label="Chats running" v-bind="sectionMarker('running')">
               <div class="notification-section-header">
                 <span>Chats running</span>
                 <span class="notification-section-count">{{ listedRunningThreads.length }}</span>
@@ -233,7 +256,7 @@
               </div>
             </section>
 
-            <section v-if="listedUnreadThreads.length > 0" class="notification-section">
+            <section v-if="listedUnreadThreads.length > 0" class="notification-section" v-bind="sectionMarker('unread')">
               <div class="notification-section-header">
                 <span>Unread</span>
                 <span class="notification-section-count">{{ listedUnreadThreads.length }}</span>
@@ -258,7 +281,7 @@
             </section>
           </template>
 
-          <section v-if="visibleRecentHistory.length > 0" class="notification-section">
+          <section v-if="visibleRecentHistory.length > 0" class="notification-section" v-bind="sectionMarker(activityFilter === 'unread' ? 'unread' : 'recent')">
             <div class="notification-section-header">
               <span>{{ activityFilter === 'unread' ? 'Unread' : 'Recent activity' }}</span>
               <span v-if="activityFilter === 'unread'" class="notification-section-count">
@@ -479,7 +502,7 @@
 </template>
 
 <script setup lang="ts">
-import { computed, onBeforeUnmount, ref, watch } from 'vue'
+import { computed, nextTick, onBeforeUnmount, ref, watch } from 'vue'
 import {
   Bell,
   BellRing,
@@ -488,6 +511,7 @@ import {
   LoaderCircle,
   Mail,
   MailOpen,
+  Mic,
   MoreHorizontal,
   Pin,
   PinOff,
@@ -530,6 +554,7 @@ import {
   type RecentActivityItem,
   type RunningActivityItem,
 } from '../../utils/notificationActivity'
+import type { ActivityFocus, ActivityLanding } from '../../utils/voiceLanding'
 import NotificationRow from './NotificationRow.vue'
 import ThreadHelpers from './ThreadHelpers.vue'
 
@@ -550,6 +575,8 @@ type PinnedRow = {
 }
 
 const DEFAULT_RECENT_LIMIT = 6
+const LANDING_HIGHLIGHT_MS = 2400
+const LANDING_SCROLL_WAIT_MS = 6000
 const relativeTimeNow = useRelativeTimeClock()
 
 const props = defineProps<{
@@ -604,6 +631,14 @@ let swipeStartY = 0
 let suppressRecentClickUntil = 0
 let recentLongPressTimer: ReturnType<typeof setTimeout> | null = null
 let recentLongPressTriggered = false
+/** Set while the panel is open from a deep link (`?activity=`), such as a voice command. */
+const landing = ref<ActivityLanding | null>(null)
+/** The section to scroll to once it has rows; the panel may still be loading. */
+const pendingLandingFocus = ref<ActivityFocus | null>(null)
+const highlightedSection = ref<ActivityFocus | ''>('')
+const activityScrollRef = ref<HTMLElement | null>(null)
+let landingHighlightTimer: ReturnType<typeof setTimeout> | null = null
+let landingScrollTimer: ReturnType<typeof setTimeout> | null = null
 
 const {
   status,
@@ -711,6 +746,19 @@ const activitySummary = computed(() => {
   if (unreadAttentionCount.value > 0) parts.push(`${unreadAttentionCount.value.toString()} unread`)
   return parts.length > 0 ? parts.join(' · ') : 'No work needs attention'
 })
+/** The voice result's "nothing here" note, until live activity shows that section has rows. */
+const showLandingNote = computed(() => {
+  const value = landing.value
+  if (!value?.voice?.note) return false
+  const liveCount: Record<ActivityFocus, number> = {
+    all: 0,
+    needs_you: needsYouCount.value,
+    running: runningActivity.value.length,
+    unread: unreadAttentionCount.value,
+    recent: allRecentHistory.value.length,
+  }
+  return liveCount[value.focus] === 0
+})
 const triggerLabel = computed(() => `Notifications: ${activitySummary.value}`)
 
 const pushIndicatorStatus = computed(() => {
@@ -764,13 +812,17 @@ const threadActivitySignature = computed(() =>
 )
 
 watch(isOpen, (open) => {
-  if (!open) return
+  if (!open) {
+    clearLanding()
+    return
+  }
   emit('refreshHelpers')
   activeView.value = 'activity'
   activityFilter.value = 'all'
   recentLimit.value = DEFAULT_RECENT_LIMIT
   resetRecentSwipe()
   expandedActionItemId.value = ''
+  if (landing.value) applyLandingFocus(landing.value.focus)
   void refreshHistory()
   void fetchMissingPinnedThreads()
   void initializeWebPushNotifications(true)
@@ -798,7 +850,42 @@ watch(
   { immediate: true },
 )
 
+// Keep the landing section at the top while the panel's data arrives (sections above it can
+// appear later), until the user touches the list. Highlight it once, when it first shows.
+watch(
+  () => [
+    pendingLandingFocus.value,
+    activityScrollRef.value,
+    activityFilter.value,
+    needsYouCount.value,
+    pinnedRows.value.length,
+    boardWorkActivity.value.length,
+    listedRunningThreads.value.length,
+    listedUnreadThreads.value.length,
+    visibleRecentHistory.value.length,
+    props.helpersLoading,
+    props.helpersError,
+  ] as const,
+  async ([focus]) => {
+    if (!focus) return
+    await nextTick()
+    const container = activityScrollRef.value
+    const section = container?.querySelector<HTMLElement>(`[data-activity-section="${focus}"]`)
+    if (!container || !section || pendingLandingFocus.value !== focus) return
+    container.scrollTop += section.getBoundingClientRect().top - container.getBoundingClientRect().top
+    if (landingHighlightTimer) return
+    highlightedSection.value = focus
+    landingHighlightTimer = setTimeout(() => { highlightedSection.value = '' }, LANDING_HIGHLIGHT_MS)
+  },
+  { flush: 'post' },
+)
+
+function stopLandingScroll(): void {
+  pendingLandingFocus.value = null
+}
+
 onBeforeUnmount(() => {
+  clearLanding()
   unsubscribeBoardNotifications()
   if (refreshTimer) clearTimeout(refreshTimer)
   clearRecentLongPress()
@@ -998,6 +1085,41 @@ function shortcutNumber(threadId: string): number {
   return index >= 0 ? index + 1 : 0
 }
 
+function sectionMarker(section: ActivityFocus): Record<string, unknown> {
+  return { 'data-activity-section': section, class: { 'is-landing-focus': highlightedSection.value === section } }
+}
+
+/** Opens the panel on a section, for links such as a voice command's notification. */
+function openActivityCenter(next: ActivityLanding): void {
+  landing.value = next
+  if (isOpen.value) applyLandingFocus(next.focus)
+  else isOpen.value = true
+}
+
+function applyLandingFocus(focus: ActivityFocus): void {
+  activeView.value = 'activity'
+  // The Unread filter is the panel's own view of exactly the unread chats.
+  activityFilter.value = focus === 'unread' ? 'unread' : 'all'
+  highlightedSection.value = ''
+  if (landingHighlightTimer) clearTimeout(landingHighlightTimer)
+  landingHighlightTimer = null
+  if (activityScrollRef.value) activityScrollRef.value.scrollTop = 0
+  pendingLandingFocus.value = focus === 'all' ? null : focus
+  if (landingScrollTimer) clearTimeout(landingScrollTimer)
+  // Stop following after a few seconds, so a later update cannot yank the list.
+  landingScrollTimer = setTimeout(stopLandingScroll, LANDING_SCROLL_WAIT_MS)
+}
+
+function clearLanding(): void {
+  landing.value = null
+  pendingLandingFocus.value = null
+  highlightedSection.value = ''
+  if (landingHighlightTimer) clearTimeout(landingHighlightTimer)
+  if (landingScrollTimer) clearTimeout(landingScrollTimer)
+  landingHighlightTimer = null
+  landingScrollTimer = null
+}
+
 function toggleActivityCenter(): boolean {
   if (!isOpen.value) activeView.value = 'activity'
   isOpen.value = !isOpen.value
@@ -1024,6 +1146,7 @@ function selectActivityShortcut(index: number): boolean {
 }
 
 defineExpose({
+  openActivityCenter,
   toggleActivityCenter,
   isActivityCenterOpen,
   selectActivityShortcut,
@@ -1297,6 +1420,65 @@ function onModeChange(event: Event): void {
   @apply h-3.5 w-3.5 shrink-0;
 }
 
+.notification-mark-all-short {
+  @apply hidden;
+}
+
+.notification-header > div:first-child {
+  @apply min-w-0 flex-1;
+}
+
+/* Only the phone sheet needs a close button; elsewhere a click outside or Escape closes it. */
+.notification-close {
+  @apply -mr-2 -mt-1.5 hidden h-11 w-11 shrink-0 items-center justify-center rounded-full transition;
+  color: var(--text-muted);
+}
+
+.notification-close:hover {
+  background: var(--surface-muted);
+  color: var(--text-primary);
+}
+
+.notification-close:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: -2px;
+}
+
+.notification-close svg {
+  @apply h-5 w-5;
+}
+
+.notification-voice {
+  @apply mx-4 mb-2 flex items-start gap-2.5 rounded-lg border px-3 py-2.5 text-xs leading-5;
+  border-color: var(--border-soft);
+  background: var(--surface-muted);
+  color: var(--text-secondary);
+}
+
+.notification-voice-icon {
+  @apply mt-0.5 h-4 w-4 shrink-0;
+  color: var(--accent);
+}
+
+.notification-voice-copy {
+  @apply min-w-0 flex-1;
+  overflow-wrap: anywhere;
+}
+
+.notification-voice-lead {
+  @apply text-sm font-semibold;
+  color: var(--text-primary);
+}
+
+.notification-voice-heard > span {
+  color: var(--text-muted);
+}
+
+.notification-voice-note {
+  @apply font-medium;
+  color: var(--text-primary);
+}
+
 .notification-title {
   @apply text-sm font-semibold;
   color: var(--text-primary);
@@ -1375,6 +1557,29 @@ function onModeChange(event: Event): void {
 .notification-section {
   @apply border-t py-2;
   border-color: var(--border-soft);
+}
+
+/* The section a deep link opened the panel on. */
+.notification-section.is-landing-focus {
+  animation: notification-landing-focus 2400ms ease-out;
+}
+
+@keyframes notification-landing-focus {
+  0%,
+  35% {
+    background: color-mix(in srgb, var(--accent) 14%, transparent);
+  }
+
+  100% {
+    background: transparent;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .notification-section.is-landing-focus {
+    animation: none;
+    background: color-mix(in srgb, var(--accent) 10%, transparent);
+  }
 }
 
 .notification-section-header {
@@ -1719,6 +1924,39 @@ function onModeChange(event: Event): void {
     max-height: calc(100dvh - 4.5rem);
   }
 
+  /* Opened from a link, the panel is the page: a full-height sheet down to the home indicator. */
+  :global(.notification-popover.is-landing) {
+    height: var(--reka-popover-content-available-height, calc(100dvh - 4.5rem));
+    max-height: var(--reka-popover-content-available-height, calc(100dvh - 4.5rem));
+  }
+
+  :global(.notification-popover.is-landing) .notification-activity,
+  :global(.notification-popover.is-landing) .notification-settings {
+    flex: 1 1 auto;
+    min-height: 0;
+    max-height: none;
+    padding-bottom: env(safe-area-inset-bottom);
+  }
+
+  .notification-close {
+    @apply inline-flex;
+  }
+
+  .notification-mark-all-label {
+    @apply hidden;
+  }
+
+  .notification-mark-all-short {
+    @apply inline;
+  }
+
+  .notification-mark-all,
+  .notification-tab,
+  .notification-filter-button,
+  .notification-show-more {
+    @apply min-h-11;
+  }
+
   .notification-activity,
   .notification-settings {
     max-height: calc(100dvh - 12rem);
@@ -1737,7 +1975,7 @@ function onModeChange(event: Event): void {
   }
 
   .notification-more-button {
-    @apply right-1.5 h-9 w-9;
+    @apply right-1 top-0.5 h-11 w-11;
   }
 
   .notification-row-actions {

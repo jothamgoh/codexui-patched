@@ -39,14 +39,35 @@ const RESULTS = {
   [code('N')]: stored('N', { heard: 'new chat in HRA I with codex, find out why customer emails bounce', action: 'new_chat', outcome: 'new_chat', message: 'find out why customer emails bounce', project: PROJECTS[0], agent: 'codex' }),
   [code('A')]: stored('A', { heard: 'new chat in slack AI with claude, tidy the bot copy', action: 'new_chat', outcome: 'new_chat', message: 'tidy the bot copy', project: PROJECTS[1], agent: 'claude' }),
   [code('U')]: stored('U', { heard: 'new chat, check the logs', action: 'new_chat', outcome: 'new_chat', reason: 'project_unclear', message: 'check the logs', project: null, projectOptions: [PROJECTS[1], PROJECTS[2], PROJECTS[0]], agent: null }),
+  [code('E')]: stored('E', { heard: 'anything unread', action: 'list_chats', outcome: 'empty', reason: 'empty_list', listType: 'unread', candidates: [] }),
   [code('X')]: stored('X', { heard: 'uh can you, the thing from before', action: 'other', outcome: 'not_understood', reason: 'other', candidates: [ROWS.migration, ROWS.exportJob, ROWS.checkout, ROWS.webhook] }),
 }
 
+// The live panel: two chats running, one waiting for approval, two unread, one pinned, recent history.
+const thread = (id, name, cwd, minutes, status = 'idle') => ({ id, name, preview: name.toLowerCase(), cwd, createdAt: secs(minutes + 60), updatedAt: secs(minutes), source: 'cli', status: { type: status } })
 const THREADS = [
-  { id: 'thread-webhook', name: 'Stripe webhook bug', preview: 'fix the stripe webhook', cwd: '/work/hr-ai', createdAt: secs(90), updatedAt: secs(4), source: 'cli', status: { type: 'idle' } },
-  { id: 'thread-checkout', name: 'Stripe checkout copy', preview: 'update checkout copy', cwd: '/work/booking-platform', createdAt: secs(80), updatedAt: secs(12), source: 'cli', status: { type: 'idle' } },
-  { id: 'claude-export', name: 'Nightly export job', preview: 'rerun the export', cwd: '/work/automation', createdAt: secs(70), updatedAt: secs(3), source: 'cli', status: { type: 'idle' } },
+  thread('claude-export', 'Nightly export job', '/work/automation', 3, 'active'),
+  thread('thread-webhook', 'Stripe webhook bug', '/work/hr-ai', 4),
+  thread('thread-migration', 'Approve database migration', '/work/hr-ai', 6),
+  thread('thread-checkout', 'Stripe checkout copy', '/work/booking-platform', 12, 'active'),
+  thread('thread-bounces', 'Customer email bounces', '/work/hr-ai', 18),
+  thread('thread-invoices', 'Invoice PDF layout', '/work/booking-platform', 300),
+  thread('claude-payouts', 'Stripe payouts report', '/work/automation', 1440),
+  thread('thread-onboarding', 'Onboarding email copy', '/work/slack-ai', 2000),
+  thread('thread-tax', 'Quarterly tax export', '/work/automation', 2900),
+  thread('thread-logo', 'Logo contrast check', '/work/booking-platform', 3100),
+  thread('thread-sitemap', 'Sitemap generator', '/work/booking-platform', 3300),
+  thread('thread-cron', 'Cron drift alert', '/work/automation', 3500),
 ]
+const PANEL = {
+  unreadThreadIds: ['thread-webhook', 'thread-bounces'],
+  pinnedThreadIds: ['thread-onboarding'],
+  pending: [{ id: 7, method: 'item/commandExecution/requestApproval', params: { threadId: 'thread-migration', turnId: 'turn-m', itemId: 'item-m' }, receivedAtIso: iso(6) }],
+  history: [
+    { id: 'history-invoices', threadId: 'thread-invoices', turnId: 'turn-i', status: 'completed', title: 'Invoice PDF layout', body: 'Moved totals to the right column.', completedAt: iso(300), readAt: iso(200) },
+    { id: 'history-payouts', threadId: 'claude-payouts', turnId: 'turn-p', status: 'completed', title: 'Stripe payouts report', body: 'Weekly payouts summary sent.', completedAt: iso(1440), readAt: iso(1400) },
+  ],
+}
 const MODELS = [
   { id: 'gpt-codex-test', displayName: 'Codex Test', isDefault: true, modelProvider: 'openai' },
   { id: 'claude-test-model', displayName: 'Claude Test', modelProvider: 'anthropic' },
@@ -73,7 +94,8 @@ await mkdir(shotsDir, { recursive: true })
 const failures = []
 let passed = 0
 
-async function scenario(name, run) {
+async function scenario(name, run, panelOverrides = {}) {
+  const panel = { ...PANEL, ...panelOverrides }
   const context = await browser.newContext({ viewport: { width: 390, height: 844 }, deviceScaleFactor: 2, hasTouch: true, isMobile: true })
   const page = await context.newPage()
   const errors = []
@@ -98,8 +120,10 @@ async function scenario(name, run) {
       try { return route.fulfill({ json: { result: rpc(body.method, body.params) } }) } catch (error) { return route.fulfill({ status: 502, json: { error: String(error.message) } }) }
     }
     if (path === '/codex-api/workspace-roots-state') return route.fulfill({ json: { data: { order: PROJECTS.map((project) => project.id), labels: {}, active: [] } } })
-    if (path === '/codex-api/thread-read-state') return route.fulfill({ json: { data: { version: 1, readAtByThreadId: {}, unreadThreadIds: [] } } })
-    if (path.startsWith('/codex-api/push/history')) return route.fulfill({ json: { data: { items: [], unreadCount: 0, dismissals: [] } } })
+    if (path === '/codex-api/thread-read-state') return route.fulfill({ json: { data: { version: 1, readAtByThreadId: {}, unreadThreadIds: panel.unreadThreadIds } } })
+    if (path === '/codex-api/pinned-threads') return route.fulfill({ json: { data: { threadIds: panel.pinnedThreadIds } } })
+    if (path === '/codex-api/server-requests/pending') return route.fulfill({ json: { data: panel.pending } })
+    if (path.startsWith('/codex-api/push/history')) return route.fulfill({ json: { data: { items: panel.history, unreadCount: 0, dismissals: [] } } })
     return route.fulfill({ json: { data: [] } })
   })
   try {
@@ -120,6 +144,21 @@ async function scenario(name, run) {
 const base = 'http://127.0.0.1:4196/output/voice-pages/index.html'
 const composer = (page) => page.locator('textarea.thread-composer-input')
 const waitForHashWithout = (page, text) => page.waitForFunction((value) => !window.location.hash.includes(value), text)
+const sheet = (page) => page.locator('.notification-popover')
+const section = (page, name) => page.locator(`[data-activity-section="${name}"]`)
+const filterPressed = (page, label) => page.getByRole('group', { name: 'Activity filter' }).getByRole('button', { name: new RegExp(`^${label}`, 'u') }).getAttribute('aria-pressed')
+const voiceNote = (page) => page.getByRole('status', { name: 'Voice command' })
+async function openedOn(page, focus) {
+  await sheet(page).waitFor()
+  await page.waitForFunction((name) => document.querySelector(`[data-activity-section="${name}"]`)?.classList.contains('is-landing-focus'), focus)
+  await page.waitForFunction(() => window.location.hash === '#/')
+}
+/** How far the section's top sits below the top of the scrolling list. */
+const sectionOffset = (page, name) => page.evaluate((value) => {
+  const list = document.querySelector('.notification-activity')
+  const target = document.querySelector(`[data-activity-section="${value}"]`)
+  return Math.round(target.getBoundingClientRect().top - list.getBoundingClientRect().top)
+}, name)
 
 try {
   await scenario('list picker shows panel sections as tabs and switches between them', async (page, { voiceRequests }) => {
@@ -223,6 +262,113 @@ try {
     await page.getByRole('heading', { name: 'Recent chats' }).waitFor()
     assert.equal(await page.locator('.voice-picker-row').count(), 4)
     await page.screenshot({ path: `${shotsDir}/07-not-understood.png` })
+  })
+
+  await scenario('the bell opens the panel exactly as before: All, from the top, no voice note, not a sheet', async (page) => {
+    await page.goto(`${base}#/`)
+    await page.locator('.notification-trigger').click()
+    await sheet(page).waitFor()
+    await section(page, 'recent').waitFor()
+    assert.equal(await filterPressed(page, 'All'), 'true')
+    assert.equal(await voiceNote(page).count(), 0)
+    assert.equal(await page.locator('.is-landing-focus').count(), 0)
+    assert.equal(await sheet(page).evaluate((el) => el.classList.contains('is-landing')), false)
+    assert.equal(await page.locator('.notification-activity').evaluate((el) => el.scrollTop), 0)
+    assert.deepEqual(await page.locator('[data-activity-section]').evaluateAll((els) => els.map((el) => el.dataset.activitySection)), ['needs_you', 'running', 'unread', 'recent'])
+    await page.screenshot({ path: `${shotsDir}/10-bell-panel.png` })
+  })
+
+  await scenario('?activity=running opens the panel on Chats running and drops the link from the URL', async (page) => {
+    await page.goto(`${base}#/?activity=running`)
+    await openedOn(page, 'running')
+    assert.equal(await filterPressed(page, 'All'), 'true')
+    assert.ok(Math.abs(await sectionOffset(page, 'running')) <= 2, 'Chats running is scrolled to the top of the list')
+    assert.equal(await voiceNote(page).count(), 0, 'no voice note without a voice code')
+    await page.waitForFunction(() => !document.querySelector('.is-landing-focus'), null, { timeout: 5000 })
+  })
+
+  await scenario('?activity=needs_you highlights Needs you', async (page) => {
+    await page.goto(`${base}#/?activity=needs_you`)
+    await openedOn(page, 'needs_you')
+    assert.equal(await sectionOffset(page, 'needs_you'), 0)
+  })
+
+  await scenario('?activity=unread switches the panel to its Unread filter', async (page) => {
+    await page.goto(`${base}#/?activity=unread`)
+    await openedOn(page, 'unread')
+    assert.equal(await filterPressed(page, 'Unread'), 'true')
+    assert.deepEqual(await section(page, 'unread').locator('.notification-row-title').allInnerTexts(), ['Stripe webhook bug', 'Customer email bounces'])
+  })
+
+  await scenario('?activity=recent scrolls down to Recent activity', async (page) => {
+    await page.goto(`${base}#/?activity=recent`)
+    await openedOn(page, 'recent')
+    assert.ok(await page.locator('.notification-activity').evaluate((el) => el.scrollTop) > 0, 'the list scrolled')
+    assert.ok(await section(page, 'recent').isVisible())
+  })
+
+  await scenario('a voice code on the link shows what was heard above the panel', async (page) => {
+    await page.goto(`${base}#/?activity=unread&voice=${code('L')}`)
+    await openedOn(page, 'unread')
+    assert.match(await voiceNote(page).innerText(), /Heard: “show me all unread chats”/u)
+    assert.equal(await composer(page).inputValue(), '', 'a list result types nothing into the composer')
+  })
+
+  await scenario('an empty list says so while the section is still empty', async (page) => {
+    await page.goto(`${base}#/?activity=unread&voice=${code('E')}`)
+    await sheet(page).waitFor()
+    await voiceNote(page).getByText('Nothing unread ✓').waitFor()
+    assert.equal(await filterPressed(page, 'Unread'), 'true')
+    await section(page, 'needs_you').waitFor()
+    assert.equal(await section(page, 'unread').count(), 0)
+    await page.screenshot({ path: `${shotsDir}/15-panel-empty-unread.png` })
+  }, { unreadThreadIds: [] })
+
+  await scenario('the empty note goes once live activity shows that section has chats', async (page) => {
+    await page.goto(`${base}#/?activity=unread&voice=${code('E')}`)
+    await openedOn(page, 'unread')
+    await voiceNote(page).getByText('Heard: “anything unread”').waitFor()
+    assert.equal(await voiceNote(page).getByText('Nothing unread ✓').count(), 0)
+  })
+
+  await scenario('an expired voice code still opens the panel and says the link expired', async (page) => {
+    await page.goto(`${base}#/?activity=running&voice=${code('Z')}`)
+    await openedOn(page, 'running')
+    await voiceNote(page).getByText('That voice link has expired. Say it again.').waitFor()
+  })
+
+  await scenario('an unknown section opens the panel at the top', async (page) => {
+    await page.goto(`${base}#/?activity=everything`)
+    await sheet(page).waitFor()
+    await page.waitForFunction(() => window.location.hash === '#/')
+    assert.equal(await page.locator('.is-landing-focus').count(), 0)
+  })
+
+  await scenario('on a phone the landing is a full-height sheet with 44 px controls that closes back to the app', async (page) => {
+    await page.goto(`${base}#/?activity=running`)
+    await openedOn(page, 'running')
+    await page.waitForTimeout(300) // the open animation scales the sheet
+    const box = await sheet(page).boundingBox()
+    assert.ok(box.y + box.height >= 844 - 12, `sheet reaches the bottom (${box.y + box.height})`)
+    for (const name of ['Close notifications', 'Mark all as read', 'Activity', 'Settings']) {
+      const control = await page.getByRole(name === 'Activity' || name === 'Settings' ? 'tab' : 'button', { name, exact: true }).boundingBox()
+      assert.ok(control.height >= 44, `${name} is ${control.height}px tall`)
+    }
+    for (const row of await sheet(page).locator('.notification-row').all()) assert.ok((await row.boundingBox()).height >= 48)
+    await page.getByRole('button', { name: 'Close notifications' }).click()
+    await sheet(page).waitFor({ state: 'detached' })
+    assert.equal(await page.evaluate(() => window.location.hash), '#/')
+    await composer(page).waitFor()
+    await page.locator('.notification-trigger').click()
+    await sheet(page).waitFor()
+    assert.equal(await sheet(page).evaluate((el) => el.classList.contains('is-landing')), false, 'reopening from the bell is a normal open')
+  })
+
+  await scenario('the catch-all and /new-thread redirects keep the ?activity= link', async (page) => {
+    await page.goto(`${base}#/some/old/link?activity=unread`)
+    await openedOn(page, 'unread')
+    await page.goto(`${base}#/new-thread?activity=running`)
+    await openedOn(page, 'running')
   })
 
   await scenario('an expired result says so instead of guessing', async (page) => {

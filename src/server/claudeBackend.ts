@@ -1,4 +1,5 @@
 import { randomUUID } from 'node:crypto'
+import { setTimeout as delay } from 'node:timers/promises'
 import { spawn } from 'node:child_process'
 import { existsSync, statSync } from 'node:fs'
 import { mkdir, open, readdir, readFile, rename, rm, stat, writeFile } from 'node:fs/promises'
@@ -90,6 +91,9 @@ const TRANSCRIPT_CACHE_BYTES = 96 * 1024 * 1024
 const EXTERNAL_ACTIVITY_MS = 30_000
 const CLAUDE_SESSION_POLL_MS = 5_000
 const CLAUDE_LIMIT_CONTINUATION = 'Continue where you left off. Do not redo work that is already done.'
+/** How long a limit continuation waits for the Claude process CodexUI retired to exit. */
+const LIMIT_CONTINUATION_WAIT_MS = 30_000
+const LIMIT_CONTINUATION_POLL_MS = 1_000
 /** Writes this soon after CodexUI's own activity (titles, hooks) are its own. */
 const OWN_WRITE_SLACK_MS = 10_000
 const HUMAN_PROMPT_SCAN_BYTES = 256 * 1024
@@ -507,8 +511,18 @@ type LiveTurn = {
 
 type StartTurnExtra = {
   goalContinuation?: boolean
+  /** Set only by limit recovery, whose continuation must not join a reply someone else resumed. */
   limitRecoveryAccountNumbers?: readonly number[]
 }
+
+class ClaudeSessionActiveElsewhereError extends Error {
+  constructor() {
+    super('This Claude session is active in another app, such as a terminal or Remote Control. Continue it there, or send again once it is idle.')
+  }
+}
+
+/** Limit recovery found the chat resumed by someone else, so its continuation is not needed. */
+class ClaudeSessionAlreadyResumedError extends Error {}
 
 function runnerIsBusy(runner: SessionRunner): boolean {
   return Boolean(runner.activeTurn) || runner.pushedCommands.size > 0 || runner.backgroundTasks.length > 0
@@ -709,6 +723,10 @@ export class ClaudeBackend {
   private sdkPromise: Promise<SdkModule> | null = null
   private readonly listeners = new Set<NotificationListener>()
   private readonly runners = new Map<string, SessionRunner>()
+  /** Chats whose limit continuation gave up; the user is offered a Continue button. */
+  private readonly limitContinuationNeeded = new Set<string>()
+  private disposed = false
+  private limitContinuationWaitMs = LIMIT_CONTINUATION_WAIT_MS
   private readonly store: ClaudeThreadStore
   private readonly hostSocketPath: string
   private readonly tools: ClaudeHostTool[]
@@ -1383,6 +1401,7 @@ export class ClaudeBackend {
       gitInfo: null,
       status: { type: this.sessionIsActive(sessionId) ? 'active' : 'idle' },
       backgroundTasks: this.runners.get(sessionId)?.backgroundTasks ?? [],
+      needsLimitContinuation: this.limitContinuationNeeded.has(sessionId),
       turns,
     }
   }
@@ -1808,6 +1827,8 @@ export class ClaudeBackend {
 
     // A reply is running: steer it. Claude reads the message at its next step.
     const running = this.runners.get(sessionId)
+    // Limit recovery closed this chat's process. A runner now means the user resumed it already.
+    if (extra.limitRecoveryAccountNumbers && running) throw new ClaudeSessionAlreadyResumedError()
     if (running?.activeTurn && !running.closed) {
       if (!running.input.push(userMessage)) throw new Error('The Claude reply just finished. Send the message again.')
       running.pushedCommands.set(readString(userMessage.uuid), userMessage)
@@ -1829,7 +1850,7 @@ export class ClaudeBackend {
     await this.refreshClaudeSessionStates()
     const external = await this.externalActivity(sessionId, cwd)
     if ((isClaudeSessionActive(this.claudeSessionStates.get(sessionId)) || external.recent) && !runner) {
-      throw new Error('This Claude session is active in another app, such as a terminal or Remote Control. Continue it there, or send again once it is idle.')
+      throw new ClaudeSessionActiveElsewhereError()
     }
     const stored = await this.store.update(sessionId, {
       model: requested.model,
@@ -1848,6 +1869,7 @@ export class ClaudeBackend {
     const turn = this.beginTurn(runner, readString(userMessage.uuid), cwd, userMessage)
     turn.goalContinuation = extra.goalContinuation === true
     turn.limitRecoveryAccountNumbers = [...new Set(extra.limitRecoveryAccountNumbers ?? [])]
+    this.setLimitContinuationNeeded(sessionId, false)
     runner.pushedCommands.set(turn.turnId, userMessage)
     if (!runner.input.push(userMessage)) {
       this.finishTurn(runner, 'failed', 'Claude Code closed before the message was sent.')
@@ -2120,14 +2142,54 @@ export class ClaudeBackend {
     ])]
     const recovery = await this.accounts.recoverFromLimit(exhaustedAccountNumber, attemptedAccountNumbers)
     if (recovery.kind !== 'ready') return
-    try {
-      await this.startTurn({
-        threadId: turn.threadId,
-        input: [{ type: 'text', text: CLAUDE_LIMIT_CONTINUATION }],
-      }, { limitRecoveryAccountNumbers: attemptedAccountNumbers })
-    } catch (error) {
-      console.warn(`[claude-backend] Could not continue rate-limited Claude session ${turn.sessionId}: ${error instanceof Error ? error.message : String(error)}`)
+    // The retired process can stay registered as busy while it shuts down. Wait
+    // for it rather than give up; the active-elsewhere guard is never bypassed,
+    // so a chat genuinely running in a terminal still refuses the continuation.
+    const deadline = Date.now() + this.limitContinuationWaitMs
+    await this.waitForRetiredProcess(turn.sessionId, deadline)
+    for (;;) {
+      try {
+        await this.startTurn({
+          threadId: turn.threadId,
+          input: [{ type: 'text', text: CLAUDE_LIMIT_CONTINUATION }],
+        }, { limitRecoveryAccountNumbers: attemptedAccountNumbers })
+        return
+      } catch (error) {
+        if (error instanceof ClaudeSessionAlreadyResumedError || this.disposed) return
+        if (error instanceof ClaudeSessionActiveElsewhereError && Date.now() < deadline) {
+          await delay(LIMIT_CONTINUATION_POLL_MS)
+          continue
+        }
+        console.warn(`[claude-backend] Could not continue rate-limited Claude session ${turn.sessionId}: ${error instanceof Error ? error.message : String(error)}`)
+        this.setLimitContinuationNeeded(turn.sessionId, true)
+        return
+      }
     }
+  }
+
+  /**
+   * Poll Claude Code's session registry until the process CodexUI just closed
+   * has exited. Its final transcript writes then belong to CodexUI, not to
+   * another app, so they must not trip the recent-external-write guard.
+   */
+  private async waitForRetiredProcess(sessionId: string, deadline: number): Promise<void> {
+    for (;;) {
+      if (this.disposed || this.runners.has(sessionId)) return
+      const scan = await this.refreshClaudeSessionStates()
+      if (!isClaudeSessionActive(scan.states.get(sessionId))) {
+        this.ownActivityMs.set(sessionId, Date.now())
+        return
+      }
+      if (Date.now() >= deadline) return
+      await delay(LIMIT_CONTINUATION_POLL_MS)
+    }
+  }
+
+  private setLimitContinuationNeeded(sessionId: string, needed: boolean): void {
+    if (this.limitContinuationNeeded.has(sessionId) === needed) return
+    if (needed) this.limitContinuationNeeded.add(sessionId)
+    else this.limitContinuationNeeded.delete(sessionId)
+    this.emit('thread/limitContinuation/updated', { threadId: toThreadId(sessionId), needed })
   }
 
   private queueCuaTurn(turnFile: string, turnId: string, ended = false): void {
@@ -2598,6 +2660,7 @@ export class ClaudeBackend {
   }
 
   dispose(): void {
+    this.disposed = true
     this.accounts.dispose()
     if (this.claudeSessionTimer) clearInterval(this.claudeSessionTimer)
     this.claudeSessionTimer = null

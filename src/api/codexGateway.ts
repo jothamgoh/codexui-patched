@@ -115,6 +115,8 @@ export function readBackgroundTasks(value: unknown): UiBackgroundTask[] {
 export type ThreadMessagePage = {
   threadSource?: UiThreadSource & { threadId: string }
   backgroundTasks: UiBackgroundTask[]
+  /** A Claude chat whose automatic continuation after a usage limit gave up. */
+  needsLimitContinuation: boolean
   messages: UiMessage[]
   isInProgress: boolean
   activeTurnId: string
@@ -658,6 +660,7 @@ export async function getThreadMessagesWithStatus(
     return {
       threadSource: { threadId: payload.thread.id, ...normalizeThreadSourceV2(payload.thread) },
       backgroundTasks: readBackgroundTasks((payload.thread as unknown as Record<string, unknown>).backgroundTasks),
+      needsLimitContinuation: (payload.thread as unknown as Record<string, unknown>).needsLimitContinuation === true,
       messages: normalizeThreadMessagesV2(payload, payload.page.startTurnIndex),
       isInProgress: turnState.isInProgress,
       activeTurnId: turnState.activeTurnId,

@@ -415,6 +415,10 @@
               </div>
 
               <div class="composer-with-queue" @focusin="collapseBoardReplyOptions">
+                <LimitContinuation
+                  v-if="!isHomeRoute && selectedThreadNeedsLimitContinuation"
+                  @continue="continueSelectedThreadAfterLimit"
+                />
                 <BackgroundTasks
                   :tasks="composerBackgroundTasks"
                   @stop="stopThreadBackgroundTask"
@@ -499,6 +503,7 @@ import { collectThreadHelpers } from './utils/threadHelpers'
 import { useThreadHelperActivity } from './composables/useThreadHelperActivity'
 import QueuedMessages from './components/content/QueuedMessages.vue'
 import BackgroundTasks from './components/content/BackgroundTasks.vue'
+import LimitContinuation from './components/content/LimitContinuation.vue'
 import NewThreadFolderPicker from './components/content/NewThreadFolderPicker.vue'
 import VoicePicker from './components/content/VoicePicker.vue'
 import VoiceDraftBanner from './components/content/VoiceDraftBanner.vue'
@@ -627,6 +632,8 @@ const {
   removeQueuedMessage,
   selectedThreadBackgroundTasks,
   stopThreadBackgroundTask,
+  selectedThreadNeedsLimitContinuation,
+  continueSelectedThreadAfterLimit,
   steerQueuedMessage,
   setSelectedModelId,
   setSelectedReasoningEffort,

@@ -628,3 +628,108 @@ test('a refused send to a Claude session running in another app does not list it
   await backend.store.writeChain
   backend.runners.clear(); backend.dispose(); f.manager.dispose()
 })
+
+async function limitContinuationFixture(session, registryStates) {
+  const f = await fixture()
+  const configDir = join(f.scratch, 'claude')
+  const backend = new ClaudeBackend(join(f.scratch, 'threads.json'), { accountSwitcherPath: '/fixture/cswap', claudeConfigDir: configDir })
+  backend.runAccountCommand = f.run
+  backend.readRuntime = async () => ({ connected: true, account: {}, models: [] })
+  await backend.claudeSessionScan
+  const cwd = '/work/project'
+  await backend.store.update(session, { cwd, model: 'claude-sonnet', effort: 'low', createdAtMs: 1 })
+  const projectDir = join(configDir, 'projects', cwd.replace(/[^a-zA-Z0-9]/gu, '-'))
+  await mkdir(projectDir, { recursive: true })
+  await writeFile(join(projectDir, `${session}.jsonl`), '')
+  let scans = 0
+  backend.refreshClaudeSessionStates = async () => {
+    const state = registryStates(scans++)
+    backend.claudeSessionStates = new Map(state ? [[session, state]] : [])
+    return { uncertain: false, states: backend.claudeSessionStates }
+  }
+  const sent = []
+  backend.createRunner = async (threadId, sessionId, stored, runnerCwd, settingsKey) => {
+    const runner = { sessionId, threadId, cwd: runnerCwd, settingsKey, query: { close: () => {} }, closed: false, totalUsage: {}, contextWindow: 200000, input: { push: (message) => { sent.push(message.message.content); return true }, release: () => {} }, activeTurn: null, pushedCommands: new Map(), backgroundTasks: [], idleTimer: null }
+    backend.runners.set(sessionId, runner)
+    return runner
+  }
+  const limited = {
+    sessionId: session, threadId: `claude-${session}`, cwd, settingsKey: `claude-sonnet|low|${cwd}`, accountNumber: 1,
+    activeTurn: null, pushedCommands: new Map(), backgroundTasks: [], idleTimer: null, interruptTimer: null, closed: false,
+    totalUsage: {}, contextWindow: 200000, query: { close: () => {}, interrupt: async () => {} }, input: { release: () => {} },
+  }
+  backend.runners.set(session, limited)
+  const notices = []
+  backend.onNotification((notification) => {
+    if (notification.method === 'thread/limitContinuation/updated') notices.push(notification.params)
+  })
+  const hitLimit = () => backend.failTurn(limited, backend.beginTurn(limited, 'turn-at-limit', cwd, null), "You've hit your session limit · resets 8:50pm (Asia/Singapore)")
+  const done = async () => {
+    for (const runner of backend.runners.values()) runner.closed = true
+    backend.runners.clear(); backend.dispose(); f.manager.dispose()
+    await backend.store.writeChain
+  }
+  return { backend, sent, notices, hitLimit, done, scans: () => scans }
+}
+
+const continuationText = (content) => (Array.isArray(content) ? content.map((block) => block.text).join('') : String(content))
+const until = async (check, ms = 10_000) => {
+  const deadline = Date.now() + ms
+  while (!check()) {
+    if (Date.now() > deadline) throw new Error('timed out')
+    await new Promise((resolve) => setTimeout(resolve, 50))
+  }
+}
+
+test('a limit continuation waits for the retired Claude process to exit instead of giving up', { timeout: 15_000 }, async () => {
+  const session = 'slow-to-exit-after-limit'
+  // The retired process is still registered as busy for its first scans, as it was in production.
+  const f = await limitContinuationFixture(session, (scan) => (scan < 3 ? 'busy' : null))
+  f.hitLimit()
+  await until(() => f.sent.length > 0)
+  await new Promise((resolve) => setTimeout(resolve, 1_500))
+  assert.equal(f.sent.length, 1, 'the continuation is sent exactly once')
+  assert.match(continuationText(f.sent[0]), /Continue where you left off/u)
+  assert.ok(f.scans() >= 3, 'the registry was polled until the old process was gone')
+  assert.deepEqual(f.notices, [], 'no Continue button when automatic continuation worked')
+  await f.done()
+})
+
+test('a limit continuation never joins a chat genuinely busy elsewhere and offers Continue instead', { timeout: 15_000 }, async () => {
+  const session = 'busy-in-terminal-after-limit'
+  const f = await limitContinuationFixture(session, () => 'busy')
+  f.backend.limitContinuationWaitMs = 2_000
+  f.hitLimit()
+  await until(() => f.notices.length > 0)
+  assert.deepEqual(f.sent, [], 'the active-elsewhere guard is never bypassed')
+  assert.deepEqual(f.notices, [{ threadId: `claude-${session}`, needed: true }])
+  assert.equal((await f.backend.rpc('thread/read', { threadId: `claude-${session}` })).thread.needsLimitContinuation, true)
+  // The user presses Continue once the other app is done.
+  f.backend.refreshClaudeSessionStates = async () => ({ uncertain: false, states: (f.backend.claudeSessionStates = new Map()) })
+  f.backend.adoptInterruptedSession(`claude-${session}`)
+  await f.backend.rpc('turn/start', { threadId: `claude-${session}`, input: [{ type: 'text', text: 'Continue where you left off.' }] })
+  assert.deepEqual(f.notices.at(-1), { threadId: `claude-${session}`, needed: false })
+  await f.done()
+})
+
+test('a limit continuation is dropped when the user resumes the chat during the wait', { timeout: 15_000 }, async () => {
+  const session = 'resumed-by-user-after-limit'
+  let userResumed = false
+  const f = await limitContinuationFixture(session, (scan) => (scan < 2 ? 'busy' : null))
+  const original = f.backend.refreshClaudeSessionStates
+  f.backend.refreshClaudeSessionStates = async () => {
+    const result = await original()
+    if (!userResumed && result.states.size === 0) {
+      userResumed = true
+      // The user's own message started a new process before recovery sent its continuation.
+      await f.backend.createRunner(`claude-${session}`, session, {}, '/work/project', 'user')
+    }
+    return result
+  }
+  f.hitLimit()
+  await until(() => userResumed)
+  await new Promise((resolve) => setTimeout(resolve, 2_500))
+  assert.deepEqual(f.sent, [], 'recovery does not send a second continue into the resumed chat')
+  assert.deepEqual(f.notices, [])
+  await f.done()
+})

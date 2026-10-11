@@ -1260,6 +1260,7 @@ export function useDesktopState() {
   const threadGoalByThreadId = ref<Record<string, UiThreadGoal>>({})
   const threadTokenUsageByThreadId = ref<Record<string, UiThreadTokenUsage>>({})
   const backgroundTasksByThreadId = ref<Record<string, UiBackgroundTask[]>>({})
+  const limitContinuationByThreadId = ref<Record<string, true>>({})
   const activeTurnIdByThreadId = ref<Record<string, string>>(persistedRuntimeState.activeTurnIdByThreadId)
   const pendingServerRequestsByThreadId = ref<Record<string, UiServerRequest[]>>({})
 
@@ -1732,8 +1733,16 @@ export function useDesktopState() {
     applyThreadFlags()
   }
 
+  function setLimitContinuationForThread(threadId: string, needed: boolean): void {
+    if (Boolean(limitContinuationByThreadId.value[threadId]) === needed) return
+    limitContinuationByThreadId.value = needed
+      ? { ...limitContinuationByThreadId.value, [threadId]: true }
+      : omitKey(limitContinuationByThreadId.value, threadId)
+  }
+
   function applyPageThreadSource(threadId: string, page: ThreadMessagePage): void {
     setBackgroundTasksForThread(threadId, page.backgroundTasks)
+    setLimitContinuationForThread(threadId, page.needsLimitContinuation)
     if (page.threadSource?.threadId === threadId && rememberThreadSource(threadId, page.threadSource)) applyThreadFlags()
   }
 
@@ -3666,6 +3675,12 @@ export function useDesktopState() {
       if (threadId) setBackgroundTasksForThread(threadId, readBackgroundTasks(params?.tasks))
     }
 
+    if (notification.method === 'thread/limitContinuation/updated') {
+      const params = asRecord(notification.params)
+      const threadId = readString(pick(params ?? {}, 'threadId', 'thread_id'))
+      if (threadId) setLimitContinuationForThread(threadId, params?.needed === true)
+    }
+
     if (notification.method === 'thread/goal/cleared') {
       const params = asRecord(notification.params)
       const threadId = readString(pick(params ?? {}, 'threadId', 'thread_id'))
@@ -3935,7 +3950,8 @@ export function useDesktopState() {
     // These events have already updated live state. Re-reading the transcript
     // for each text/progress chunk turns a stream into constant history replay.
     if (method === 'thread/tokenUsage/updated' || method === 'thread/goal/updated'
-      || method === 'thread/goal/cleared' || method === 'thread/backgroundTasks/updated') return
+      || method === 'thread/goal/cleared' || method === 'thread/backgroundTasks/updated'
+      || method === 'thread/limitContinuation/updated') return
     const threadId = extractThreadIdFromNotification(notification)
     const turnBoundary = method === 'turn/started' || method === 'turn/completed'
     const refreshThreads = method.startsWith('thread/') || turnBoundary
@@ -5306,6 +5322,14 @@ export function useDesktopState() {
     () => backgroundTasksByThreadId.value[selectedThreadId.value] ?? [],
   )
 
+  const selectedThreadNeedsLimitContinuation = computed(
+    () => limitContinuationByThreadId.value[selectedThreadId.value] === true,
+  )
+
+  async function continueSelectedThreadAfterLimit(): Promise<void> {
+    await sendMessageToSelectedThread('Continue where you left off. Do not redo work that is already done.')
+  }
+
   async function stopThreadBackgroundTask(taskId: string): Promise<void> {
     const threadId = selectedThreadId.value
     if (!threadId) return
@@ -5410,6 +5434,8 @@ export function useDesktopState() {
     removeQueuedMessage,
     selectedThreadBackgroundTasks,
     stopThreadBackgroundTask,
+    selectedThreadNeedsLimitContinuation,
+    continueSelectedThreadAfterLimit,
     steerQueuedMessage,
     setSelectedModelId,
     setSelectedReasoningEffort,

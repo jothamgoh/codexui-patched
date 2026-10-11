@@ -215,9 +215,30 @@ test('a spoken list notifies the phone and the PWA reads the result without the 
   assert.ok(logs.every((line) => !line.includes('unread chats')), 'logs never contain the transcript')
 })
 
-test('a clear send asks the Shortcut to confirm; the token works once and sends once', async (t) => {
+test('by default a clear send is not sent; it notifies with the message pre-typed in that chat', async (t) => {
   const { call, pushes, sent } = await startHandler(t)
   const response = await call('/codex-api/voice/shortcut/command', { token: TOKEN, body: { text: 'tell the stripe webhook chat to deploy it to staging' } })
+  assert.equal(response.status, 200)
+  assert.equal(response.json.kind, 'notified')
+  assert.equal(response.json.confirm, undefined)
+  assert.equal(sent.length, 0, 'nothing is sent from the Shortcut')
+  assert.equal(pushes.length, 1)
+  assert.match(pushes[0].title, /^Ready to send · Stripe webhook bug/u)
+  assert.match(pushes[0].url, new RegExp(`^/#/thread/${encodeURIComponent(CHATS.webhook.threadId)}\\?voice=[A-Za-z0-9_-]{24}$`, 'u'))
+})
+
+test('a failed command still notifies the phone, so a linear Shortcut never fails silently', async (t) => {
+  const { call, pushes } = await startHandler(t, { transcribe: async () => { throw new Error('upstream down') } })
+  const response = await call('/codex-api/voice/shortcut/command', { token: TOKEN, body: new Uint8Array([1, 2, 3]), headers: { 'Content-Type': 'audio/x-m4a' } })
+  assert.equal(response.status, 502)
+  assert.equal(pushes.length, 1)
+  assert.equal(pushes[0].title, "Voice command didn't work")
+  assert.equal(pushes[0].body, 'Transcription failed.')
+})
+
+test('with ?confirm=shortcut a clear send asks the Shortcut to confirm; the token works once and sends once', async (t) => {
+  const { call, pushes, sent } = await startHandler(t)
+  const response = await call('/codex-api/voice/shortcut/command?confirm=shortcut', { token: TOKEN, body: { text: 'tell the stripe webhook chat to deploy it to staging' } })
   assert.equal(response.json.kind, 'confirm')
   assert.equal(response.json.confirm.message, 'deploy it to staging')
   assert.equal(response.json.confirm.chatTitle, 'Stripe webhook bug')
@@ -239,7 +260,7 @@ test('a clear send asks the Shortcut to confirm; the token works once and sends 
 
 test('confirm tokens expire, and guessed tokens do nothing', async (t) => {
   const { call, sent, clock } = await startHandler(t)
-  const response = await call('/codex-api/voice/shortcut/command', { token: TOKEN, body: { text: 'tell the stripe webhook chat to deploy it' } })
+  const response = await call('/codex-api/voice/shortcut/command?confirm=shortcut', { token: TOKEN, body: { text: 'tell the stripe webhook chat to deploy it' } })
   clock.now = () => NOW + VOICE_CONFIRM_TTL_MS + 1
   assert.equal((await call('/codex-api/voice/shortcut/confirm', { token: TOKEN, body: { token: response.json.confirm.token } })).status, 410)
   for (const guess of [createVoiceCode(), 'not-a-token', '', null, 123]) {
@@ -250,7 +271,7 @@ test('confirm tokens expire, and guessed tokens do nothing', async (t) => {
 
 test('a failed send consumes the token and reports the error', async (t) => {
   const { call } = await startHandler(t, { sendMessage: async () => { throw new Error('turn/start failed') } })
-  const response = await call('/codex-api/voice/shortcut/command', { token: TOKEN, body: { text: 'tell the stripe webhook chat to deploy it' } })
+  const response = await call('/codex-api/voice/shortcut/command?confirm=shortcut', { token: TOKEN, body: { text: 'tell the stripe webhook chat to deploy it' } })
   const failed = await call('/codex-api/voice/shortcut/confirm', { token: TOKEN, body: { token: response.json.confirm.token } })
   assert.equal(failed.status, 502)
   assert.equal(failed.json.kind, 'error')

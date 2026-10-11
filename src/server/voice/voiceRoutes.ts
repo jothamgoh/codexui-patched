@@ -296,10 +296,22 @@ export function createVoiceCommandHandler(deps: VoiceRouteDeps) {
   }
 
   async function handleShortcutCommand(req: IncomingMessage, res: ServerResponse): Promise<void> {
-    const text = await readCommandText(req)
-    const { stored } = await runCommand(text)
+    // By default the Shortcut stays linear: every outcome, including a send, arrives as a
+    // notification and the user confirms in the app. `?confirm=shortcut` keeps the in-Shortcut
+    // Send/Cancel flow for Shortcuts built for it.
+    const confirmInShortcut = new URL(req.url ?? '/', 'http://localhost').searchParams.get('confirm') === 'shortcut'
+    let text: string
+    let stored: VoiceStoredResult
+    try {
+      text = await readCommandText(req)
+      stored = (await runCommand(text)).stored
+    } catch (error) {
+      const say = error instanceof HttpError ? error.message : 'Voice command failed.'
+      await deps.notify({ title: "Voice command didn't work", body: say, url: '/#/', tag: 'voice:error' }).catch(() => undefined)
+      throw error
+    }
     const push = buildVoiceNotification(stored)
-    if (stored.outcome === 'send_ready' && stored.threadId && stored.message) {
+    if (confirmInShortcut && stored.outcome === 'send_ready' && stored.threadId && stored.message) {
       const chatTitle = stored.candidates[0]?.title ?? 'this chat'
       const token = store.createConfirmation({ threadId: stored.threadId, message: stored.message, chatTitle, code: stored.code })
       const response: VoiceShortcutResponse = {

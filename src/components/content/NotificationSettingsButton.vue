@@ -54,12 +54,13 @@
       </header>
 
       <div v-if="landing?.voice" class="notification-voice" role="status" aria-label="Voice command">
-        <Mic class="notification-voice-icon" aria-hidden="true" />
         <div class="notification-voice-copy">
           <p v-if="landing.voice.lead" class="notification-voice-lead">{{ landing.voice.lead }}</p>
           <p v-if="landing.voice.heard" class="notification-voice-heard"><span>Heard:</span> “{{ landing.voice.heard }}”</p>
           <p v-if="showLandingNote" class="notification-voice-note">{{ landing.voice.note }}</p>
+          <p v-if="voiceMicStatus" class="notification-voice-status">{{ voiceMicStatus }}</p>
         </div>
+        <VoiceCommandMic v-model:status="voiceMicStatus" @navigate="openVoiceResult" />
       </div>
 
       <div class="notification-tabs" role="tablist" aria-label="Notification views">
@@ -511,7 +512,6 @@ import {
   LoaderCircle,
   Mail,
   MailOpen,
-  Mic,
   MoreHorizontal,
   Pin,
   PinOff,
@@ -556,6 +556,7 @@ import {
 } from '../../utils/notificationActivity'
 import type { ActivityFocus, ActivityLanding } from '../../utils/voiceLanding'
 import NotificationRow from './NotificationRow.vue'
+import VoiceCommandMic from './VoiceCommandMic.vue'
 import ThreadHelpers from './ThreadHelpers.vue'
 
 type ManualThreadUnreadOverride = {
@@ -605,6 +606,8 @@ const emit = defineEmits<{
   (event: 'refreshHelpers'): void
   (event: 'setThreadPinned', intent: SetThreadPinnedIntent): void
   (event: 'selectBoardQuestion', payload: { boardId: string; featureId: string; questionId: string }): void
+  /** The in-app link of a voice command said from the panel's voice note. */
+  (event: 'openVoiceResult', url: string): void
 }>()
 
 const isOpen = ref(false)
@@ -637,6 +640,7 @@ const landing = ref<ActivityLanding | null>(null)
 const pendingLandingFocus = ref<ActivityFocus | null>(null)
 const highlightedSection = ref<ActivityFocus | ''>('')
 const activityScrollRef = ref<HTMLElement | null>(null)
+const voiceMicStatus = ref('')
 let landingHighlightTimer: ReturnType<typeof setTimeout> | null = null
 let landingScrollTimer: ReturnType<typeof setTimeout> | null = null
 
@@ -1110,6 +1114,12 @@ function applyLandingFocus(focus: ActivityFocus): void {
   landingScrollTimer = setTimeout(stopLandingScroll, LANDING_SCROLL_WAIT_MS)
 }
 
+function openVoiceResult(url: string): void {
+  // A list result opens the panel again; any other result needs the page underneath.
+  isOpen.value = false
+  emit('openVoiceResult', url)
+}
+
 function clearLanding(): void {
   landing.value = null
   pendingLandingFocus.value = null
@@ -1449,15 +1459,10 @@ function onModeChange(event: Event): void {
 }
 
 .notification-voice {
-  @apply mx-4 mb-2 flex items-start gap-2.5 rounded-lg border px-3 py-2.5 text-xs leading-5;
+  @apply mx-4 mb-2 flex items-center gap-2.5 rounded-lg border px-3 py-2.5 text-xs leading-5;
   border-color: var(--border-soft);
   background: var(--surface-muted);
   color: var(--text-secondary);
-}
-
-.notification-voice-icon {
-  @apply mt-0.5 h-4 w-4 shrink-0;
-  color: var(--accent);
 }
 
 .notification-voice-copy {
@@ -1472,6 +1477,14 @@ function onModeChange(event: Event): void {
 
 .notification-voice-heard > span {
   color: var(--text-muted);
+}
+
+.notification-voice-status {
+  color: var(--text-muted);
+}
+
+.notification-voice > .voice-command-mic {
+  @apply -my-1;
 }
 
 .notification-voice-note {
@@ -1559,26 +1572,36 @@ function onModeChange(event: Event): void {
   border-color: var(--border-soft);
 }
 
-/* The section a deep link opened the panel on. */
+/* The section a deep link opened the panel on. Drawn over the rows, which paint their own backgrounds. */
 .notification-section.is-landing-focus {
-  animation: notification-landing-focus 2400ms ease-out;
+  position: relative;
+}
+
+.notification-section.is-landing-focus::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  z-index: 30;
+  pointer-events: none;
+  background: color-mix(in srgb, var(--accent) 12%, transparent);
+  box-shadow: inset 3px 0 0 var(--accent);
+  animation: notification-landing-focus 2400ms ease-out forwards;
 }
 
 @keyframes notification-landing-focus {
   0%,
-  35% {
-    background: color-mix(in srgb, var(--accent) 14%, transparent);
+  45% {
+    opacity: 1;
   }
 
   100% {
-    background: transparent;
+    opacity: 0;
   }
 }
 
 @media (prefers-reduced-motion: reduce) {
-  .notification-section.is-landing-focus {
+  .notification-section.is-landing-focus::after {
     animation: none;
-    background: color-mix(in srgb, var(--accent) 10%, transparent);
   }
 }
 

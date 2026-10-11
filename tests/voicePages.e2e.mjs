@@ -33,6 +33,9 @@ const stored = (letter, fields) => ({ code: code(letter), createdAtIso: iso(0), 
 
 const RESULTS = {
   [code('L')]: stored('L', { heard: 'show me all unread chats', action: 'list_chats', outcome: 'picker', listType: 'unread', candidates: SECTIONS.unread }),
+  [code('W')]: stored('W', { heard: 'what needs me', action: 'list_chats', outcome: 'picker', listType: 'needs_you', candidates: SECTIONS.needs_you }),
+  [code('G')]: stored('G', { heard: "what's running", action: 'list_chats', outcome: 'picker', listType: 'running', candidates: SECTIONS.running }),
+  [code('T')]: stored('T', { heard: 'show recent chats', action: 'list_chats', outcome: 'picker', listType: 'recent', candidates: SECTIONS.recent }),
   [code('C')]: stored('C', { heard: 'open the stripe one', action: 'open_chat', outcome: 'picker', reason: 'close_call', candidates: [ROWS.webhook, ROWS.checkout, ROWS.payouts] }),
   [code('S')]: stored('S', { heard: 'tell the stripe one to deploy it to staging', action: 'send_to_chat', outcome: 'picker', reason: 'close_call', message: 'deploy it to staging', candidates: [ROWS.webhook, ROWS.checkout, ROWS.payouts] }),
   [code('R')]: stored('R', { heard: 'tell the stripe webhook chat to deploy it', action: 'send_to_chat', outcome: 'send_ready', threadId: 'thread-gone', message: 'deploy it', candidates: [ROWS.webhook] }),
@@ -161,21 +164,27 @@ const sectionOffset = (page, name) => page.evaluate((value) => {
 }, name)
 
 try {
-  await scenario('list picker shows panel sections as tabs and switches between them', async (page, { voiceRequests }) => {
-    await page.goto(`${base}#/voice/${code('L')}`)
-    await page.getByRole('heading', { name: 'Chats', exact: true }).waitFor()
-    await page.getByText('“show me all unread chats”').waitFor()
-    for (const [label, count] of [['Needs you', 1], ['Running', 2], ['Unread', 2], ['Recent', 1]]) {
-      assert.equal(await page.getByRole('button', { name: `${label}, ${count}`, exact: true }).count(), 1, label)
-    }
-    assert.equal(await page.getByRole('button', { name: 'Unread, 2', exact: true }).getAttribute('aria-pressed'), 'true')
-    assert.deepEqual(await page.locator('.voice-picker-row-title').allInnerTexts(), ['Stripe webhook bug', 'Customer email bounces'])
-    await page.screenshot({ path: `${shotsDir}/01-list-picker-unread.png` })
-    await page.getByRole('button', { name: 'Running, 2', exact: true }).click()
-    assert.deepEqual(await page.locator('.voice-picker-row-title').allInnerTexts(), ['Nightly export job', 'Stripe checkout copy'])
-    assert.match(await page.locator('.voice-picker-row-meta').first().innerText(), /automation · Claude · running/u)
-    assert.ok(voiceRequests.every((request) => request.auth === null), 'the PWA never sends a bearer token')
-    assert.ok(voiceRequests.every((request) => !request.path.includes('/shortcut/')), 'the PWA never calls a shortcut route')
+  for (const [letter, focus, filter, shot] of [['W', 'needs_you', 'All', '01-voice-needs-you'], ['G', 'running', 'All', '01-voice-running'], ['L', 'unread', 'Unread', '01-voice-unread'], ['T', 'recent', 'All', '01-voice-recent']]) {
+    await scenario(`a spoken ${focus} list opens the notification panel on that section`, async (page, { voiceRequests }) => {
+      await page.goto(`${base}#/voice/${code(letter)}`)
+      await openedOn(page, focus)
+      assert.equal(await filterPressed(page, filter), 'true')
+      await voiceNote(page).getByText('Heard:').waitFor()
+      assert.equal(await page.locator('.voice-picker').count(), 0, 'the old list page is gone')
+      await page.screenshot({ path: `${shotsDir}/${shot}.png` })
+      assert.ok(voiceRequests.every((request) => request.auth === null), 'the PWA never sends a bearer token')
+      assert.ok(voiceRequests.every((request) => !request.path.includes('/shortcut/')), 'the PWA never calls a shortcut route')
+    })
+  }
+
+  await scenario('Back from the panel does not return to the voice link', async (page) => {
+    await page.goto(`${base}#/thread/thread-webhook`)
+    await composer(page).waitFor()
+    await page.evaluate((value) => { window.location.hash = `#/voice/${value}` }, code('G'))
+    await openedOn(page, 'running')
+    await page.getByRole('button', { name: 'Close notifications' }).click()
+    await page.goBack()
+    await page.waitForFunction(() => window.location.hash === '#/thread/thread-webhook')
   })
 
   await scenario('close-call picker marks the best match and offers recent chats', async (page) => {
@@ -256,13 +265,24 @@ try {
     await page.getByText('That chat could not be opened.', { exact: false }).waitFor()
   })
 
-  await scenario('not understood shows what was heard and recent chats', async (page) => {
+  await scenario("didn't catch that opens the panel at the top with what was heard and a mic to say it again", async (page) => {
     await page.goto(`${base}#/voice/${code('X')}`)
-    await page.getByRole('heading', { name: "Didn't catch that" }).waitFor()
-    await page.getByRole('heading', { name: 'Recent chats' }).waitFor()
-    assert.equal(await page.locator('.voice-picker-row').count(), 4)
+    await sheet(page).waitFor()
+    await voiceNote(page).getByText("Didn't catch that").waitFor()
+    await voiceNote(page).getByText('Heard: “uh can you, the thing from before”').waitFor()
+    await page.waitForFunction(() => window.location.hash === '#/')
+    assert.equal(await filterPressed(page, 'All'), 'true')
+    assert.equal(await page.locator('.notification-activity').evaluate((el) => el.scrollTop), 0)
+    assert.equal(await page.locator('.is-landing-focus').count(), 0)
+    assert.equal(await voiceNote(page).getByRole('button', { name: 'Say a voice command' }).count(), 1)
     await page.screenshot({ path: `${shotsDir}/07-not-understood.png` })
   })
+
+  await scenario('an empty spoken list opens the panel and says it was empty', async (page) => {
+    await page.goto(`${base}#/voice/${code('E')}`)
+    await sheet(page).waitFor()
+    await voiceNote(page).getByText('Nothing unread ✓').waitFor()
+  }, { unreadThreadIds: [] })
 
   await scenario('the bell opens the panel exactly as before: All, from the top, no voice note, not a sheet', async (page) => {
     await page.goto(`${base}#/`)

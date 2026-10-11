@@ -215,6 +215,7 @@
               @set-thread-pinned="updatePinnedThread"
               @select-thread="onSelectThread"
               @select-board-question="openProjectBoardQuestion"
+              @open-voice-result="onNavigateVoiceResult"
             />
           </template>
         </ContentHeader>
@@ -292,6 +293,7 @@
                 :code="routeVoiceCode"
                 @select="onSelectVoiceChat"
                 @new-chat="(code) => router.replace({ name: 'home', query: { voice: code } })"
+                @open-activity="(link) => router.replace({ name: 'home', query: voiceActivityQuery(link.focus, link.code) })"
                 @navigate="onNavigateVoiceResult"
                 @open-home="router.push({ name: 'home' })"
               />
@@ -503,7 +505,7 @@ import VoiceDraftBanner from './components/content/VoiceDraftBanner.vue'
 import { getVoiceResult } from './api/voice'
 import { isVoiceCode, type VoiceAgent, type VoiceProjectOption } from './types/voice'
 import { modelForVoiceAgent, NEW_THREAD_DRAFT_KEY, planVoicePrefill, queryWithoutVoice, voiceCodeFromQuery, voiceQueryOnly } from './utils/voicePrefill'
-import { activityLinkFromQuery, EXPIRED_VOICE_NOTE, queryWithoutActivityLink, voiceActivityNote, type ActivityLanding, type ActivityLink, type VoiceActivityNote } from './utils/voiceLanding'
+import { activityLinkFromQuery, EXPIRED_VOICE_NOTE, queryWithoutActivityLink, voiceActivityNote, voiceActivityQuery, type ActivityLanding, type ActivityLink, type VoiceActivityNote } from './utils/voiceLanding'
 import { createBoardTeamDraft } from './utils/boardTeamDraft'
 import BoardPlanDialog, { type BoardPlanDraft } from './components/content/BoardPlanDialog.vue'
 import BoardRunSettings from './components/content/BoardRunSettings.vue'

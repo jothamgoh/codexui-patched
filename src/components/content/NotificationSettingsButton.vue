@@ -571,32 +571,19 @@ import {
 import { useRelativeTimeClock } from '../../composables/useRelativeTimeClock'
 import type { UiServerRequest, UiThread } from '../../types/codex'
 import type { SetThreadPinnedIntent } from '../../utils/pinnedThreads'
-import { compactNotificationText } from '../../utils/notificationText'
 import { formatCompactRelativeTime } from '../../utils/relativeTime'
 import { openProjectBoardDeepLink, projectBoardNotificationDeepLink, type ProjectBoardNotification } from '../../utils/projectBoardNotifications'
 import type { ProjectBoardActivity } from '../../utils/projectBoardActivity'
-import { collectThreadHelpers, type ThreadSourceMap } from '../../utils/threadHelpers'
+import type { ThreadSourceMap } from '../../utils/threadHelpers'
+import {
+  activityThreadTitle,
+  isThreadRunning,
+  MAX_RECENT_ACTIVITY_ITEMS,
+  selectNotificationActivity,
+  type RecentActivityItem,
+  type RunningActivityItem,
+} from '../../utils/notificationActivity'
 import ThreadHelpers from './ThreadHelpers.vue'
-
-type RunningActivityItem = {
-  id: string
-  threadId: string
-  title: string
-  updatedAtIso: string
-  board?: ProjectBoardActivity
-}
-
-type RecentActivityItem = {
-  id: string
-  threadId: string
-  source: 'history' | 'thread'
-  status: string
-  title: string
-  body: string
-  completedAt: string
-  isUnread: boolean
-  projectBoard?: ProjectBoardNotification
-}
 
 type ManualThreadUnreadOverride = {
   unread: boolean
@@ -615,7 +602,6 @@ type PinnedRow = {
 }
 
 const DEFAULT_RECENT_LIMIT = 6
-const MAX_RECENT_ITEMS = 30
 const relativeTimeNow = useRelativeTimeClock()
 
 const props = defineProps<{
@@ -685,61 +671,31 @@ const {
   testWebPushNotification,
 } = useWebPushNotifications()
 
-const threadHelpers = computed(() => collectThreadHelpers(props.threads, props.threadSources ?? {}, props.boardThreadIds ?? []))
-const activityThreads = computed(() => {
-  const excluded = new Set([...(props.boardThreadIds ?? []), ...(props.boardActivity ?? []).map((item) => item.threadId).filter(Boolean)])
-  return props.threads.filter((thread) => !excluded.has(thread.id) && !threadHelpers.value.childIds.has(thread.id))
-})
-const requestAttention = computed(() => {
-  const seen = new Set<string>()
-  return (props.pendingRequests ?? []).filter((request) => {
-    if (!request.threadId || seen.has(request.threadId)) return false
-    const board = props.boardActivity?.find((item) => item.threadId === request.threadId)
-    if (board && props.boardAttention.some((item) => item.boardId === board.boardId && item.featureId === board.featureId)) return false
-    seen.add(request.threadId)
-    return true
-  }).map((request) => {
-    const board = props.boardActivity?.find((item) => item.threadId === request.threadId || item.threadId === threadHelpers.value.ownerByChildId[request.threadId])
-    const thread = props.threads.find((item) => item.id === request.threadId)
-    return {
-      threadId: request.threadId,
-      title: threadHelpers.value.childIds.has(request.threadId) ? (thread ? threadTitle(thread) : 'Helper needs your input') : board?.title || (thread ? threadTitle(thread) : 'Chat needs your input'),
-      label: request.method.endsWith('/requestApproval') ? 'Approval needed' : 'Answer needed',
-      receivedAtIso: request.receivedAtIso,
-      board,
-    }
-  })
-})
-const waitingThreadIds = computed(() => new Set(requestAttention.value.map((item) => item.threadId)))
-const hasWorkingHelpers = (threadId: string) => threadHelpers.value.helpersByOwnerId[threadId]?.some((helper) => helper.inProgress && !waitingThreadIds.value.has(helper.id)) ?? false
+const activity = computed(() => selectNotificationActivity({
+  threads: props.threads,
+  threadSources: props.threadSources,
+  boardThreadIds: props.boardThreadIds,
+  boardActivity: props.boardActivity,
+  boardActivityTitles: props.boardActivityTitles,
+  boardAttention: props.boardAttention,
+  pendingRequests: props.pendingRequests,
+  history: history.value,
+  dismissedActivityByThreadId: dismissedActivityByThreadId.value,
+  pinnedThreadIds: props.pinnedThreadIds,
+  isThreadUnread,
+}))
+const threadHelpers = computed(() => activity.value.threadHelpers)
+const requestAttention = computed(() => activity.value.requestAttention)
+const waitingThreadIds = computed(() => activity.value.waitingThreadIds)
+const hasWorkingHelpers = (threadId: string) => activity.value.hasWorkingHelpers(threadId)
 const needsYouCount = computed(() => props.boardAttention.length + requestAttention.value.length)
-const boardWorkActivity = computed(() => (props.boardActivity ?? []).filter((item) =>
-  (['running', 'paused', 'blocked', 'review', 'needs_input'].includes(item.status) || hasWorkingHelpers(item.threadId)) &&
-  (item.threadId || item.status === 'running') && !waitingThreadIds.value.has(item.threadId) &&
-  !props.boardAttention.some((question) => question.boardId === item.boardId && question.featureId === item.featureId),
-).sort((left, right) => Number(right.status === 'running') - Number(left.status === 'running') || Date.parse(right.updatedAtIso) - Date.parse(left.updatedAtIso)))
-/** A reply in progress, or Claude background work that outlived its reply. */
-const isThreadRunning = (thread: UiThread) => thread.inProgress || thread.hasBackgroundTasks === true
-const runningThreadIds = computed(() => new Set(props.threads.filter(isThreadRunning).map((thread) => thread.id)))
-const runningThreads = computed(() => activityThreads.value.filter((thread) => (isThreadRunning(thread) || hasWorkingHelpers(thread.id)) && !waitingThreadIds.value.has(thread.id)))
-const runningActivity = computed<RunningActivityItem[]>(() => [
-  ...(props.boardActivity ?? []).filter((item) => (item.status === 'running' || hasWorkingHelpers(item.threadId)) && !waitingThreadIds.value.has(item.threadId)).map((item) => ({
-    id: `board:${item.boardId}:${item.featureId}`,
-    threadId: item.threadId,
-    title: item.title,
-    updatedAtIso: item.updatedAtIso,
-    board: item,
-  })),
-  ...runningThreads.value.map((thread) => ({
-    id: thread.id,
-    threadId: thread.id,
-    title: threadTitle(thread),
-    updatedAtIso: thread.updatedAtIso,
-  })),
-].sort((left, right) => Date.parse(right.updatedAtIso) - Date.parse(left.updatedAtIso)))
-const unreadThreads = computed(() =>
-  activityThreads.value.filter((thread) => isThreadUnread(thread) && !isThreadRunning(thread) && !hasWorkingHelpers(thread.id) && !waitingThreadIds.value.has(thread.id)),
-)
+const boardWorkActivity = computed(() => activity.value.boardWorkActivity)
+const runningThreads = computed(() => activity.value.runningThreads)
+const runningActivity = computed(() => activity.value.runningActivity)
+const unreadThreads = computed(() => activity.value.unreadThreads)
+const visibleHistory = computed(() => activity.value.visibleHistory)
+const allRecentHistory = computed(() => activity.value.allRecentHistory)
+const unreadActivity = computed(() => activity.value.unreadActivity)
 const pinnedThreadIdSet = computed(() => new Set(props.pinnedThreadIds ?? []))
 const pinnedThreads = computed(() => (props.pinnedThreadIds ?? []).flatMap((threadId) => {
   const thread = props.threads.find((candidate) => candidate.id === threadId) ?? fetchedPinnedThreadById.value[threadId]
@@ -747,109 +703,6 @@ const pinnedThreads = computed(() => (props.pinnedThreadIds ?? []).flatMap((thre
 }))
 const listedRunningThreads = computed(() => runningThreads.value.filter((thread) => !pinnedThreadIdSet.value.has(thread.id)))
 const listedUnreadThreads = computed(() => unreadThreads.value.filter((thread) => !pinnedThreadIdSet.value.has(thread.id)))
-const visibleHistory = computed(() => history.value.filter((item) =>
-  !threadHelpers.value.childIds.has(item.threadId) &&
-  !(props.boardThreadIds ?? []).includes(item.threadId) &&
-  !props.boardAttention.some((attention) => attention.questionId === item.projectBoard?.questionId) &&
-  !(item.projectBoard?.kind === 'native_request' && props.pendingRequests?.some((request) => request.id === item.projectBoard?.requestId && request.threadId === item.projectBoard?.threadId)),
-))
-const currentActivityThreadIds = computed(() =>
-  new Set([
-    ...runningThreads.value.map((thread) => thread.id),
-    ...unreadThreads.value.map((thread) => thread.id),
-    ...waitingThreadIds.value,
-  ]),
-)
-const allRecentHistory = computed<RecentActivityItem[]>(() => {
-  const candidates: RecentActivityItem[] = []
-  for (const item of visibleHistory.value) {
-    if (currentActivityThreadIds.value.has(item.threadId)) continue
-    const thread = props.threads.find((candidate) => candidate.id === item.threadId)
-    candidates.push({
-      id: item.id,
-      threadId: item.threadId,
-      source: 'history',
-      status: item.status,
-      title: historyItemTitle(item, thread),
-      body: historyItemBody(item),
-      completedAt: item.completedAt,
-      isUnread: item.readAt === null || Boolean(thread && isThreadUnread(thread)),
-      projectBoard: item.projectBoard,
-    })
-  }
-  for (const thread of activityThreads.value) {
-    if (currentActivityThreadIds.value.has(thread.id)) continue
-    candidates.push({
-      id: `thread:${thread.id}`,
-      threadId: thread.id,
-      source: 'thread',
-      status: 'completed',
-      title: threadTitle(thread),
-      body: normalizeLabel(thread.preview),
-      completedAt: thread.updatedAtIso || thread.createdAtIso,
-      isUnread: isThreadUnread(thread),
-    })
-  }
-  candidates.sort((left, right) => {
-    const leftTimestamp = Date.parse(left.completedAt)
-    const rightTimestamp = Date.parse(right.completedAt)
-    return (Number.isFinite(rightTimestamp) ? rightTimestamp : 0) -
-      (Number.isFinite(leftTimestamp) ? leftTimestamp : 0)
-  })
-
-  const seen = new Set<string>(pinnedThreadIdSet.value)
-  return candidates.filter((item) => {
-    if (seen.has(item.threadId)) return false
-    seen.add(item.threadId)
-    return dismissedActivityByThreadId.value[item.threadId] !== item.completedAt
-  }).slice(0, MAX_RECENT_ITEMS)
-})
-const unreadActivity = computed<RecentActivityItem[]>(() => {
-  const candidates: RecentActivityItem[] = []
-  for (const item of visibleHistory.value) {
-    if (item.readAt !== null) continue
-    if (waitingThreadIds.value.has(item.threadId) || runningThreadIds.value.has(item.threadId)) continue
-    if (dismissedActivityByThreadId.value[item.threadId] === item.completedAt) continue
-    const thread = props.threads.find((candidate) => candidate.id === item.threadId)
-    candidates.push({
-      id: item.id,
-      threadId: item.threadId,
-      source: 'history',
-      status: item.status,
-      title: historyItemTitle(item, thread),
-      body: historyItemBody(item),
-      completedAt: item.completedAt,
-      isUnread: true,
-      projectBoard: item.projectBoard,
-    })
-  }
-  for (const thread of activityThreads.value) {
-    if (!isThreadUnread(thread) || isThreadRunning(thread) || hasWorkingHelpers(thread.id) || waitingThreadIds.value.has(thread.id)) continue
-    candidates.push({
-      id: `thread:${thread.id}`,
-      threadId: thread.id,
-      source: 'thread',
-      status: 'completed',
-      title: threadTitle(thread),
-      body: normalizeLabel(thread.preview),
-      completedAt: thread.updatedAtIso || thread.createdAtIso,
-      isUnread: true,
-    })
-  }
-  candidates.sort((left, right) => {
-    const leftTimestamp = Date.parse(left.completedAt)
-    const rightTimestamp = Date.parse(right.completedAt)
-    return (Number.isFinite(rightTimestamp) ? rightTimestamp : 0) -
-      (Number.isFinite(leftTimestamp) ? leftTimestamp : 0)
-  })
-
-  const seen = new Set<string>()
-  return candidates.filter((item) => {
-    if (seen.has(item.threadId)) return false
-    seen.add(item.threadId)
-    return true
-  })
-})
 const pinnedRows = computed<PinnedRow[]>(() => {
   const unreadIds = new Set(unreadActivity.value.map((item) => item.threadId))
   return pinnedThreads.value.map((thread) => {
@@ -1188,21 +1041,6 @@ function boardItemForEvent(event: ProjectBoardNotification): ProjectBoardActivit
   return props.boardActivity?.find((item) => item.boardId === event.boardId && item.featureId === event.featureId)
 }
 
-function historyItemBody(item: WebPushHistoryItem): string {
-  const activity = item.projectBoard && boardItemForEvent(item.projectBoard)
-  if (item.status === 'failed' && activity?.summary) return compactNotificationText(`${activity.summary} Open the feature to review and continue.`, '', 220)
-  if (item.projectBoard?.kind === 'completed' && (item.projectBoard.threadId || activity?.threadId)) return 'Open the Lead chat to review the result.'
-  return compactNotificationText(item.body, '', 220)
-}
-
-function historyItemTitle(item: WebPushHistoryItem, thread?: UiThread): string {
-  if (item.projectBoard) {
-    const targetId = item.projectBoard.featureId || item.projectBoard.boardId
-    return normalizeLabel(props.boardActivityTitles?.[targetId] || item.title)
-  }
-  return thread ? threadTitle(thread) : (normalizeLabel(item.title) || `Chat ${item.threadId.slice(0, 8)}`)
-}
-
 function shortcutNumber(threadId: string): number {
   const index = shortcutThreadIds.value.indexOf(threadId)
   return index >= 0 ? index + 1 : 0
@@ -1306,7 +1144,7 @@ function applyHistoryResult(result: WebPushHistory): void {
 function toggleRecentLimit(): void {
   recentLimit.value = recentLimit.value > DEFAULT_RECENT_LIMIT
     ? DEFAULT_RECENT_LIMIT
-    : MAX_RECENT_ITEMS
+    : MAX_RECENT_ACTIVITY_ITEMS
 }
 
 function recentRowStyle(item: RecentActivityItem): Record<string, string> | undefined {
@@ -1397,11 +1235,7 @@ function isThreadUnread(thread: UiThread): boolean {
 }
 
 function threadTitle(thread: UiThread): string {
-  return normalizeLabel(thread.title) || normalizeLabel(thread.preview) || `Chat ${thread.id.slice(0, 8)}`
-}
-
-function normalizeLabel(value: string): string {
-  return value.replace(/\s+/gu, ' ').trim()
+  return activityThreadTitle(thread)
 }
 
 function formatRelative(value: string): string {

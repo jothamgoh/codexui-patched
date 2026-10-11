@@ -78,7 +78,8 @@ export function createServer(options: ServerOptions = {}): ServerInstance {
   app.use(webPushTurnNotifier.handleRequest)
 
   // 4. Voice commands (/codex-api/voice/*), before the bridge answers unknown routes with 404
-  app.use(createServerVoiceHandler(bridge.voice, webPushTurnNotifier))
+  const voiceHandler = createServerVoiceHandler(bridge.voice, webPushTurnNotifier)
+  app.use(voiceHandler)
 
   // 5. Bridge middleware for /codex-api/*
   app.use(bridge)
@@ -117,6 +118,7 @@ export function createServer(options: ServerOptions = {}): ServerInstance {
   return {
     app,
     dispose: () => {
+      voiceHandler.dispose()
       turnNotificationRouter.dispose()
       bridge.dispose()
     },

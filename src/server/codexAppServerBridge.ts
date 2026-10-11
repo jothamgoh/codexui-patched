@@ -45,7 +45,7 @@ import {
 } from './reviewPatch'
 import { ReviewMutationConflictError, ReviewMutationGate } from './reviewMutationGate'
 import { BackendRouter } from './backendRouter'
-import { ClaudeBackend, isClaudeThreadId } from './claudeBackend'
+import { ClaudeBackend, isClaudeModelId, isClaudeThreadId } from './claudeBackend'
 import { createClaudeAutomationTool } from './claudeAutomationTool'
 import { readReviewClientScope, reviewScopeMatches } from './reviewScope'
 import { ActiveTurnTracker, continueInterruptedTurns, recordInterruptedTurns, takeInterruptedTurns } from './restartResume'
@@ -57,6 +57,7 @@ import {
 } from './gitWorkspace'
 import type { GitWorkspaceReviewSource } from '../types/codex'
 import type { VoiceBridgeSources } from './voice/voiceRoutes'
+import { voiceChatModel } from './voice/voiceDelivery'
 
 type JsonRpcCall = {
   jsonrpc: '2.0'
@@ -560,6 +561,7 @@ function getCodexGlobalStatePath(): string {
 const PINNED_THREADS_STATE_KEY = 'codexui-pinned-thread-ids'
 const PINNED_THREADS_STATE_FILENAME = 'codexui-pinned-threads.json'
 const THREAD_READ_STATE_KEY = 'codexui-thread-read-state'
+const VOICE_SETTINGS_STATE_KEY = 'codexui-voice-settings'
 const THREAD_METADATA_STATE_FILENAME = 'codexui-thread-metadata.json'
 let globalStateMutationQueue: Promise<void> = Promise.resolve()
 
@@ -2947,6 +2949,30 @@ export function createCodexBridgeMiddleware(): CodexBridgeMiddleware {
       // A saved chat may not be loaded yet; native clients resume before starting a turn.
       await appServer.rpc('thread/resume', { threadId })
       await appServer.rpc('turn/start', { threadId, input: [{ type: 'text', text }] })
+    },
+    startChat: async ({ cwd, agent, message }: Parameters<VoiceBridgeSources['startChat']>[0]) => {
+      // The same start a new chat gets from the app: configured default model and effort.
+      const runtime = readCodexUiRuntimeConfig()
+      const model = voiceChatModel(agent, runtime.defaultModel, isClaudeModelId)
+      const started = await appServer.rpc('thread/start', automationService.augmentThreadStartParams({ cwd, ...(model ? { model } : {}) }))
+      const threadId = readNestedString(started, 'thread', 'id')
+      if (!threadId) throw new Error('thread/start did not return a thread id')
+      await appServer.rpc('turn/start', {
+        threadId,
+        input: [{ type: 'text', text: message }],
+        ...(runtime.defaultReasoningEffort ? { effort: runtime.defaultReasoningEffort } : {}),
+      })
+      // Best effort, as in the app: a short title from the first message.
+      void threadTitleGenerator.generate(message, cwd).then(async (generated) => {
+        if (!generated?.title) return
+        await appServer.rpc('thread/name/set', { threadId, name: generated.title })
+        await updateThreadTitle(threadId, generated.title)
+      }).catch(() => undefined)
+      return { threadId }
+    },
+    readVoiceSettings: async () => (await readCodexGlobalState())[VOICE_SETTINGS_STATE_KEY] ?? null,
+    writeVoiceSettings: async (settings: Parameters<VoiceBridgeSources['writeVoiceSettings']>[0]) => {
+      await mutateCodexGlobalState((payload) => { payload[VOICE_SETTINGS_STATE_KEY] = settings })
     },
   }
   middleware.subscribeNotifications = (

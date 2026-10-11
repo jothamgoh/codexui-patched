@@ -88,7 +88,7 @@
     "test:host-folders": "node --test tests/hostFolders.test.mjs",
     "test:e2e:host-folders": "node tests/hostFolderPicker.e2e.mjs",
     "test:notification-activity": "node --test tests/notificationActivity.test.mjs",
-    "test:voice": "node --test tests/voiceRouter.test.mjs tests/voiceLlmRouter.test.mjs tests/voiceMessage.test.mjs tests/voiceServer.test.mjs tests/voicePrefill.test.mjs tests/voiceLanding.test.mjs",
+    "test:voice": "node --test tests/voiceAutoSend.test.mjs tests/voiceRouter.test.mjs tests/voiceLlmRouter.test.mjs tests/voiceMessage.test.mjs tests/voiceServer.test.mjs tests/voicePrefill.test.mjs tests/voiceLanding.test.mjs",
     "eval:voice": "node scripts/voice-eval.mjs",
     "test:e2e:voice": "node tests/voicePages.e2e.mjs"
   },

@@ -33,7 +33,7 @@ const { VoiceResultStore, createVoiceCode, VOICE_RESULT_TTL_MS, VOICE_CONFIRM_TT
 const { buildVoiceContext } = await loadModule('../src/server/voice/voiceContext.ts')
 const { getCodexUiChildEnv, SENSITIVE_ENV_KEYS } = await loadModule('../src/server/envFile.ts')
 const push = await loadModule('../src/server/webPushTurnNotifier.ts')
-const { voiceResultPath, isVoiceCode } = await loadModule('../src/types/voice.ts')
+const { voiceResultPath, isVoiceCode, DEFAULT_VOICE_SETTINGS } = await loadModule('../src/types/voice.ts')
 const { JEV_MODEL } = await loadModule('../src/server/voice/jevClient.ts')
 
 const TOKEN = 'test-shortcut-token-0123456789abcdef'
@@ -160,20 +160,42 @@ const LLM_ENV = { CODEXUI_VOICE_SHORTCUT_TOKEN: TOKEN, CODEXUI_VOICE_TYPESAFE_AP
 const RAMBLE = 'okay so respond to the stripe webhook chat and basically we should deploy it to staging, you know, do you get what I mean'
 const rambleSend = (idOf) => [{ action: 'send_to_chat', chat_id: idOf['Stripe webhook bug'], chat_words: 'stripe webhook chat', chat_certain: true, message: 'we should deploy it to staging' }]
 
-async function startHandler(t, { env = { CODEXUI_VOICE_SHORTCUT_TOKEN: TOKEN, CODEXUI_VOICE_TYPESAFE_API_KEY: 'jev-test' }, now = () => NOW, sendMessage, transcribe, fetchImpl = jevResponder() } = {}) {
+/** The undo window's clock, run by hand: `runAll()` fires every waiting send. */
+function manualTimers() {
+  const waiting = new Map()
+  let next = 0
+  return {
+    set: (run, ms) => { next += 1; waiting.set(next, { run, ms }); return next },
+    clear: (handle) => { waiting.delete(handle) },
+    get delays() { return [...waiting.values()].map((entry) => entry.ms) },
+    async runAll() {
+      for (const [handle, entry] of [...waiting]) { waiting.delete(handle); entry.run() }
+      for (let index = 0; index < 20; index += 1) await new Promise((resolve) => setImmediate(resolve))
+    },
+  }
+}
+
+async function startHandler(t, { env = { CODEXUI_VOICE_SHORTCUT_TOKEN: TOKEN, CODEXUI_VOICE_TYPESAFE_API_KEY: 'jev-test' }, now = () => NOW, sendMessage, startChat, transcribe, fetchImpl = jevResponder(), settings = {} } = {}) {
   const pushes = []
   const sent = []
+  const started = []
   const transcribed = []
   const logs = []
   const clock = { now }
   const store = new VoiceResultStore(() => clock.now())
+  const timers = manualTimers()
+  const saved = { current: { ...DEFAULT_VOICE_SETTINGS, ...settings } }
   const handler = routes.createVoiceCommandHandler({
     collectSnapshot: async () => snapshot(),
     transcribe: transcribe ?? (async (audio, contentType) => { transcribed.push({ audio, contentType }); return 'show me all unread chats' }),
     sendMessage: sendMessage ?? (async (threadId, text) => { sent.push({ threadId, text }) }),
+    startChat: startChat ?? (async (input) => { started.push(input); return { threadId: `new-chat-${started.length}` } }),
+    readSettings: async () => saved.current,
+    writeSettings: async (next) => { saved.current = next },
     notify: async (notification) => { pushes.push(notification); return { sent: 1, failed: 0 } },
     env: () => env,
     store,
+    deliveryTimers: timers,
     fetchImpl,
     log: (line) => logs.push(line),
   })
@@ -192,7 +214,7 @@ async function startHandler(t, { env = { CODEXUI_VOICE_SHORTCUT_TOKEN: TOKEN, CO
     try { json = JSON.parse(text) } catch {}
     return { status: response.status, json, text, headers: response.headers }
   }
-  return { call, pushes, sent, transcribed, logs, clock, store }
+  return { call, pushes, sent, started, transcribed, logs, clock, store, timers, saved, handler }
 }
 
 test('shortcut routes are disabled when the token is unset or too short', async (t) => {
@@ -237,8 +259,8 @@ test('a spoken list notifies the phone and the PWA reads the result without the 
   assert.ok(logs.every((line) => !line.includes('unread chats')), 'logs never contain the transcript')
 })
 
-test('by default a clear send is not sent; it notifies with the message pre-typed in that chat', async (t) => {
-  const { call, pushes, sent } = await startHandler(t)
+test('with auto-send off, a clear send is not sent; it notifies with the message pre-typed in that chat', async (t) => {
+  const { call, pushes, sent } = await startHandler(t, { settings: { autoSend: false } })
   const response = await call('/codex-api/voice/shortcut/command', { token: TOKEN, body: { text: 'tell the stripe webhook chat to deploy it to staging' } })
   assert.equal(response.status, 200)
   assert.equal(response.json.kind, 'notified')
@@ -313,7 +335,7 @@ test('results expire after ten minutes and unknown or malformed codes are 404', 
 })
 
 test('the in-app command route runs the router without the token and without a push', async (t) => {
-  const { call, pushes } = await startHandler(t)
+  const { call, pushes, started, sent } = await startHandler(t, { settings: { autoSend: false } })
   const response = await call('/codex-api/voice/command', { body: { text: 'new chat in hr-ai, fix the build' } })
   assert.equal(response.status, 200)
   assert.equal(response.json.data.result.outcome, 'new_chat')
@@ -321,7 +343,8 @@ test('the in-app command route runs the router without the token and without a p
   assert.equal(response.json.data.url, `/#/?voice=${response.json.data.code}`)
   assert.equal(pushes.length, 0)
   const send = await call('/codex-api/voice/command', { body: { text: 'tell the stripe webhook chat to deploy it' } })
-  assert.equal(send.json.data.url, `/#/thread/${encodeURIComponent(CHATS.webhook.threadId)}?voice=${send.json.data.code}`, 'in the app, a send is confirmed in the composer')
+  assert.equal(send.json.data.url, `/#/thread/${encodeURIComponent(CHATS.webhook.threadId)}?voice=${send.json.data.code}`, 'with auto-send off, a send is confirmed in the composer')
+  assert.deepEqual([started.length, sent.length], [0, 0])
 })
 
 test('the in-app route works even when the shortcut is disabled, and needs no bearer', async (t) => {
@@ -489,9 +512,19 @@ test('several requests become steps; each step is saved with its own link', asyn
   assert.equal(saved.json.data.message, 'deploy it', 'the step link prefills like any send')
   assert.equal(saved.json.data.heard, say)
 
+  assert.equal(result.steps[0].delivery.state, 'sent', 'the sure send went out at once')
+  assert.equal(result.steps[1].delivery, undefined)
+
   await call('/codex-api/voice/shortcut/command', { token: TOKEN, body: { text: say } })
-  assert.equal(pushes.at(-1).title, '2 steps · tap to choose')
-  assert.equal(pushes.at(-1).body, 'Send to Stripe webhook bug · Running chats')
+  assert.equal(pushes.at(-1).title, 'Sent to Stripe webhook bug ✓')
+  assert.equal(pushes.at(-1).body, '1 step needs you · tap to choose')
+  assert.match(pushes.at(-1).url, /^\/#\/voice\/[A-Za-z0-9_-]{24}$/u)
+
+  const off = await startHandler(t, { env: LLM_ENV, fetchImpl: llmResponder(steps), settings: { autoSend: false } })
+  await off.call('/codex-api/voice/shortcut/command', { token: TOKEN, body: { text: say } })
+  assert.equal(off.pushes.at(-1).title, '2 steps · tap to choose')
+  assert.equal(off.pushes.at(-1).body, 'Send to Stripe webhook bug · Running chats')
+  assert.equal(off.sent.length, 0)
 })
 
 test('an LLM that fails or is not configured leaves "didn\'t catch that"', async (t) => {
@@ -500,4 +533,242 @@ test('an LLM that fails or is not configured leaves "didn\'t catch that"', async
   const { result, meta } = (await call('/codex-api/voice/command', { body: { text: RAMBLE } })).json.data
   assert.equal(result.outcome, 'not_understood')
   assert.equal(meta.path, 'none')
+})
+
+// --- Auto-send through the routes -------------------------------------------------------
+
+const SEND = 'tell the stripe webhook chat to deploy it to staging'
+const chatLink = (threadId) => `/#/thread/${encodeURIComponent(threadId)}`
+
+test('by default a clear send goes out at once; the only notification is "Sent ✓" with the message', async (t) => {
+  const { call, pushes, sent, logs } = await startHandler(t)
+  const response = await call('/codex-api/voice/shortcut/command', { token: TOKEN, body: { text: SEND } })
+  assert.equal(response.json.kind, 'notified')
+  assert.equal(response.json.say, 'Sent ✓, Stripe webhook bug')
+  assert.deepEqual(sent, [{ threadId: CHATS.webhook.threadId, text: 'deploy it to staging' }])
+  assert.equal(pushes.length, 1)
+  assert.deepEqual(pushes[0], { title: 'Sent ✓ · Stripe webhook bug', body: '“deploy it to staging”', url: chatLink(CHATS.webhook.threadId), tag: pushes[0].tag })
+  assert.match(pushes[0].tag, /^voice:[A-Za-z0-9_-]{24}$/u)
+  assert.ok(logs.some((line) => /\[voice\] path=jev outcome=send_ready .* auto=send$/u.test(line)))
+  assert.ok(logs.some((line) => /auto_send=sent trigger=auto kind=send waited=0ms/u.test(line)))
+  assert.ok(logs.every((line) => !line.includes('staging')), 'never the message')
+})
+
+test('with an undo window the phone gets a countdown, then "Sent ✓" under the same tag', async (t) => {
+  const { call, pushes, sent, timers } = await startHandler(t, { settings: { delaySeconds: 5 } })
+  const response = await call('/codex-api/voice/shortcut/command', { token: TOKEN, body: { text: SEND } })
+  assert.equal(response.json.say, 'Sending to Stripe webhook bug in 5 s, tap to cancel')
+  assert.equal(sent.length, 0)
+  assert.deepEqual(timers.delays, [5000])
+  const [countdown] = pushes
+  assert.equal(countdown.title, 'Sending to Stripe webhook bug in 5 s · tap to cancel')
+  assert.equal(countdown.body, '“deploy it to staging”')
+  const code = countdown.tag.slice('voice:'.length)
+  assert.equal(countdown.url, `${chatLink(CHATS.webhook.threadId)}?voice=${code}`)
+  const waiting = await call(`/codex-api/voice/${code}`, { method: 'GET' })
+  assert.equal(waiting.json.data.delivery.state, 'pending')
+  assert.equal(waiting.json.data.delivery.remainingMs, 5000)
+  await timers.runAll()
+  assert.equal(sent.length, 1)
+  assert.equal(pushes[1].title, 'Sent ✓ · Stripe webhook bug')
+  assert.equal(pushes[1].tag, countdown.tag, 'replaces the countdown')
+  assert.equal(pushes[1].url, chatLink(CHATS.webhook.threadId))
+  assert.equal((await call(`/codex-api/voice/${code}`, { method: 'GET' })).json.data.delivery.state, 'sent')
+})
+
+test('cancel in the window: nothing is sent; cancel is idempotent and needs no bearer', async (t) => {
+  const { call, pushes, sent, timers } = await startHandler(t, { settings: { delaySeconds: 10 } })
+  await call('/codex-api/voice/shortcut/command', { token: TOKEN, body: { text: SEND } })
+  const code = pushes[0].tag.slice('voice:'.length)
+  const cancelled = await call(`/codex-api/voice/${code}/cancel`, { body: {} })
+  assert.equal(cancelled.status, 200)
+  assert.equal(cancelled.json.data.delivery.state, 'cancelled')
+  assert.equal(cancelled.json.data.message, 'deploy it to staging', 'the message stays, to be typed in')
+  const again = await call(`/codex-api/voice/${code}/cancel`, { body: {} })
+  assert.equal(again.status, 200)
+  assert.equal(again.json.data.delivery.state, 'cancelled')
+  await timers.runAll()
+  assert.equal(sent.length, 0)
+  assert.equal(pushes.length, 1, 'no "Sent" notification')
+  for (const guess of [createVoiceCode(), 'abc']) assert.equal((await call(`/codex-api/voice/${guess}/cancel`, { body: {} })).status, 404)
+})
+
+test('cancel after the send reports it went out', async (t) => {
+  const { call, pushes, timers } = await startHandler(t, { settings: { delaySeconds: 3 } })
+  await call('/codex-api/voice/shortcut/command', { token: TOKEN, body: { text: SEND } })
+  const code = pushes[0].tag.slice('voice:'.length)
+  await timers.runAll()
+  const late = await call(`/codex-api/voice/${code}/cancel`, { body: {} })
+  assert.equal(late.json.data.delivery.state, 'sent')
+})
+
+test('a failed send notifies "Couldn\'t send", which opens the chat with the message typed in', async (t) => {
+  const { call, pushes } = await startHandler(t, { sendMessage: async () => { throw new Error('turn/start failed') } })
+  const response = await call('/codex-api/voice/shortcut/command', { token: TOKEN, body: { text: SEND } })
+  assert.equal(response.json.say, "Couldn't send to Stripe webhook bug")
+  const code = pushes[0].tag.slice('voice:'.length)
+  assert.equal(pushes[0].title, "Couldn't send to Stripe webhook bug")
+  assert.equal(pushes[0].url, `${chatLink(CHATS.webhook.threadId)}?voice=${code}`)
+  assert.equal((await call(`/codex-api/voice/${code}`, { method: 'GET' })).json.data.delivery.state, 'failed')
+})
+
+test('a draft request is typed in, never sent', async (t) => {
+  const { call, pushes, sent } = await startHandler(t)
+  await call('/codex-api/voice/shortcut/command', { token: TOKEN, body: { text: `${SEND}, but don't send it` } })
+  assert.equal(sent.length, 0)
+  assert.match(pushes[0].title, /^Ready to send · Stripe webhook bug/u)
+  const code = pushes[0].tag.slice('voice:'.length)
+  const result = (await call(`/codex-api/voice/${code}`, { method: 'GET' })).json.data
+  assert.equal(result.draftOnly, true)
+  assert.equal(result.message, 'deploy it to staging')
+  assert.equal((await call(`/codex-api/voice/${code}/send`, { body: { threadId: CHATS.webhook.threadId } })).status, 409, 'a tap cannot send a draft either')
+})
+
+test('a new chat with a named project starts at once and opens the new chat', async (t) => {
+  const { call, pushes, started } = await startHandler(t)
+  await call('/codex-api/voice/shortcut/command', { token: TOKEN, body: { text: 'new chat in hr-ai, fix the build' } })
+  assert.deepEqual(started, [{ cwd: '/work/hr-ai', agent: null, message: 'fix the build' }])
+  assert.deepEqual([pushes[0].title, pushes[0].body, pushes[0].url], ['Started ✓ · new hr-ai chat', '“fix the build”', chatLink('new-chat-1')])
+})
+
+test('a standalone task starts in the default project: Settings first, then the environment', async (t) => {
+  const task = 'find me the best hotels in Johor Bahru'
+  const taskJev = async (_url, init) => {
+    const body = JSON.parse(init.body)
+    const answers = {}
+    for (const [id, question] of Object.entries(body.questions)) {
+      if (question.type === 'noul') { answers[id] = { type: 'noul', noul: 0.02 }; continue }
+      const keys = Object.keys(question.criteria)
+      const wanted = { action: 'new_chat', list_type: 'recent', project: 'not_named', agent: 'not_said' }[id] ?? keys[0]
+      answers[id] = { type: 'choice', choice: wanted, confidence: 0.95, probabilities: Object.fromEntries(keys.map((key) => [key, key === wanted ? 0.96 : 0.04 / (keys.length - 1)])) }
+    }
+    return new Response(JSON.stringify({ model: JEV_MODEL, answers }), { status: 200 })
+  }
+  const fromEnv = await startHandler(t, { fetchImpl: taskJev, env: { CODEXUI_VOICE_SHORTCUT_TOKEN: TOKEN, CODEXUI_VOICE_TYPESAFE_API_KEY: 'jev-test', CODEXUI_VOICE_DEFAULT_PROJECT: '/work/slack-ai' } })
+  await fromEnv.call('/codex-api/voice/shortcut/command', { token: TOKEN, body: { text: task } })
+  assert.deepEqual(fromEnv.started, [{ cwd: '/work/slack-ai', agent: null, message: task }])
+  assert.equal(fromEnv.pushes[0].title, 'Started ✓ · new slack-ai chat')
+  assert.equal(fromEnv.pushes[0].body, `“${task}”`)
+
+  const fromSettings = await startHandler(t, { fetchImpl: taskJev, settings: { defaultProject: '/work/hr-ai' }, env: { CODEXUI_VOICE_SHORTCUT_TOKEN: TOKEN, CODEXUI_VOICE_TYPESAFE_API_KEY: 'jev-test', CODEXUI_VOICE_DEFAULT_PROJECT: '/work/slack-ai' } })
+  await fromSettings.call('/codex-api/voice/shortcut/command', { token: TOKEN, body: { text: task } })
+  assert.equal(fromSettings.started[0].cwd, '/work/hr-ai', 'Settings win over the environment')
+
+  const none = await startHandler(t, { fetchImpl: taskJev })
+  await none.call('/codex-api/voice/shortcut/command', { token: TOKEN, body: { text: task } })
+  assert.equal(none.started.length, 0)
+  assert.equal(none.pushes[0].title, 'New chat ready · pick a project')
+  const code = none.pushes[0].tag.slice('voice:'.length)
+  const tapped = await none.call(`/codex-api/voice/${code}/send`, { body: { projectId: '/work/automation' } })
+  assert.equal(tapped.json.data.delivery.state, 'sent', 'one tap on a project starts it')
+  assert.deepEqual(none.started, [{ cwd: '/work/automation', agent: null, message: task }])
+  assert.equal(tapped.json.data.delivery.threadId, 'new-chat-1')
+})
+
+test('a tap in the send chooser sends to that chat once; only offered chats are accepted', async (t) => {
+  const closeJev = async (_url, init) => {
+    const body = JSON.parse(init.body)
+    const answers = {}
+    for (const [id, question] of Object.entries(body.questions)) {
+      if (question.type === 'noul') { answers[id] = { type: 'noul', noul: 0.02 }; continue }
+      const keys = Object.keys(question.criteria)
+      const wanted = id === 'action' ? { send_to_chat: 0.96 } : id === 'chat' ? { [CHATS.webhook.threadId]: 0.45, [CHATS.checkout.threadId]: 0.4 } : { [keys[0]]: 0.96 }
+      const used = Object.values(wanted).reduce((sum, value) => sum + value, 0)
+      const rest = keys.filter((key) => !(key in wanted))
+      const probabilities = Object.fromEntries(keys.map((key) => [key, key in wanted ? wanted[key] : (1 - used) / rest.length]))
+      const [choice, top] = Object.entries(probabilities).sort((left, right) => right[1] - left[1])[0]
+      answers[id] = { type: 'choice', choice, confidence: (top - 1 / keys.length) / (1 - 1 / keys.length), probabilities }
+    }
+    return new Response(JSON.stringify({ model: JEV_MODEL, answers }), { status: 200 })
+  }
+  const { call, sent, timers } = await startHandler(t, { fetchImpl: closeJev, settings: { delaySeconds: 3 } })
+  const { code, result } = (await call('/codex-api/voice/command', { body: { text: 'tell the stripe one to deploy it' } })).json.data
+  assert.equal(result.outcome, 'picker')
+  assert.equal(result.delivery, undefined, 'a chooser never sends by itself')
+  assert.equal((await call(`/codex-api/voice/${code}/send`, { body: { threadId: 'not-offered' } })).status, 400)
+  const tapped = await call(`/codex-api/voice/${code}/send`, { body: { threadId: CHATS.checkout.threadId } })
+  assert.equal(tapped.json.data.delivery.state, 'pending')
+  assert.equal(tapped.json.data.delivery.trigger, 'tap')
+  assert.equal(tapped.json.data.delivery.label, 'Stripe checkout copy')
+  const twice = await call(`/codex-api/voice/${code}/send`, { body: { threadId: CHATS.webhook.threadId } })
+  assert.equal(twice.json.data.delivery.threadId, CHATS.checkout.threadId, 'a second tap changes nothing')
+  assert.equal((await call(`/codex-api/voice/${code}/cancel`, { body: {} })).json.data.delivery.state, 'cancelled', 'Undo')
+  await call(`/codex-api/voice/${code}/send`, { body: { threadId: CHATS.webhook.threadId } })
+  await timers.runAll()
+  assert.deepEqual(sent, [{ threadId: CHATS.webhook.threadId, text: 'deploy it' }], 'after Undo another chat can be chosen')
+})
+
+test('the in-app mic: a sure send waits in the window with no push, and the server still sends it', async (t) => {
+  const { call, pushes, sent, timers } = await startHandler(t, { settings: { delaySeconds: 5 } })
+  const { url, code, result, meta } = (await call('/codex-api/voice/command', { body: { text: SEND } })).json.data
+  assert.equal(url, `${chatLink(CHATS.webhook.threadId)}?voice=${code}`)
+  assert.equal(result.delivery.state, 'pending')
+  assert.equal(result.delivery.remainingMs, 5000)
+  assert.deepEqual(meta.autoSend, ['send'])
+  assert.equal(pushes.length, 0)
+  await timers.runAll()
+  assert.equal(sent.length, 1)
+  assert.equal(pushes.length, 0, 'the app shows the outcome itself')
+})
+
+test('a dry run reports what would be sent and schedules nothing', async (t) => {
+  const { call, sent, started, timers, logs } = await startHandler(t, { settings: { autoSend: false } })
+  const send = (await call('/codex-api/voice/command', { body: { text: SEND, dryRun: true } })).json.data
+  assert.deepEqual(send.meta.autoSend, ['send'], 'judged as if auto-send were on')
+  assert.equal(send.meta.dryRun, true)
+  assert.equal(send.result.delivery, undefined)
+  const open = (await call('/codex-api/voice/command', { body: { text: 'open the stripe webhook chat', dryRun: true } })).json.data
+  assert.deepEqual(open.meta.autoSend, ['skip:not_actionable'])
+  await timers.runAll()
+  assert.deepEqual([sent.length, started.length, timers.delays.length], [0, 0, 0])
+  assert.ok(logs.some((line) => line.endsWith('auto=send dry_run')))
+})
+
+test('settings are saved on the server and validated', async (t) => {
+  const { call, saved } = await startHandler(t)
+  const read = await call('/codex-api/voice/settings', { method: 'GET' })
+  assert.deepEqual(read.json.data, { autoSend: true, delaySeconds: 0, defaultProject: '' })
+  assert.ok(read.json.projects.some((project) => project.id === '/work/hr-ai'), 'projects to choose a default from')
+  assert.equal(read.json.fallbackProject, null)
+  const written = await call('/codex-api/voice/settings', { body: { autoSend: false, delaySeconds: 10, defaultProject: '/work/notes-vault' } })
+  assert.deepEqual(written.json.data, { autoSend: false, delaySeconds: 10, defaultProject: '/work/notes-vault' })
+  assert.deepEqual(saved.current, written.json.data)
+  for (const body of [{ delaySeconds: 7 }, { autoSend: 'yes' }, { defaultProject: 'relative' }]) {
+    assert.equal((await call('/codex-api/voice/settings', { body })).status, 400, JSON.stringify(body))
+  }
+  assert.deepEqual(saved.current.delaySeconds, 10)
+})
+
+test('a restart drops sends still in their window and logs it', async (t) => {
+  const { call, sent, timers, logs, handler } = await startHandler(t, { settings: { delaySeconds: 10 } })
+  await call('/codex-api/voice/shortcut/command', { token: TOKEN, body: { text: SEND } })
+  assert.equal(handler.dispose(), 1)
+  await timers.runAll()
+  assert.equal(sent.length, 0)
+  assert.ok(logs.includes('[voice] auto_send=dropped count=1 reason=shutdown'))
+})
+
+test('with ?confirm=shortcut nothing is sent without the Shortcut\'s confirm, whatever the setting', async (t) => {
+  const { call, sent } = await startHandler(t)
+  const response = await call('/codex-api/voice/shortcut/command?confirm=shortcut', { token: TOKEN, body: { text: SEND } })
+  assert.equal(response.json.kind, 'confirm')
+  assert.equal(sent.length, 0)
+})
+
+test('steps: sure ones run after the window, then one notification says what happened and what is left', async (t) => {
+  const steps = (idOf) => [
+    { action: 'send_to_chat', chat_id: idOf['Stripe webhook bug'], chat_words: 'stripe webhook chat', chat_certain: true, message: 'deploy it' },
+    { action: 'new_chat', project_id: 'p2', project_named: true, message: 'fix the build' },
+    { action: 'open_chat', chat_id: idOf['Customer email bounces'], chat_words: 'customer email bounces', chat_certain: true },
+  ]
+  const { call, pushes, sent, started, timers } = await startHandler(t, { env: LLM_ENV, fetchImpl: llmResponder(steps), settings: { delaySeconds: 5 } })
+  await call('/codex-api/voice/shortcut/command', { token: TOKEN, body: { text: 'tell the stripe webhook chat to deploy it, new chat in hr-ai to fix the build and open the customer email bounces chat' } })
+  assert.equal(pushes[0].title, 'Send to Stripe webhook bug · start a new hr-ai chat in 5 s')
+  assert.equal(pushes[0].body, 'Tap to cancel · 1 step needs you')
+  await timers.runAll()
+  assert.equal(sent.length, 1)
+  assert.equal(started.length, 1)
+  assert.equal(pushes[1].title, 'Sent to Stripe webhook bug ✓ · started new hr-ai chat ✓')
+  assert.equal(pushes[1].body, 'Tap to open Customer email bounces', 'the one step left is an open, so the notification opens it')
+  assert.equal(pushes[1].url, chatLink(CHATS.bounces.threadId))
 })

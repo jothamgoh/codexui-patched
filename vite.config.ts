@@ -121,9 +121,11 @@ export default defineConfig({
         });
         server.middlewares.use(telegramTurnNotifier.handleRequest);
         server.middlewares.use(webPushTurnNotifier.handleRequest);
-        server.middlewares.use(createServerVoiceHandler(bridge.voice, webPushTurnNotifier));
+        const voiceHandler = createServerVoiceHandler(bridge.voice, webPushTurnNotifier);
+        server.middlewares.use(voiceHandler);
         server.middlewares.use(bridge);
         server.httpServer?.once("close", () => {
+          voiceHandler.dispose();
           turnNotificationRouter.dispose();
           bridge.dispose();
         });

@@ -1,5 +1,5 @@
 import { randomBytes } from 'node:crypto'
-import { voiceResultPath, type VoiceResult, type VoiceStepLink, type VoiceStoredResult } from '../../types/voice'
+import { voiceResultPath, type VoiceDelivery, type VoiceResult, type VoiceStepLink, type VoiceStoredResult } from '../../types/voice'
 
 /** Results live for ten minutes, in memory only. */
 export const VOICE_RESULT_TTL_MS = 10 * 60_000
@@ -18,6 +18,9 @@ export type VoiceConfirmation = {
   chatTitle: string
   code: string
 }
+
+/** A delivery as stored: when it goes out instead of how long is left. */
+export type VoiceDeliveryRecord = Omit<VoiceDelivery, 'remainingMs'> & { sendAtMs: number }
 
 type Entry<T> = { value: T; expiresAtMs: number }
 
@@ -64,10 +67,13 @@ class ExpiringMap<T> {
 export class VoiceResultStore {
   private readonly results: ExpiringMap<VoiceStoredResult>
   private readonly confirmations: ExpiringMap<VoiceConfirmation>
+  private readonly deliveries: ExpiringMap<VoiceDeliveryRecord>
 
-  constructor(private readonly now: () => number = Date.now, private readonly newCode: () => string = createVoiceCode) {
+  /** `now` is the store's clock; the undo window reads it too, so both agree. */
+  constructor(readonly now: () => number = () => Date.now(), private readonly newCode: () => string = createVoiceCode) {
     this.results = new ExpiringMap(VOICE_RESULT_TTL_MS, now)
     this.confirmations = new ExpiringMap(VOICE_CONFIRM_TTL_MS, now)
+    this.deliveries = new ExpiringMap(VOICE_RESULT_TTL_MS, now)
   }
 
   /** Saves a result; each step of a `steps` result is saved as its own result, so its link works like any other. */
@@ -75,8 +81,8 @@ export class VoiceResultStore {
     const { steps, ...rest } = result
     const links = steps?.map((step): VoiceStepLink => {
       const saved = this.save(step)
-      const { action, outcome, listType, candidates, message, project, agent } = saved
-      return { action, outcome, listType, candidates, message, project, agent, code: saved.code, url: voiceResultPath(saved, saved.code) }
+      const { action, outcome, listType, candidates, message, project, agent, draftOnly } = saved
+      return { action, outcome, listType, candidates, message, project, agent, ...(draftOnly ? { draftOnly } : {}), code: saved.code, url: voiceResultPath(saved, saved.code) }
     })
     const code = this.newCode()
     const createdAtMs = this.now()
@@ -91,8 +97,38 @@ export class VoiceResultStore {
     return stored
   }
 
+  /** The result with what has been sent or started for it (and for each step) so far. */
   get(code: string): VoiceStoredResult | null {
-    return this.results.get(code)
+    const result = this.results.get(code)
+    if (!result) return null
+    const delivery = this.getDelivery(code)
+    const steps = result.steps?.map((step) => {
+      const stepDelivery = this.getDelivery(step.code)
+      if (!stepDelivery) return step
+      // A started new chat's link opens that chat; every other link stays as saved.
+      const started = stepDelivery.kind === 'new_chat' && stepDelivery.state === 'sent'
+      return { ...step, delivery: stepDelivery, ...(started ? { url: voiceResultPath({ ...step, delivery: stepDelivery }, step.code) } : {}) }
+    })
+    return { ...result, ...(delivery ? { delivery } : {}), ...(steps ? { steps } : {}) }
+  }
+
+  setDelivery(code: string, record: VoiceDeliveryRecord): void {
+    this.deliveries.set(code, record)
+  }
+
+  updateDelivery(code: string, patch: Partial<VoiceDeliveryRecord>): VoiceDeliveryRecord | null {
+    const current = this.deliveries.get(code)
+    if (!current) return null
+    const next = { ...current, ...patch }
+    this.deliveries.set(code, next)
+    return next
+  }
+
+  getDelivery(code: string): VoiceDelivery | null {
+    const record = this.deliveries.get(code)
+    if (!record) return null
+    const { sendAtMs, ...rest } = record
+    return { ...rest, remainingMs: rest.state === 'pending' ? Math.max(0, sendAtMs - this.now()) : 0 }
   }
 
   /** A single-use token for sending one message from the Shortcut. */

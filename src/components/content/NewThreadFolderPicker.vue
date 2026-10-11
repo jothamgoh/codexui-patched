@@ -201,6 +201,9 @@ watch(isOpen, (open) => {
   searchQuery.value = ''
   addDraft.value = ''
 })
+
+/** Lets a voice link open the project list when the spoken project was unclear. */
+defineExpose({ open: () => { isOpen.value = true } })
 </script>
 
 <style scoped>

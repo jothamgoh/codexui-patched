@@ -1,4 +1,3 @@
-import type { WebPushHistoryItem } from '../api/webPush'
 import type { UiServerRequest, UiThread } from '../types/codex'
 import { compactNotificationText } from './notificationText'
 import type { ProjectBoardActivity } from './projectBoardActivity'
@@ -12,6 +11,19 @@ import { collectThreadHelpers, type ThreadSourceMap } from './threadHelpers'
  */
 
 export const MAX_RECENT_ACTIVITY_ITEMS = 30
+
+/** A push history entry (api/webPush ActivityHistoryItem, webPushTurnNotifier history). */
+export type ActivityHistoryItem = {
+  id: string
+  threadId: string
+  turnId: string
+  status: string
+  title: string
+  body: string
+  completedAt: string
+  readAt: string | null
+  projectBoard?: ProjectBoardNotification
+}
 
 export type BoardAttentionItem = {
   questionId: string
@@ -30,7 +42,7 @@ export type NotificationActivityInput = {
   boardActivityTitles?: Record<string, string>
   boardAttention: BoardAttentionItem[]
   pendingRequests?: Array<Pick<UiServerRequest, 'id' | 'method' | 'threadId' | 'receivedAtIso'>>
-  history: WebPushHistoryItem[]
+  history: ActivityHistoryItem[]
   /** Thread id -> the activity time the user dismissed. */
   dismissedActivityByThreadId: Record<string, string>
   /** Pinned chats have their own panel section, so Recent leaves them out. */
@@ -78,7 +90,7 @@ export type NotificationActivity = {
   runningThreads: UiThread[]
   runningActivity: RunningActivityItem[]
   unreadThreads: UiThread[]
-  visibleHistory: WebPushHistoryItem[]
+  visibleHistory: ActivityHistoryItem[]
   /** Newest first, one row per chat, at most MAX_RECENT_ACTIVITY_ITEMS. */
   allRecentHistory: RecentActivityItem[]
   unreadActivity: RecentActivityItem[]
@@ -123,13 +135,13 @@ export function selectNotificationActivity(input: NotificationActivityInput): No
   const excluded = new Set([...boardThreadIds, ...boardActivity.map((item) => item.threadId).filter(Boolean)])
   const activityThreads = threads.filter((thread) => !excluded.has(thread.id) && !threadHelpers.childIds.has(thread.id))
 
-  const historyItemBody = (item: WebPushHistoryItem): string => {
+  const historyItemBody = (item: ActivityHistoryItem): string => {
     const activity = item.projectBoard && boardActivity.find((entry) => entry.boardId === item.projectBoard?.boardId && entry.featureId === item.projectBoard?.featureId)
     if (item.status === 'failed' && activity?.summary) return compactNotificationText(`${activity.summary} Open the feature to review and continue.`, '', 220)
     if (item.projectBoard?.kind === 'completed' && (item.projectBoard.threadId || activity?.threadId)) return 'Open the Lead chat to review the result.'
     return compactNotificationText(item.body, '', 220)
   }
-  const historyItemTitle = (item: WebPushHistoryItem, thread?: UiThread): string => {
+  const historyItemTitle = (item: ActivityHistoryItem, thread?: UiThread): string => {
     if (item.projectBoard) {
       const targetId = item.projectBoard.featureId || item.projectBoard.boardId
       return normalizeActivityLabel(input.boardActivityTitles?.[targetId] || item.title)

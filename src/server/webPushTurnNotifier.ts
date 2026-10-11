@@ -106,6 +106,17 @@ export type WebPushTurnNotifier = {
   resolveProjectBoardQuestions: (questionIds: string[], atIso: string) => Promise<void>
   handleRequest: (req: IncomingMessage, res: ServerResponse, next: () => void) => void
   removeThreadHistory: (threadIds: Iterable<string>) => Promise<void>
+  /** Shows a notification on every subscribed device, even one with the app open. */
+  sendCustomNotification: (notification: CustomNotification) => Promise<{ sent: number; failed: number }>
+  readHistory: () => Promise<{ items: StoredNotificationHistoryItem[]; dismissals: StoredNotificationDismissal[] }>
+}
+
+export type CustomNotification = {
+  title: string
+  body: string
+  /** A hash route such as /#/thread/<id>; anything else opens the app home. */
+  url: string
+  tag: string
 }
 
 const STATE_FILE_ENV = 'CODEXUI_WEB_PUSH_STATE_FILE'
@@ -414,7 +425,20 @@ function buildTestPayload(mode: NotificationMode, destination: string): PushPayl
   }
 }
 
-function normalizeDestination(value: unknown): string {
+/** Always shown, also when the app is open, like the device test. */
+export function buildCustomPayload(notification: CustomNotification): PushPayload {
+  return {
+    title: compactNotificationText(notification.title, 'Agents', 120),
+    body: compactNotificationText(notification.body, '', MAX_NOTIFICATION_BODY_LENGTH),
+    url: normalizeDestination(notification.url),
+    tag: readString(notification.tag).slice(0, 200) || 'codexui-custom',
+    mode: 'always',
+    icon: '/icons/agents-192.png',
+    badge: '/icons/agents-192.png',
+  }
+}
+
+export function normalizeDestination(value: unknown): string {
   const destination = readString(value)
   if (!destination.startsWith('/#/')) return '/#/'
   return destination.slice(0, 2048)
@@ -630,6 +654,27 @@ export function createWebPushTurnNotifier(): WebPushTurnNotifier {
       state.history = state.history.filter((item) => !excludedThreadIds.has(item.threadId))
       state.dismissals = state.dismissals.filter((item) => !excludedThreadIds.has(item.threadId))
     })
+  }
+
+  const sendCustomNotification = async (notification: CustomNotification): Promise<{ sent: number; failed: number }> => {
+    const state = await statePromise
+    const payload = buildCustomPayload(notification)
+    const expiredEndpoints = new Set<string>()
+    let sent = 0
+    let failed = 0
+    await Promise.all(state.subscriptions.map(async (entry) => {
+      const result = await sendToEntry(entry, payload)
+      if (result.status === 'sent') sent += 1
+      else failed += 1
+      if (result.status === 'expired') expiredEndpoints.add(entry.subscription.endpoint)
+    }))
+    await removeSubscriptions(expiredEndpoints)
+    return { sent, failed }
+  }
+
+  const readHistory = async () => {
+    const state = await statePromise
+    return { items: [...state.history], dismissals: [...state.dismissals] }
   }
 
   // What each device's service worker reported for its latest push, so a lost
@@ -912,5 +957,7 @@ export function createWebPushTurnNotifier(): WebPushTurnNotifier {
     syncProjectBoardNativeRequests,
     handleRequest,
     removeThreadHistory,
+    sendCustomNotification,
+    readHistory,
   }
 }

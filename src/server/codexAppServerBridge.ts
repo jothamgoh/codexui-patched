@@ -56,6 +56,7 @@ import {
   switchGitWorkspaceBranch,
 } from './gitWorkspace'
 import type { GitWorkspaceReviewSource } from '../types/codex'
+import type { VoiceBridgeSources } from './voice/voiceRoutes'
 
 type JsonRpcCall = {
   jsonrpc: '2.0'
@@ -1604,6 +1605,7 @@ type CodexBridgeMiddleware = ((req: IncomingMessage, res: ServerResponse, next: 
   takeProjectBoardRecoveryBaseline: () => Promise<ProjectBoardSnapshot> | null
   publishLocalNotification: (method: string, params: unknown) => void
   subscribeNotifications: (listener: (value: { method: string; params: unknown; atIso: string }) => void) => () => void
+  voice: VoiceBridgeSources
 }
 
 type SharedBridgeState = {
@@ -2913,6 +2915,39 @@ export function createCodexBridgeMiddleware(): CodexBridgeMiddleware {
     return baseline
   }
   middleware.publishLocalNotification = (method: string, params: unknown) => appServer.publishLocalNotification(method, params)
+  middleware.voice = {
+    listThreads: async () => {
+      const payload = asRecord(await appServer.rpc('thread/list', {
+        archived: false,
+        limit: 100,
+        sortKey: 'updated_at',
+        useStateDbOnly: true,
+      }))
+      return Array.isArray(payload?.data) ? payload.data : []
+    },
+    readThreadSummary: async (threadId: string) => asRecord(await appServer.rpc('thread/read', { threadId, includeTurns: false }))?.thread ?? null,
+    readTitles: async () => (await readThreadTitleCache()).titles,
+    readReadState: () => readSharedThreadReadState(),
+    replyThreadIds: () => shared.activeTurns.replyThreadIds(),
+    backgroundThreadIds: () => shared.activeTurns.backgroundThreadIds(),
+    listPendingServerRequests: () => appServer.listPendingServerRequests(),
+    readProjectBoards: () => projectBoardService.read(),
+    readWorkspaceRoots: () => readWorkspaceRootsState(),
+    transcribe: async (audio: Buffer, contentType: string) => {
+      const auth = await readCodexAuth()
+      if (!auth) throw new Error('No auth token available for transcription')
+      const upstream = await proxyTranscribe(audio, contentType, auth.accessToken, auth.accountId)
+      if (upstream.status !== 200) throw new Error(`Transcription failed with HTTP ${String(upstream.status)}`)
+      const text = asRecord(JSON.parse(upstream.body))?.text
+      if (typeof text !== 'string' || !text.trim()) throw new Error('No speech was recognized')
+      return text.trim()
+    },
+    sendMessage: async (threadId: string, text: string) => {
+      // A saved chat may not be loaded yet; native clients resume before starting a turn.
+      await appServer.rpc('thread/resume', { threadId })
+      await appServer.rpc('turn/start', { threadId, input: [{ type: 'text', text }] })
+    },
+  }
   middleware.subscribeNotifications = (
     listener: (value: { method: string; params: unknown; atIso: string }) => void,
   ) => {

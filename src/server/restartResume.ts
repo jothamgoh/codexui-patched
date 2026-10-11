@@ -71,6 +71,16 @@ export class ActiveTurnTracker {
   threadIds(): string[] {
     return [...new Set([...this.active.keys(), ...this.background, ...this.requested])]
   }
+
+  /** Chats with a reply in progress right now. */
+  replyThreadIds(): string[] {
+    return [...this.active.keys()]
+  }
+
+  /** Chats whose Claude background tasks are still running. */
+  backgroundThreadIds(): string[] {
+    return [...this.background]
+  }
 }
 
 export function recordInterruptedTurns(path: string, threadIds: string[], now = Date.now()): void {

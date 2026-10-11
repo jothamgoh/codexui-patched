@@ -7,6 +7,7 @@ import { createAuthSession } from './authMiddleware.js'
 import { createTelegramTurnNotifier } from './telegramTurnNotifier.js'
 import { createTurnNotificationRouter } from './turnNotificationRouter.js'
 import { createWebPushTurnNotifier } from './webPushTurnNotifier.js'
+import { createServerVoiceHandler } from './voice/voiceRoutes.js'
 import { WebSocketServer, type WebSocket } from 'ws'
 
 const __dirname = dirname(fileURLToPath(import.meta.url))
@@ -76,10 +77,13 @@ export function createServer(options: ServerOptions = {}): ServerInstance {
   // 3. Web Push subscription API
   app.use(webPushTurnNotifier.handleRequest)
 
-  // 4. Bridge middleware for /codex-api/*
+  // 4. Voice commands (/codex-api/voice/*), before the bridge answers unknown routes with 404
+  app.use(createServerVoiceHandler(bridge.voice, webPushTurnNotifier))
+
+  // 5. Bridge middleware for /codex-api/*
   app.use(bridge)
 
-  // 5. Serve local images referenced in markdown (desktop parity for absolute image paths)
+  // 6. Serve local images referenced in markdown (desktop parity for absolute image paths)
   app.get('/codex-local-image', (req, res) => {
     const rawPath = typeof req.query.path === 'string' ? req.query.path : ''
     const localPath = normalizeLocalImagePath(rawPath)
@@ -102,10 +106,10 @@ export function createServer(options: ServerOptions = {}): ServerInstance {
     })
   })
 
-  // 6. Static files from Vue build
+  // 7. Static files from Vue build
   app.use(express.static(distDir))
 
-  // 7. SPA fallback
+  // 8. SPA fallback
   app.use((_req, res) => {
     res.sendFile(join(distDir, 'index.html'))
   })

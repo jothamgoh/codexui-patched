@@ -13,8 +13,16 @@ export type LoadedCodexUiEnv = {
   loadedKeys: string[]
 }
 
-const SENSITIVE_ENV_KEYS = [
+export const SENSITIVE_ENV_KEYS = [
   'CODEXUI_PASSWORD',
+  'CODEXUI_VOICE_SHORTCUT_TOKEN',
+  'CODEXUI_VOICE_TYPESAFE_API_KEY',
+  'CODEXUI_VOICE_ANTHROPIC_API_KEY',
+  'CODEXUI_VOICE_ANTHROPIC_WORKSPACE_ID',
+  'CODEXUI_VOICE_DEEPSEEK_API_KEY',
+  'CODEXUI_VOICE_KIMI_API_KEY',
+  'CODEXUI_VOICE_CF_ACCESS_CLIENT_ID',
+  'CODEXUI_VOICE_CF_ACCESS_CLIENT_SECRET',
   'CODEXUI_TELEGRAM_BOT_TOKEN',
   'CODEXUI_TELEGRAM_CHAT_ID',
   'CODEXUI_WEB_PUSH_PRIVATE_KEY',
@@ -23,6 +31,8 @@ const SENSITIVE_ENV_KEYS = [
   'TELEGRAM_CHAT_ID',
   'MY_TELEGRAM_CHAT_ID',
 ]
+
+const SENSITIVE_ENV_PREFIX = 'CODEXUI_VOICE_'
 
 function normalizeValue(value: string | undefined): string {
   return typeof value === 'string' ? value.trim() : ''
@@ -105,6 +115,10 @@ export function getCodexUiChildEnv(
   const allowed = new Set(allowedSensitiveKeys)
   for (const key of SENSITIVE_ENV_KEYS) {
     if (!allowed.has(key)) delete env[key]
+  }
+  // Every voice setting is a credential or tied to one; agents never need them.
+  for (const key of Object.keys(env)) {
+    if (key.startsWith(SENSITIVE_ENV_PREFIX) && !allowed.has(key)) delete env[key]
   }
   return env
 }

@@ -4,6 +4,7 @@ import { createCodexBridgeMiddleware } from "./src/server/codexAppServerBridge";
 import { createWebPushTurnNotifier } from "./src/server/webPushTurnNotifier";
 import { createTelegramTurnNotifier } from "./src/server/telegramTurnNotifier";
 import { createTurnNotificationRouter } from "./src/server/turnNotificationRouter";
+import { createServerVoiceHandler } from "./src/server/voice/voiceRoutes";
 import { loadCodexUiEnv } from "./src/server/envFile";
 import tailwindcss from "@tailwindcss/vite";
 import { createReadStream } from "node:fs";
@@ -120,6 +121,7 @@ export default defineConfig({
         });
         server.middlewares.use(telegramTurnNotifier.handleRequest);
         server.middlewares.use(webPushTurnNotifier.handleRequest);
+        server.middlewares.use(createServerVoiceHandler(bridge.voice, webPushTurnNotifier));
         server.middlewares.use(bridge);
         server.httpServer?.once("close", () => {
           turnNotificationRouter.dispose();

@@ -48,6 +48,13 @@ const router = createRouter({
       component: EmptyRouteView,
     },
     {
+      path: '/voice/:code',
+      name: 'voice',
+      component: EmptyRouteView,
+    },
+    // vue-router keeps the query through these redirects, so /new-thread?voice=<code> still prefills
+    // (tests/voicePages.e2e.mjs checks it).
+    {
       path: '/new-thread',
       redirect: { name: 'home' },
     },

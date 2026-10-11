@@ -286,11 +286,22 @@
           <template v-else-if="isPluginsRoute">
             <PluginsHub :cwd="composerCwd" @plugins-changed="onPluginsChanged" />
           </template>
+          <template v-else-if="isVoiceRoute">
+            <div class="content-grid voice-route">
+              <VoicePicker
+                :code="routeVoiceCode"
+                @select="onSelectVoiceChat"
+                @new-chat="(code) => router.replace({ name: 'home', query: { voice: code } })"
+                @navigate="onNavigateVoiceResult"
+                @open-home="router.push({ name: 'home' })"
+              />
+            </div>
+          </template>
           <template v-else-if="isHomeRoute">
             <div class="content-grid">
               <div class="new-thread-empty">
                 <p class="new-thread-hero">Let's build</p>
-                <NewThreadFolderPicker :model-value="newThreadCwd"
+                <NewThreadFolderPicker ref="newThreadFolderPickerRef" :model-value="newThreadCwd"
                   :options="newThreadFolderOptions" placeholder="Choose folder"
                   :default-add-value="defaultNewProjectName"
                   :disabled="projectRegistrationBusy" @update:model-value="onSelectNewThreadFolder"
@@ -303,6 +314,14 @@
                 </div>
               </div>
 
+              <VoiceDraftBanner
+                v-if="visibleVoiceBanner"
+                :heard="visibleVoiceBanner.heard"
+                :note="visibleVoiceBanner.note"
+                :project-choices="visibleVoiceBanner.projectChoices"
+                @dismiss="voiceBanner = null"
+                @choose-project="onChooseVoiceProject"
+              />
               <ThreadComposer ref="threadComposerRef" :active-thread-id="composerThreadContextId"
                 :cwd="composerCwd"
                 :models="availableModelIds" :model-options="availableModels" :provider="composerProvider" :selected-model="selectedModelId"
@@ -403,6 +422,12 @@
                   @steer="steerQueuedMessage"
                   @delete="removeQueuedMessage"
                 />
+                <VoiceDraftBanner
+                  v-if="visibleVoiceBanner"
+                  :heard="visibleVoiceBanner.heard"
+                  :note="visibleVoiceBanner.note"
+                  @dismiss="voiceBanner = null"
+                />
                 <ThreadComposer ref="threadComposerRef" :active-thread-id="composerThreadContextId"
                   :submit-message="selectedChatBoard ? onSubmitBoardChatMessage : undefined"
                   :send-disabled="Boolean(selectedChatBoard) && boardChatSendDisabled"
@@ -473,6 +498,11 @@ import { useThreadHelperActivity } from './composables/useThreadHelperActivity'
 import QueuedMessages from './components/content/QueuedMessages.vue'
 import BackgroundTasks from './components/content/BackgroundTasks.vue'
 import NewThreadFolderPicker from './components/content/NewThreadFolderPicker.vue'
+import VoicePicker from './components/content/VoicePicker.vue'
+import VoiceDraftBanner from './components/content/VoiceDraftBanner.vue'
+import { getVoiceResult } from './api/voice'
+import { isVoiceCode, type VoiceAgent, type VoiceProjectOption } from './types/voice'
+import { modelForVoiceAgent, NEW_THREAD_DRAFT_KEY, planVoicePrefill, queryWithoutVoice, voiceCodeFromQuery, voiceQueryOnly } from './utils/voicePrefill'
 import { createBoardTeamDraft } from './utils/boardTeamDraft'
 import BoardPlanDialog, { type BoardPlanDraft } from './components/content/BoardPlanDialog.vue'
 import BoardRunSettings from './components/content/BoardRunSettings.vue'
@@ -905,6 +935,8 @@ const isBoardOverview = computed(() => route.name === 'boards' && !routeBoardPro
 const isSkillsRoute = computed(() => route.name === 'skills')
 const isMcpRoute = computed(() => route.name === 'mcps')
 const isPluginsRoute = computed(() => route.name === 'plugins')
+const isVoiceRoute = computed(() => route.name === 'voice')
+const routeVoiceCode = computed(() => typeof route.params.code === 'string' ? route.params.code : '')
 
 watch(
   isHomeRoute,
@@ -934,6 +966,7 @@ const contentTitle = computed(() => {
   if (isMcpRoute.value) return 'MCPs'
   if (isPluginsRoute.value) return 'Plugins'
   if (isHomeRoute.value) return 'New thread'
+  if (isVoiceRoute.value) return 'Voice'
   return selectedChatFeature.value?.title || (selectedChatBoard.value ? `${selectedChatBoard.value.name} · Planning` : selectedThread.value?.title) || 'Choose a thread'
 })
 const filteredMessages = computed(() => {
@@ -1415,6 +1448,84 @@ async function onStartNewThreadFromToolbar(): Promise<void> {
   focusComposerSoon()
 }
 
+type VoiceBanner = { draftKey: string; heard: string; note?: string; projectChoices: VoiceProjectOption[] }
+const voiceBanner = ref<VoiceBanner | null>(null)
+const visibleVoiceBanner = computed(() => voiceBanner.value?.draftKey === composerThreadContextId.value ? voiceBanner.value : null)
+const newThreadFolderPickerRef = ref<{ open: () => void } | null>(null)
+const appliedVoiceLinks = new Set<string>()
+let pendingVoiceAgent: VoiceAgent | null = null
+
+function applyVoiceAgent(agent: VoiceAgent): void {
+  const wanted: ChatProvider = agent === 'claude' ? 'anthropic' : 'openai'
+  const modelId = modelForVoiceAgent(agent, selectedModelId.value, availableModels.value)
+  if (modelId) void setSelectedModelId(modelId)
+  // The model list may still be loading when the app opens from a notification.
+  pendingVoiceAgent = modelId || providerForModelId(selectedModelId.value, availableModels.value) === wanted ? null : agent
+}
+
+watch(availableModels, () => {
+  if (pendingVoiceAgent && isHomeRoute.value) applyVoiceAgent(pendingVoiceAgent)
+})
+
+// Sending (or clearing) the voice message ends the banner's job.
+watch(
+  () => (voiceBanner.value ? composerDraftStore.draftsByThreadId[voiceBanner.value.draftKey]?.text ?? '' : null),
+  (text, previous) => {
+    if (previous && !text?.trim()) voiceBanner.value = null
+  },
+)
+
+/** Fills in the composer from a `?voice=<code>` link, then drops the code from the URL. */
+async function applyVoiceLink(code: string, target: { route: 'thread'; threadId: string } | { route: 'home' }): Promise<void> {
+  const key = `${code}:${target.route}`
+  if (appliedVoiceLinks.has(key)) return
+  appliedVoiceLinks.add(key)
+  const draftKey = target.route === 'thread' ? target.threadId : NEW_THREAD_DRAFT_KEY
+  try {
+    if (!isVoiceCode(code)) throw new Error('invalid')
+    const plan = planVoicePrefill(await getVoiceResult(code), target)
+    if (!plan) return
+    composerDraftStore.setDraftText(plan.draftKey, plan.message)
+    if (plan.cwd) onSelectNewThreadFolder(plan.cwd)
+    if (plan.agent) applyVoiceAgent(plan.agent)
+    voiceBanner.value = { draftKey: plan.draftKey, heard: plan.banner.heard, note: plan.banner.note, projectChoices: plan.projectChoices }
+    if (plan.openProjectPicker) {
+      await nextTick()
+      newThreadFolderPickerRef.value?.open()
+    } else {
+      focusComposerSoon()
+    }
+  } catch {
+    voiceBanner.value = { draftKey, heard: '', note: 'That voice link has expired. Say it again.', projectChoices: [] }
+  } finally {
+    if (voiceCodeFromQuery(route.query) === code) await router.replace({ query: queryWithoutVoice(route.query) })
+  }
+}
+
+watch(
+  () => [route.name, voiceCodeFromQuery(route.query), routeThreadId.value, selectedThreadId.value] as const,
+  ([name, code, threadId, selectedId]) => {
+    if (!code) return
+    if (name === 'home') void applyVoiceLink(code, { route: 'home' })
+    // Wait until the chat is open; an unknown chat falls back home with the code kept.
+    else if (name === 'thread' && threadId && selectedId === threadId) void applyVoiceLink(code, { route: 'thread', threadId })
+  },
+  { immediate: true },
+)
+
+function onChooseVoiceProject(projectId: string): void {
+  onSelectNewThreadFolder(projectId)
+  if (voiceBanner.value) voiceBanner.value = { ...voiceBanner.value, projectChoices: [] }
+}
+
+function onSelectVoiceChat(payload: { threadId: string; code: string; carryMessage: boolean }): void {
+  void router.push({ name: 'thread', params: { threadId: payload.threadId }, query: payload.carryMessage ? { voice: payload.code } : {} })
+}
+
+function onNavigateVoiceResult(path: string): void {
+  void router.push(path.replace(/^\/#/u, ''))
+}
+
 function focusComposerSoon(): void {
   if (isMobile.value) return
   nextTick(() => {
@@ -1876,6 +1987,7 @@ async function syncThreadSelectionWithRoute(loadInitialMessages = false): Promis
       || route.name === 'skills'
       || route.name === 'mcps'
       || route.name === 'plugins'
+      || route.name === 'voice'
     ) {
       if (selectedThreadId.value !== '') {
         await selectThread('')
@@ -1893,7 +2005,8 @@ async function syncThreadSelectionWithRoute(loadInitialMessages = false): Promis
           const thread = await getThreadSummary(threadId)
           if (route.fullPath === requestedRoute) await selectThreadFromSearch(thread)
         } catch {
-          if (route.fullPath === requestedRoute) await router.replace({ name: 'home' })
+          // Keep a voice code so its message still lands in the new-chat composer.
+          if (route.fullPath === requestedRoute) await router.replace({ name: 'home', query: voiceQueryOnly(route.query) })
         }
         return
       }
@@ -1935,7 +2048,7 @@ watch(
   async (threadId) => {
     if (!hasInitialized.value) return
     if (isRouteSyncInProgress.value) return
-    if (isHomeRoute.value || isScheduledRoute.value || isBoardsRoute.value || isSkillsRoute.value || isMcpRoute.value || isPluginsRoute.value) return
+    if (isHomeRoute.value || isScheduledRoute.value || isBoardsRoute.value || isSkillsRoute.value || isMcpRoute.value || isPluginsRoute.value || isVoiceRoute.value) return
 
     if (!threadId) {
       if (route.name !== 'home') {
@@ -2154,6 +2267,8 @@ async function submitFirstMessageForNewThread(
   @apply flex-1 min-h-0 flex flex-col gap-2.5;
   overscroll-behavior: none;
 }
+
+.content-grid.voice-route { overflow-y: auto; }
 
 .chat-board-menu { background: var(--surface-elevated); color: var(--text-primary); }
 .chat-board-menu p { margin: 0; padding: 4px 8px; font-size: 12px; color: var(--text-secondary); }

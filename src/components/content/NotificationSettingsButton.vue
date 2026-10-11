@@ -108,45 +108,35 @@
               <span class="notification-section-count">{{ needsYouCount }}</span>
             </div>
             <div v-for="item in boardAttention" :key="`board:${item.questionId}`">
-            <button
-              class="notification-row"
-              type="button"
+            <NotificationRow
+              tone="failed"
+              :title="item.title"
+              pill="Needs you"
+              pill-tone="attention"
+              :preview="item.prompt"
               @click="openBoardQuestion(item)"
             >
-              <span class="notification-row-icon is-failed"><CircleAlert /></span>
-              <span class="notification-row-copy">
-                <span class="notification-row-title-line">
-                  <span class="notification-row-title">{{ item.title }}</span>
-                  <span class="notification-unread-pill is-attention">Needs you</span>
-                </span>
-                <span class="notification-row-meta">
-                  <span class="notification-board-label"><SquareKanban />{{ boardNameFor(item.boardId) }}</span>
-                  <span aria-hidden="true">·</span><span>{{ formatRelative(item.createdAtIso) }}</span>
-                </span>
-                <span v-if="item.prompt" class="notification-row-preview">{{ item.prompt }}</span>
-              </span>
-            </button>
+              <template #meta>
+                <span class="notification-board-label"><SquareKanban />{{ boardNameFor(item.boardId) }}</span>
+                <span aria-hidden="true">·</span><span>{{ formatRelative(item.createdAtIso) }}</span>
+              </template>
+            </NotificationRow>
             <ThreadHelpers :helpers="threadHelpers.helpersByOwnerId[boardActivity?.find((work) => work.boardId === item.boardId && work.featureId === item.featureId)?.threadId || ''] || []" :waiting-thread-ids="waitingThreadIds" @select-thread="openThread" />
             </div>
             <div v-for="item in requestAttention" :key="`request:${item.threadId}`">
-            <button
-              class="notification-row"
-              type="button"
+            <NotificationRow
+              tone="failed"
+              :title="item.title"
+              :pill="item.label"
+              pill-tone="attention"
+              :preview="`Open the chat to ${item.label === 'Approval needed' ? 'review and approve or decline.' : 'answer and continue.'}`"
               @click="openThread(item.threadId)"
             >
-              <span class="notification-row-icon is-failed"><CircleAlert /></span>
-              <span class="notification-row-copy">
-                <span class="notification-row-title-line">
-                  <span class="notification-row-title">{{ item.title }}</span>
-                  <span class="notification-unread-pill is-attention">{{ item.label }}</span>
-                </span>
-                <span class="notification-row-meta">
-                  <span v-if="item.board" class="notification-board-label"><SquareKanban />{{ item.board.boardName }}</span>
-                  <span v-else>Chat</span><span aria-hidden="true">·</span><span>{{ formatRelative(item.receivedAtIso) }}</span>
-                </span>
-                <span class="notification-row-preview">Open the chat to {{ item.label === 'Approval needed' ? 'review and approve or decline.' : 'answer and continue.' }}</span>
-              </span>
-            </button>
+              <template #meta>
+                <span v-if="item.board" class="notification-board-label"><SquareKanban />{{ item.board.boardName }}</span>
+                <span v-else>Chat</span><span aria-hidden="true">·</span><span>{{ formatRelative(item.receivedAtIso) }}</span>
+              </template>
+            </NotificationRow>
             <ThreadHelpers :helpers="threadHelpers.helpersByOwnerId[item.threadId] || []" :waiting-thread-ids="waitingThreadIds" @select-thread="openThread" />
             </div>
           </section>
@@ -163,32 +153,23 @@
                 :key="`pinned:${row.threadId}`"
                 class="notification-recent-row"
               >
-                <button
-                  class="notification-row notification-recent-main"
-                  type="button"
+                <NotificationRow
+                  class="notification-recent-main"
+                  :tone="row.tone"
+                  :title="row.title"
+                  :pill="row.pill"
+                  :pill-tone="row.tone === 'failed' ? 'attention' : 'unread'"
                   @click="openThread(row.threadId)"
                 >
-                  <span class="notification-row-icon" :class="`is-${row.tone}`">
-                    <CircleAlert v-if="row.tone === 'failed'" />
-                    <LoaderCircle v-else-if="row.tone === 'running'" />
-                    <Circle v-else-if="row.tone === 'unread'" />
-                    <Pin v-else />
-                  </span>
-                  <span class="notification-row-copy">
-                    <span class="notification-row-title-line">
-                      <span class="notification-row-title">{{ row.title }}</span>
-                      <span v-if="row.pill" class="notification-unread-pill" :class="{ 'is-attention': row.tone === 'failed' }">{{ row.pill }}</span>
-                    </span>
-                    <span class="notification-row-meta">
-                      <span>{{ row.statusLabel }}</span>
-                      <span aria-hidden="true">·</span>
-                      <span>{{ formatRelative(row.activityAt) }}</span>
-                      <kbd v-if="shortcutNumber(row.threadId)" class="notification-shortcut">
-                        ⌘{{ shortcutNumber(row.threadId) }}
-                      </kbd>
-                    </span>
-                  </span>
-                </button>
+                  <template #meta>
+                    <span>{{ row.statusLabel }}</span>
+                    <span aria-hidden="true">·</span>
+                    <span>{{ formatRelative(row.activityAt) }}</span>
+                    <kbd v-if="shortcutNumber(row.threadId)" class="notification-shortcut">
+                      ⌘{{ shortcutNumber(row.threadId) }}
+                    </kbd>
+                  </template>
+                </NotificationRow>
                 <button
                   class="notification-more-button"
                   type="button"
@@ -209,26 +190,21 @@
               </div>
               <div v-for="item in boardWorkActivity" :key="`board-work:${item.boardId}:${item.featureId}`">
                 <div class="notification-board-work-row">
-                <button
-                  class="notification-row notification-board-main"
-                  type="button"
+                <NotificationRow
+                  class="notification-board-main"
+                  :tone="item.status === 'running' ? 'running' : 'board'"
+                  :title="item.title"
+                  wrap-meta
                   :aria-label="`${item.threadId ? 'Open Lead chat' : 'Open feature'} for ${item.title}`"
                   @click="item.threadId ? openThread(item.threadId) : openActivityBoard(item)"
                 >
-                  <span class="notification-row-icon" :class="{ 'is-running': item.status === 'running' }">
-                    <LoaderCircle v-if="item.status === 'running'" />
-                    <SquareKanban v-else />
-                  </span>
-                  <span class="notification-row-copy">
-                    <span class="notification-row-title">{{ item.title }}</span>
-                    <span class="notification-row-meta notification-board-meta">
-                      <span class="notification-board-status" :data-status="item.status">{{ boardWorkStatusLabel(item) }}</span>
-                      <span aria-hidden="true">·</span><span>{{ item.threadId ? 'Lead chat' : 'Starting Lead' }}</span>
-                      <kbd v-if="shortcutNumber(`board:${item.boardId}:${item.featureId}`)" class="notification-shortcut">⌘{{ shortcutNumber(`board:${item.boardId}:${item.featureId}`) }}</kbd>
-                    </span>
-                    <span class="notification-board-name">{{ item.boardName }}</span>
-                  </span>
-                </button>
+                  <template #meta>
+                    <span class="notification-board-status" :data-status="item.status">{{ boardWorkStatusLabel(item) }}</span>
+                    <span aria-hidden="true">·</span><span>{{ item.threadId ? 'Lead chat' : 'Starting Lead' }}</span>
+                    <kbd v-if="shortcutNumber(`board:${item.boardId}:${item.featureId}`)" class="notification-shortcut">⌘{{ shortcutNumber(`board:${item.boardId}:${item.featureId}`) }}</kbd>
+                  </template>
+                  <span class="notification-board-name">{{ item.boardName }}</span>
+                </NotificationRow>
                 <button class="notification-board-open" type="button" :aria-label="`View board for ${item.title}`" @click="openActivityBoard(item)">
                   <SquareKanban /><span>Board</span>
                 </button>
@@ -243,26 +219,16 @@
                 <span class="notification-section-count">{{ listedRunningThreads.length }}</span>
               </div>
               <div v-for="thread in listedRunningThreads" :key="`running:${thread.id}`">
-              <button
-                class="notification-row"
-                type="button"
-                @click="openThread(thread.id)"
-              >
-                <span class="notification-row-icon is-running">
-                  <LoaderCircle />
-                </span>
-                <span class="notification-row-copy">
-                  <span class="notification-row-title">{{ threadTitle(thread) }}</span>
-                  <span class="notification-row-meta">
-                    <span>In progress</span>
-                    <span aria-hidden="true">·</span>
-                    <span>{{ formatRelative(thread.updatedAtIso) }}</span>
-                    <kbd v-if="shortcutNumber(thread.id)" class="notification-shortcut">
-                      ⌘{{ shortcutNumber(thread.id) }}
-                    </kbd>
-                  </span>
-                </span>
-              </button>
+              <NotificationRow tone="running" :title="threadTitle(thread)" @click="openThread(thread.id)">
+                <template #meta>
+                  <span>In progress</span>
+                  <span aria-hidden="true">·</span>
+                  <span>{{ formatRelative(thread.updatedAtIso) }}</span>
+                  <kbd v-if="shortcutNumber(thread.id)" class="notification-shortcut">
+                    ⌘{{ shortcutNumber(thread.id) }}
+                  </kbd>
+                </template>
+              </NotificationRow>
               <ThreadHelpers :helpers="threadHelpers.helpersByOwnerId[thread.id] || []" :waiting-thread-ids="waitingThreadIds" @select-thread="openThread" />
               </div>
             </section>
@@ -272,31 +238,23 @@
                 <span>Unread</span>
                 <span class="notification-section-count">{{ listedUnreadThreads.length }}</span>
               </div>
-              <button
+              <NotificationRow
                 v-for="thread in listedUnreadThreads"
                 :key="`unread:${thread.id}`"
-                class="notification-row"
-                type="button"
+                tone="unread"
+                :title="threadTitle(thread)"
+                pill="Unread"
                 @click="openThread(thread.id)"
               >
-                <span class="notification-row-icon is-unread">
-                  <Circle />
-                </span>
-                <span class="notification-row-copy">
-                  <span class="notification-row-title-line">
-                    <span class="notification-row-title">{{ threadTitle(thread) }}</span>
-                    <span class="notification-unread-pill">Unread</span>
-                  </span>
-                  <span class="notification-row-meta">
-                    <span>Completed — not opened</span>
-                    <span aria-hidden="true">·</span>
-                    <span>{{ formatRelative(thread.updatedAtIso) }}</span>
-                    <kbd v-if="shortcutNumber(thread.id)" class="notification-shortcut">
-                      ⌘{{ shortcutNumber(thread.id) }}
-                    </kbd>
-                  </span>
-                </span>
-              </button>
+                <template #meta>
+                  <span>Completed — not opened</span>
+                  <span aria-hidden="true">·</span>
+                  <span>{{ formatRelative(thread.updatedAtIso) }}</span>
+                  <kbd v-if="shortcutNumber(thread.id)" class="notification-shortcut">
+                    ⌘{{ shortcutNumber(thread.id) }}
+                  </kbd>
+                </template>
+              </NotificationRow>
             </section>
           </template>
 
@@ -312,9 +270,13 @@
               :key="item.id"
               class="notification-recent-row"
             >
-              <button
-                class="notification-row notification-recent-main"
-                type="button"
+              <NotificationRow
+                class="notification-recent-main"
+                :tone="isAttentionStatus(item.status) ? 'failed' : 'completed'"
+                :title="item.title"
+                :pill="item.isUnread ? 'Unread' : ''"
+                :pill-tone="isAttentionStatus(item.status) ? 'attention' : 'unread'"
+                :preview="item.body"
                 :style="recentRowStyle(item)"
                 @click="openRecentItem(item)"
                 @touchstart="onRecentTouchStart(item, $event)"
@@ -322,29 +284,15 @@
                 @touchend="onRecentTouchEnd(item)"
                 @touchcancel="resetRecentSwipe"
               >
-                <span
-                  class="notification-row-icon"
-                  :class="['failed', 'question', 'native_request'].includes(item.status) ? 'is-failed' : 'is-completed'"
-                >
-                  <CircleAlert v-if="['failed', 'question', 'native_request'].includes(item.status)" />
-                  <CheckCircle2 v-else />
-                </span>
-                <span class="notification-row-copy">
-                  <span class="notification-row-title-line">
-                    <span class="notification-row-title">{{ item.title }}</span>
-                    <span v-if="item.isUnread" class="notification-unread-pill" :class="{ 'is-attention': ['failed', 'question', 'native_request'].includes(item.status) }">Unread</span>
-                  </span>
-                  <span class="notification-row-meta">
-                    <span>{{ activityStatusLabel(item) }}</span>
-                    <span aria-hidden="true">·</span>
-                    <span>{{ formatRelative(item.completedAt) }}</span>
-                    <kbd v-if="shortcutNumber(item.threadId)" class="notification-shortcut">
-                      ⌘{{ shortcutNumber(item.threadId) }}
-                    </kbd>
-                  </span>
-                  <span v-if="item.body" class="notification-row-preview">{{ item.body }}</span>
-                </span>
-              </button>
+                <template #meta>
+                  <span>{{ activityStatusLabel(item) }}</span>
+                  <span aria-hidden="true">·</span>
+                  <span>{{ formatRelative(item.completedAt) }}</span>
+                  <kbd v-if="shortcutNumber(item.threadId)" class="notification-shortcut">
+                    ⌘{{ shortcutNumber(item.threadId) }}
+                  </kbd>
+                </template>
+              </NotificationRow>
               <button
                 class="notification-more-button"
                 type="button"
@@ -537,7 +485,6 @@ import {
   BellRing,
   CheckCircle2,
   Circle,
-  CircleAlert,
   LoaderCircle,
   Mail,
   MailOpen,
@@ -583,6 +530,7 @@ import {
   type RecentActivityItem,
   type RunningActivityItem,
 } from '../../utils/notificationActivity'
+import NotificationRow from './NotificationRow.vue'
 import ThreadHelpers from './ThreadHelpers.vue'
 
 type ManualThreadUnreadOverride = {
@@ -713,7 +661,7 @@ const pinnedRows = computed<PinnedRow[]>(() => {
     const row = { threadId: thread.id, title: threadTitle(thread), activityAt, pill: isUnread ? 'Unread' : '' }
     if (waitingThreadIds.value.has(thread.id)) return { ...row, tone: 'failed', statusLabel: 'Waiting for you', pill: 'Needs you' }
     if (isThreadRunning(thread) || hasWorkingHelpers(thread.id)) return { ...row, tone: 'running', statusLabel: 'In progress', pill: '' }
-    if (latest && ['failed', 'question', 'native_request'].includes(latest.status)) {
+    if (latest && isAttentionStatus(latest.status)) {
       return { ...row, tone: 'failed', activityAt: latest.completedAt, statusLabel: activityStatusLabel({ status: latest.status, projectBoard: latest.projectBoard }) }
     }
     return { ...row, tone: isUnread ? 'unread' : 'pinned', statusLabel: isUnread ? 'Completed — not opened' : 'Pinned' }
@@ -1024,6 +972,10 @@ function openRecentItem(item: RecentActivityItem): void {
     return
   }
   openThread(item.threadId)
+}
+
+function isAttentionStatus(status: string): boolean {
+  return status === 'failed' || status === 'question' || status === 'native_request'
 }
 
 function activityStatusLabel(item: Pick<RecentActivityItem, 'status' | 'projectBoard'>): string {
@@ -1444,16 +1396,8 @@ function onModeChange(event: Event): void {
   @apply flex min-w-0 items-center pr-3;
 }
 
-.notification-board-main {
+.notification-row.notification-board-main {
   @apply min-w-0 flex-1 pr-2;
-}
-
-.notification-board-main .notification-row-title {
-  @apply block;
-}
-
-.notification-board-meta {
-  @apply flex-wrap;
 }
 
 .notification-board-status {
@@ -1497,33 +1441,19 @@ function onModeChange(event: Event): void {
   outline-offset: -2px;
 }
 
-.notification-row {
-  @apply flex w-full items-start gap-3 px-4 py-2.5 text-left transition;
-  color: var(--text-primary);
-}
-
-.notification-row:hover {
-  background: var(--surface-muted);
-}
-
-.notification-row:focus-visible {
-  outline: 2px solid var(--accent);
-  outline-offset: -2px;
-}
-
 .notification-recent-row {
   @apply relative overflow-hidden;
   background: color-mix(in srgb, var(--destructive) 12%, var(--surface-muted));
 }
 
-.notification-recent-main {
+.notification-row.notification-recent-main {
   @apply relative z-10 pr-12;
   background: var(--surface-elevated);
   touch-action: pan-y;
   transition: transform 160ms ease, background-color 180ms ease;
 }
 
-.notification-recent-main:hover {
+.notification-row.notification-recent-main:hover {
   background: var(--surface-muted);
 }
 
@@ -1584,75 +1514,6 @@ function onModeChange(event: Event): void {
 .notification-show-more:hover {
   background: var(--surface-muted);
   color: var(--text-primary);
-}
-
-.notification-row-icon {
-  @apply mt-0.5 inline-flex h-5 w-5 shrink-0 items-center justify-center;
-  color: var(--text-muted);
-}
-
-.notification-row-icon > :deep(svg),
-.notification-row-icon svg {
-  @apply h-4 w-4;
-}
-
-.notification-row-icon.is-running {
-  color: #3b82f6;
-}
-
-.notification-row-icon.is-running svg {
-  animation: notification-spin 900ms linear infinite;
-}
-
-.notification-row-icon.is-unread {
-  color: #22c55e;
-}
-
-.notification-row-icon.is-unread svg {
-  @apply h-2.5 w-2.5;
-  fill: currentColor;
-}
-
-.notification-row-icon.is-completed {
-  color: #22c55e;
-}
-
-.notification-row-icon.is-failed {
-  color: var(--destructive);
-}
-
-.notification-row-copy {
-  @apply min-w-0 flex-1;
-}
-
-.notification-row-title-line {
-  @apply flex min-w-0 items-center gap-2;
-}
-
-.notification-row-title {
-  @apply min-w-0 flex-1 truncate text-sm font-medium;
-  color: var(--text-primary);
-}
-
-.notification-unread-pill {
-  @apply inline-flex shrink-0 items-center rounded-full px-1.5 py-0.5 text-[10px] font-semibold leading-none;
-  background: color-mix(in srgb, #22c55e 14%, transparent);
-  color: #16a34a;
-}
-
-.notification-unread-pill.is-attention {
-  background: color-mix(in srgb, #d97706 14%, transparent);
-  color: var(--text-warning, #d97706);
-}
-
-.notification-row-meta {
-  @apply mt-0.5 flex items-center gap-1 text-xs;
-  color: var(--text-muted);
-}
-
-.notification-row-preview {
-  @apply mt-1 line-clamp-2 text-xs leading-4;
-  color: var(--text-secondary);
 }
 
 .notification-shortcut {
@@ -1863,12 +1724,12 @@ function onModeChange(event: Event): void {
     max-height: calc(100dvh - 12rem);
   }
 
-  .notification-row {
-    @apply min-h-12 gap-2.5 px-3 py-2.5;
+  .notification-row.notification-recent-main {
+    @apply pr-12;
   }
 
-  .notification-recent-main {
-    @apply pr-12;
+  .notification-row.notification-board-main {
+    @apply pr-3;
   }
 
   .notification-section {

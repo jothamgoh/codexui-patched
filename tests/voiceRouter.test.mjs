@@ -18,7 +18,7 @@ async function loadModule(path) {
 
 const router = await loadModule('../src/server/voice/voiceRouter.ts')
 const jev = await loadModule('../src/server/voice/jevClient.ts')
-const { routeVoiceCommand, selectChatCandidates, projectAliases, VOICE_THRESHOLDS, buildPass1Questions, buildChatQuestion } = router
+const { routeVoiceCommand, selectChatCandidates, projectAliases, VOICE_THRESHOLDS, buildPass1Questions, buildChatQuestion, allowsShortcutConfirm } = router
 const { askJev, validateJevAnswers, JEV_MODEL, JevValidationError } = jev
 
 const titleOf = (threadId) => Object.values(CHATS).find((row) => row.threadId === threadId)?.title ?? threadId
@@ -84,29 +84,55 @@ function fakeJev(script, requests = []) {
   }
 }
 
-function deps(script, { llm = null, requests = [], llmCalls = [] } = {}) {
+/**
+ * `decision` is what the LLM fallback router returns: a list of steps (provider
+ * anthropic), null for "no provider answered", or a function of the input.
+ */
+function deps(script, { llm = null, requests = [], llmCalls = [], decision = null, decisionCalls = [] } = {}) {
   const fetchImpl = fakeJev(script, requests)
   return {
     jev: (questions, state) => askJev(questions, state, { apiKey: 'test-key', fetchImpl, timeoutMs: 40 }),
     extractWithLlm: async (kind, transcript) => { llmCalls.push({ kind, transcript }); return llm },
+    decideWithLlm: async (input) => {
+      decisionCalls.push(input)
+      const steps = typeof decision === 'function' ? decision(input) : decision
+      return steps ? { steps, provider: 'anthropic' } : null
+    },
   }
 }
+
+/** LLM steps, written briefly. */
+const llmChat = (action, key, fields = {}) => ({ action, threadId: key ? CHATS[key].threadId : null, certain: true, alternatives: [], chatWords: '', message: '', ...fields })
+const llmNew = (label, fields = {}) => ({ action: 'new_chat', projectId: PROJECTS.find((project) => project.label === label)?.id ?? null, agent: null, message: '', ...fields })
+const llmList = (listType) => ({ action: 'list_chats', listType })
 
 /** The Jev answers a good model would give for a labelled phrase. */
 function scriptFor(phrase) {
   const { expect } = phrase
-  const action = expect.action ?? (expect.reason === 'compound' ? 'send_to_chat' : 'other')
-  const pass1 = { action: { [action]: 0.95 }, list_type: { [expect.listType ?? 'recent']: 0.9 }, compound: expect.reason === 'compound' ? 0.92 : 0.04 }
+  const compound = expect.reason === 'compound' || Boolean(expect.steps)
+  const action = expect.action ?? (compound ? 'send_to_chat' : 'other')
+  const pass1 = { action: { [action]: 0.95 }, list_type: { [expect.listType ?? 'recent']: 0.9 }, compound: compound ? 0.92 : 0.04 }
   let pass2 = {}
   if (expect.chat && (action === 'open_chat' || action === 'send_to_chat')) pass2 = { chat: { [CHATS[expect.chat].threadId]: 0.93 } }
   if (expect.picker) pass2 = { chat: Object.fromEntries(expect.picker.map((key, index) => [CHATS[key].threadId, [0.42, 0.3, 0.2][index] ?? 0.02])) }
   if (action === 'new_chat') pass2 = { project: { [expect.project ?? 'other']: 0.94 }, agent: { [expect.agent ?? 'not_said']: 0.93 } }
-  return { pass1, pass2 }
+  // Several requests: the LLM splits them into steps (chats unnamed, so each lands on a chooser).
+  const decision = expect.steps?.map((step) => step.action === 'list_chats' ? llmList(step.listType)
+    : step.action === 'new_chat' ? llmNew(step.project)
+    : llmChat(step.action, step.chat ?? null, { certain: false }))
+  return { pass1, pass2, decision }
 }
 
 function assertMatchesExpectation(result, trace, phrase, label) {
   const { expect } = phrase
-  assert.equal(result.outcome, expect.outcome, `${label}: outcome`)
+  assert.ok([expect.outcome].flat().includes(result.outcome), `${label}: outcome ${result.outcome}`)
+  if (expect.steps) {
+    assert.deepEqual(result.steps.map((step) => step.action), expect.steps.map((step) => step.action), `${label}: steps`)
+    for (const [index, step] of expect.steps.entries()) {
+      if (step.listType) assert.equal(result.steps[index].listType, step.listType, `${label}: step ${index + 1} list`)
+      if (step.project) assert.equal(result.steps[index].project?.label, step.project, `${label}: step ${index + 1} project`)
+    }
+  }
   assert.equal(result.heard, phrase.say.replace(/\s+/gu, ' ').trim(), `${label}: heard text is kept`)
   if (expect.reason) assert.equal(result.reason, expect.reason, `${label}: reason`)
   if (expect.listType) assert.equal(result.listType, expect.listType, `${label}: list type`)
@@ -135,7 +161,8 @@ for (const phrase of PHRASES) {
   test(`routes "${phrase.say}" (journey ${phrase.journey})`, async () => {
     const llmCalls = []
     const llm = phrase.expect.llm ? { message: phrase.expect.message, provider: 'anthropic' } : null
-    const { result, trace } = await routeVoiceCommand(phrase.say, buildContext(), deps(scriptFor(phrase), { llm, llmCalls }))
+    const script = scriptFor(phrase)
+    const { result, trace } = await routeVoiceCommand(phrase.say, buildContext(), deps(script, { llm, llmCalls, decision: script.decision }))
     assertMatchesExpectation(result, trace, phrase, phrase.say)
     if (!phrase.expect.llm) assert.equal(llmCalls.length, 0, 'no LLM call when a rule works')
     assert.ok(trace.calls.length <= 2, 'at most two Jev calls')
@@ -145,13 +172,20 @@ for (const phrase of PHRASES) {
 // --- Jev failure modes: every one falls back, none guesses -------------------
 
 for (const failure of [...Object.keys(FAILURES), ...Object.keys(CORRUPTIONS)]) {
-  test(`pass 1 failure "${failure}" falls back to "didn't catch that" with recent chats`, async () => {
-    const { result, trace } = await routeVoiceCommand('open the stripe webhook chat', buildContext(), deps({ pass1: failure }))
+  test(`pass 1 failure "${failure}" asks the LLM, and without it says "didn't catch that" with recent chats`, async () => {
+    const decisionCalls = []
+    const { result, trace } = await routeVoiceCommand('open the stripe webhook chat', buildContext(), deps({ pass1: failure }, { decisionCalls }))
+    assert.equal(decisionCalls.length, 1)
     assert.equal(result.outcome, 'not_understood')
     assert.equal(result.reason, 'jev_unavailable')
     assert.equal(result.candidates[0].threadId, CHATS.migration.threadId, 'recent chats in panel order')
     assert.equal(trace.calls.length, 1)
     assert.equal(trace.calls[0].ok, false)
+    assert.equal(trace.path, 'none')
+    const rescued = await routeVoiceCommand('open the stripe webhook chat', buildContext(), deps({ pass1: failure }, { decision: [llmChat('open_chat', 'webhook')] }))
+    assert.equal(rescued.result.outcome, 'open_chat')
+    assert.equal(rescued.result.threadId, CHATS.webhook.threadId)
+    assert.equal(rescued.trace.path, 'llm')
   })
 }
 
@@ -191,21 +225,26 @@ test('a pass 2 failure on a new chat with no recognisable project opens the proj
 
 // --- Gates and thresholds ----------------------------------------------------
 
-test('a low-confidence action is not acted on', async () => {
+test('a low-confidence action goes to the LLM, and without an answer is not acted on', async () => {
   const script = { pass1: { action: { open_chat: 0.55, send_to_chat: 0.4 } } }
-  const { result } = await routeVoiceCommand('open the stripe webhook chat', buildContext(), deps(script))
+  const decisionCalls = []
+  const { result, trace } = await routeVoiceCommand('open the stripe webhook chat', buildContext(), deps(script, { decisionCalls }))
+  assert.equal(decisionCalls.length, 1)
   assert.equal(result.outcome, 'not_understood')
   assert.equal(result.reason, 'low_confidence')
+  assert.deepEqual(trace.fallback && { reason: trace.fallback.reason, ok: trace.fallback.ok }, { reason: 'low_confidence', ok: false })
 })
 
-test('opening and listing need less action confidence than sending', async () => {
-  // Confidence for 5 options is (p - 0.2) / 0.8, so p = 0.8 gives 0.75: enough to open, not to send.
-  const open = { pass1: { action: { open_chat: 0.8 } }, pass2: { chat: { [CHATS.webhook.threadId]: 0.95 } } }
-  assert.equal((await routeVoiceCommand('open the stripe webhook chat', buildContext(), deps(open))).result.outcome, 'open_chat')
-  const send = { pass1: { action: { send_to_chat: 0.8 } }, pass2: { chat: { [CHATS.webhook.threadId]: 0.95 } } }
-  const sent = (await routeVoiceCommand('tell the stripe webhook chat to deploy', buildContext(), deps(send))).result
-  assert.equal(sent.outcome, 'not_understood')
-  assert.equal(sent.reason, 'low_confidence')
+test('sends need no more action confidence than opening: every outcome waits for a tap in the app', async () => {
+  // Confidence for 5 options is (p - 0.2) / 0.8, so p = 0.8 gives 0.75, above the 0.7 bar.
+  for (const [action, say, outcome] of [['open_chat', 'open the stripe webhook chat', 'open_chat'], ['send_to_chat', 'tell the stripe webhook chat to deploy', 'send_ready']]) {
+    const decisionCalls = []
+    const script = { pass1: { action: { [action]: 0.8 } }, pass2: { chat: { [CHATS.webhook.threadId]: 0.95 } } }
+    const { result, trace } = await routeVoiceCommand(say, buildContext(), deps(script, { decisionCalls }))
+    assert.equal(result.outcome, outcome)
+    assert.equal(decisionCalls.length, 0, 'Jev was sure enough; no LLM')
+    assert.equal(trace.path, 'jev')
+  }
 })
 
 test('naming only a project with several chats shows them even when Jev is sure', async () => {
@@ -241,9 +280,9 @@ test('an agent name inside a project name does not pick the agent', async () => 
   assert.equal(said.agent, 'codex')
 })
 
-test('compound requests at the threshold fall back; just below it they route', async () => {
+test('compound requests at the threshold go to the LLM; just below it they route', async () => {
   const at = { pass1: { action: { open_chat: 0.95 }, compound: VOICE_THRESHOLDS.compound }, pass2: { chat: { [CHATS.webhook.threadId]: 0.95 } } }
-  assert.equal((await routeVoiceCommand('open the stripe webhook chat', buildContext(), deps(at))).result.reason, 'compound')
+  assert.equal((await routeVoiceCommand('open the stripe webhook chat', buildContext(), deps(at))).result.reason, 'compound', 'no LLM answer')
   const below = { ...at, pass1: { ...at.pass1, compound: VOICE_THRESHOLDS.compound - 0.01 } }
   assert.equal((await routeVoiceCommand('open the stripe webhook chat', buildContext(), deps(below))).result.outcome, 'open_chat')
 })
@@ -426,4 +465,152 @@ test('askJev refuses oversized state without sending it', async () => {
   const outcome = await askJev(buildPass1Questions(), { spoken_request: 'x'.repeat(130_000) }, { apiKey: 'k', fetchImpl: async () => { called = true } })
   assert.equal(outcome.reason, 'too_large')
   assert.equal(called, false)
+})
+
+// --- LLM fallback ---------------------------------------------------------------
+
+const unsure = (action = 'send_to_chat') => ({ pass1: { action: { [action]: 0.6, other: 0.3 } } })
+
+test('a confident Jev "other" is trusted: out of scope, and the LLM is not asked', async () => {
+  const decisionCalls = []
+  const script = { pass1: { action: { other: VOICE_THRESHOLDS.trustedOther } } }
+  const { result, trace } = await routeVoiceCommand('stop the export job', buildContext(), deps(script, { decisionCalls, decision: [llmChat('send_to_chat', 'exportJob', { message: 'stop' })] }))
+  assert.equal(result.outcome, 'not_understood')
+  assert.equal(decisionCalls.length, 0)
+  assert.equal(trace.path, 'jev')
+})
+
+test('a doubtful Jev "other" asks the LLM, which can find a send in a long ramble', async () => {
+  const say = 'Respond to the iPhone shortcut chat and basically, you know, add a small microphone to the notification bar. Do you get what I mean?'
+  const script = { pass1: { action: { other: 0.55, send_to_chat: 0.4 } } }
+  const decisionCalls = []
+  const decision = [llmChat('send_to_chat', 'shortcut', { message: 'add a small microphone to the notification bar. Do you get what I mean?', chatWords: 'iPhone shortcut chat' })]
+  const { result, trace } = await routeVoiceCommand(say, buildContext(), deps(script, { decision, decisionCalls }))
+  assert.equal(result.outcome, 'send_ready')
+  assert.equal(result.threadId, CHATS.shortcut.threadId)
+  assert.equal(result.message, decision[0].message)
+  assert.equal(trace.path, 'llm')
+  assert.equal(trace.fallback.reason, 'other')
+  // The LLM sees the same candidates pass 2 would, including older chats the words name.
+  assert.ok(decisionCalls[0].chats.some((row) => row.threadId === CHATS.shortcut.threadId))
+  assert.deepEqual(decisionCalls[0].projects, PROJECTS)
+})
+
+test('the LLM finding nothing to do is "didn\'t catch that"; the LLM failing keeps Jev\'s reason', async () => {
+  const none = await routeVoiceCommand('mm hmm', buildContext(), deps(unsure(), { decision: [] }))
+  assert.equal(none.result.outcome, 'not_understood')
+  assert.equal(none.result.reason, 'other')
+  assert.equal(none.trace.path, 'llm')
+  const failed = await routeVoiceCommand('mm hmm', buildContext(), deps(unsure(), { decision: null }))
+  assert.equal(failed.result.reason, 'low_confidence')
+  assert.equal(failed.trace.path, 'none')
+  assert.ok(failed.result.candidates.length > 0, 'recent chats offered')
+})
+
+test('an unsure LLM pick is a chooser with its ideas first', async () => {
+  const decision = [llmChat('send_to_chat', 'login', { certain: false, alternatives: [CHATS.pricing.threadId], message: 'merge it' })]
+  const { result } = await routeVoiceCommand('tell the booking one to merge it', buildContext(), deps(unsure(), { decision }))
+  assert.equal(result.outcome, 'picker')
+  assert.equal(result.message, 'merge it')
+  assert.deepEqual(result.candidates.slice(0, 2).map((row) => row.threadId), [CHATS.login.threadId, CHATS.pricing.threadId])
+})
+
+test('an unsure LLM pick that the words alone name is taken: two signals agree', async () => {
+  const decision = [llmChat('send_to_chat', 'shortcut', { certain: false, chatWords: 'iPhone shortcut chat', message: 'add a microphone' })]
+  const { result } = await routeVoiceCommand('tell the iPhone shortcut chat to add a microphone', buildContext(), deps(unsure(), { decision }))
+  assert.equal(result.outcome, 'send_ready')
+  assert.equal(result.threadId, CHATS.shortcut.threadId)
+})
+
+test('a sure LLM pick still becomes a chooser when the words fit several chats', async () => {
+  const decision = [llmChat('open_chat', 'checkout', { chatWords: 'booking platform chat' })]
+  const { result } = await routeVoiceCommand('view the booking platform chat', buildContext(), deps(unsure('open_chat'), { decision }))
+  assert.equal(result.outcome, 'picker')
+  assert.equal(result.reason, 'same_project')
+})
+
+test('an LLM step with no known chat lists its alternatives, then chats the words name', async () => {
+  const decision = [llmChat('open_chat', null, { alternatives: [CHATS.dashboard.threadId] })]
+  const { result } = await routeVoiceCommand('open the charts thing', buildContext(), deps(unsure('open_chat'), { decision }))
+  assert.equal(result.outcome, 'picker')
+  assert.equal(result.reason, 'no_match')
+  assert.equal(result.candidates[0].threadId, CHATS.dashboard.threadId)
+})
+
+test('an LLM send without usable words falls back to the rule, else opens the chat', async () => {
+  const decision = [llmChat('send_to_chat', 'webhook', { message: '' })]
+  const ruled = (await routeVoiceCommand('tell the stripe webhook chat to deploy it', buildContext(), deps(unsure(), { decision }))).result
+  assert.equal(ruled.outcome, 'send_ready')
+  assert.equal(ruled.message, 'deploy it')
+  const bare = (await routeVoiceCommand('stripe webhook chat please', buildContext(), deps(unsure(), { decision }))).result
+  assert.equal(bare.outcome, 'open_chat')
+  assert.equal(bare.reason, 'no_message')
+})
+
+test('LLM new chats use the same project and agent rules', async () => {
+  const named = (await routeVoiceCommand('um new chat in codexui patched and add a mic', buildContext(), deps(unsure('new_chat'), { decision: [llmNew('codexui-patched', { agent: 'codex', message: 'add a mic' })] }))).result
+  assert.equal(named.outcome, 'new_chat')
+  assert.equal(named.project?.label, 'codexui-patched')
+  assert.equal(named.agent, null, 'codex is only part of the project name')
+  assert.equal(named.message, 'add a mic')
+  const unclear = (await routeVoiceCommand('a new chat to add a mic with claude', buildContext(), deps(unsure('new_chat'), { decision: [llmNew(null, { agent: 'claude', message: 'add a mic' })] }))).result
+  assert.equal(unclear.project, null)
+  assert.equal(unclear.reason, 'project_unclear')
+  assert.equal(unclear.agent, 'claude')
+  assert.equal(unclear.projectOptions.length, PROJECTS.length)
+})
+
+test('an LLM list lands on that panel section', async () => {
+  const { result } = await routeVoiceCommand('is there anything I have not looked at', buildContext(), deps(unsure('list_chats'), { decision: [llmList('unread')] }))
+  assert.equal(result.action, 'list_chats')
+  assert.equal(result.listType, 'unread')
+  assert.equal(result.outcome, 'picker')
+})
+
+test('several LLM steps become a steps result, each routed on its own without the whole-command rules', async () => {
+  const script = { pass1: { action: { send_to_chat: 0.9 }, compound: 0.9 } }
+  const decision = [
+    llmChat('send_to_chat', 'webhook', { message: 'deploy it', chatWords: 'stripe webhook chat' }),
+    llmChat('open_chat', 'bounces', { chatWords: 'email bounces chat' }),
+    llmNew('hr-ai', { message: 'fix the quiz' }),
+  ]
+  const { result, trace } = await routeVoiceCommand('tell the stripe webhook chat to deploy it and open the email bounces chat and new chat in hr-ai to fix the quiz', buildContext(), deps(script, { decision }))
+  assert.equal(result.outcome, 'steps')
+  assert.equal(trace.fallback.reason, 'compound')
+  assert.deepEqual(result.steps.map((step) => step.outcome), ['send_ready', 'open_chat', 'new_chat'])
+  assert.equal(result.steps[0].message, 'deploy it', 'the step message, not a rule cut of the whole command')
+  assert.equal(result.steps[2].project?.label, 'hr-ai')
+  assert.equal(result.steps[2].message, 'fix the quiz')
+  assert.ok(result.steps.every((step) => step.heard === result.heard))
+})
+
+test('a pass 2 close call asks the LLM, which settles it only when Jev also ranked that chat high', async () => {
+  const close = { pass1: { action: { send_to_chat: 0.95 } }, pass2: { chat: { [CHATS.shortcut.threadId]: 0.5, [CHATS.pushNotes.threadId]: 0.45 } } }
+  const agree = await routeVoiceCommand('tell the brainstorm chat to add a mic', buildContext(), deps(close, { decision: [llmChat('send_to_chat', 'shortcut', { message: 'add a mic' })] }))
+  assert.equal(agree.result.outcome, 'send_ready')
+  assert.equal(agree.result.threadId, CHATS.shortcut.threadId)
+  assert.equal(agree.trace.path, 'jev+llm')
+  assert.equal(agree.trace.fallback.reason, 'chat_unclear')
+  const elsewhere = await routeVoiceCommand('tell the brainstorm chat to add a mic', buildContext(), deps(close, { decision: [llmChat('send_to_chat', 'login', { message: 'add a mic' })] }))
+  assert.equal(elsewhere.result.outcome, 'picker', 'the LLM and Jev disagree')
+  assert.equal(elsewhere.result.candidates[0].threadId, CHATS.login.threadId, "the LLM's idea leads the chooser")
+  const failed = await routeVoiceCommand('tell the brainstorm chat to add a mic', buildContext(), deps(close, { decision: null }))
+  assert.equal(failed.result.outcome, 'picker')
+  assert.equal(failed.result.candidates[0].threadId, CHATS.shortcut.threadId)
+})
+
+test('a close call the words leave open goes straight to the chooser without the LLM', async () => {
+  const decisionCalls = []
+  const close = { pass1: { action: { open_chat: 0.95 } }, pass2: { chat: { [CHATS.webhook.threadId]: 0.5, [CHATS.checkout.threadId]: 0.4 } } }
+  const { result } = await routeVoiceCommand('open the stripe one', buildContext(), deps(close, { decisionCalls, decision: [llmChat('open_chat', 'webhook')] }))
+  assert.equal(result.outcome, 'picker')
+  assert.equal(decisionCalls.length, 0)
+})
+
+test('only a send Jev itself was sure of may be confirmed inside the Shortcut', () => {
+  const at = (path, confidence) => allowsShortcutConfirm({ calls: [], path, pass1: { action: 'send_to_chat', actionConfidence: confidence, actionProbabilities: {}, listType: 'recent', compound: 0 } })
+  assert.equal(at('jev', VOICE_THRESHOLDS.shortcutConfirmActionConfidence), true)
+  assert.equal(at('jev', VOICE_THRESHOLDS.shortcutConfirmActionConfidence - 0.01), false)
+  assert.equal(at('llm', 0.99), false)
+  assert.equal(at('jev+llm', 0.99), false)
 })

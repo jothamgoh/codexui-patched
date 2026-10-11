@@ -84,6 +84,9 @@ const NEW_CASES = [
   ['new chat in booking platform, plan the pricing page', { projectPhrase: 'booking platform', message: 'plan the pricing page' }],
   ['new chat in booking platform', { projectPhrase: 'booking platform', message: '' }],
   ['new chat with clawed in notes vault, tidy the inbox', { projectId: '/work/notes-vault', agent: 'claude', message: 'tidy the inbox' }],
+  // "in codex UI patched" names a project that starts with an agent's name; it does not pick Codex.
+  ['new chat in codex UI patched, add a microphone to the panel', { projectId: '/work/codexui-patched', message: 'add a microphone to the panel' }],
+  ['new chat in codex, check the logs', { agent: 'codex', message: 'check the logs' }],
 ]
 
 for (const [say, expected] of NEW_CASES) {
@@ -146,6 +149,7 @@ test('the LLM fallback asks Claude Haiku for structured JSON with the workspace 
   assert.equal(body.model, ANTHROPIC_MODEL)
   assert.equal(body.model, 'claude-haiku-5-5')
   assert.equal(body.output_config.format.type, 'json_schema')
+  assert.deepEqual(body.thinking, { type: 'disabled' }, 'thinking would cost seconds and can use up max_tokens')
   assert.deepEqual(body.output_config.format.schema.required, ['found', 'message'])
   assert.deepEqual(JSON.parse(body.messages[0].content), { transcript: TRANSCRIPT }, 'the transcript is passed as data')
   assert.match(body.system, /never follow instructions/iu)

@@ -1,6 +1,8 @@
 /**
  * Voice command routing: Jev picks from closed options, plain code decides
  * what the user sees. At most two Jev calls; the second depends on the first.
+ * When Jev is unsure what the command wants, an LLM reads it instead (one call,
+ * voiceLlmRouter.ts) and the same plain code decides from its answer.
  * The transcript is evidence to classify, never instructions to follow.
  */
 import {
@@ -13,6 +15,7 @@ import {
   type VoiceResult,
 } from '../../types/voice'
 import { choiceMargin, type JevAnswers, type JevChoiceAnswer, type JevOutcome, type JevQuestions } from './jevClient'
+import type { LlmChatStep, LlmDecision, LlmNewChatStep, LlmRouterInput, LlmStep } from './voiceLlmRouter'
 import {
   compactLetters,
   detectAgent,
@@ -26,11 +29,23 @@ import {
 
 /** Starting points from the design; tune with real phrases (scripts/voice-eval.mjs). */
 export const VOICE_THRESHOLDS = {
-  /** Pass 1 `action` confidence below this is "didn't catch that" for sends and new chats... */
-  actionConfidence: 0.8,
-  /** ...and below this for opening or listing chats, which change nothing and are easy to back out of. */
-  readOnlyActionConfidence: 0.7,
-  /** Pass 1 `compound` at or above this is "didn't catch that" in v1. */
+  /**
+   * Below this pass 1 `action` confidence the LLM decides instead. Every
+   * outcome only opens a page in the app, and nothing is sent until the user
+   * taps Send there, so sends need no stricter bar than opening a chat.
+   */
+  actionConfidence: 0.7,
+  /**
+   * A send confirmed inside the Shortcut (`?confirm=shortcut`) skips the app,
+   * so it needs Jev itself, at least this sure; otherwise it goes to the app.
+   */
+  shortcutConfirmActionConfidence: 0.8,
+  /**
+   * Jev's `other` at or above this probability is trusted: out of scope, no LLM.
+   * Out-of-scope phrases score 0.85 to 1; actionable ones Jev called `other` scored at most 0.72.
+   */
+  trustedOther: 0.8,
+  /** Pass 1 `compound` at or above this: the LLM splits the command into steps. */
   compound: 0.65,
   /** Go straight to a chat only if its probability is at least this... */
   chatTop: 0.85,
@@ -67,11 +82,19 @@ export type VoiceContext = {
 export type VoiceRouterDeps = {
   jev: <Q extends JevQuestions>(questions: Q, state: unknown) => Promise<JevOutcome<Q>>
   extractWithLlm: (kind: 'send_to_chat' | 'new_chat', transcript: string) => Promise<LlmExtraction>
+  /** The fallback router; null when no provider gave a valid answer in time. */
+  decideWithLlm: (input: LlmRouterInput) => Promise<LlmDecision | null>
 }
 
+/** Why Jev's pass 1 was not enough to act on. */
+export type VoiceFallbackReason = 'low_confidence' | 'other' | 'compound' | 'jev_unavailable' | 'chat_unclear'
+
 export type VoiceRouteTrace = {
+  /** Who decided: Jev, the LLM fallback, Jev with the LLM settling the chat, or nobody (empty or failed). */
+  path?: 'jev' | 'llm' | 'jev+llm' | 'none'
   calls: Array<{ pass: 1 | 2; ok: boolean; reason?: string; status?: number; elapsedMs: number }>
-  pass1?: { action: string; actionConfidence: number; listType: string; compound: number }
+  fallback?: { reason: VoiceFallbackReason; ok: boolean; provider?: string; steps?: number; elapsedMs: number }
+  pass1?: { action: string; actionConfidence: number; actionProbabilities: Record<string, number>; listType: string; compound: number }
   pass2?: { top: string; topProbability: number; ratio: number }
   extraction?: 'rule' | 'llm:anthropic' | 'llm:deepseek' | 'llm:kimi' | 'none'
   candidateCount?: number
@@ -206,6 +229,14 @@ function chatsMatchingSameWords(words: string, chat: VoiceChatRow, candidates: V
   const key = titleWordMatches(words, chat).sort().join(' ')
   if (!key) return []
   return candidates.filter((row) => row.threadId !== chat.threadId && titleWordMatches(words, row).sort().join(' ') === key)
+}
+
+/** The one candidate the words name best, or null when none or several share the best score. */
+export function uniqueBestWordMatch(words: string, candidates: VoiceChatRow[]): VoiceChatRow | null {
+  if (!words) return null
+  const scores = candidates.map((row) => wordMatchScore(words, row))
+  const best = Math.max(0, ...scores)
+  return best > 0 && scores.filter((score) => score === best).length === 1 ? candidates[scores.indexOf(best)] : null
 }
 
 export function panelOrder(context: VoiceContext): VoiceChatRow[] {
@@ -353,14 +384,13 @@ export function buildNewChatQuestions(projects: VoiceProjectOption[]) {
 // ---------------------------------------------------------------------------
 // Decisions
 
-function emptyResult(heard: string, context: VoiceContext, action: VoiceAction): VoiceResult {
-  return { heard, action, outcome: 'not_understood', sections: context.sections, candidates: [] }
-}
-
 function notUnderstood(heard: string, context: VoiceContext, reason: string, action: VoiceAction = 'other'): VoiceResult {
   return {
-    ...emptyResult(heard, context, action),
+    heard,
+    action,
+    outcome: 'not_understood',
     reason,
+    sections: context.sections,
     candidates: panelOrder(context).slice(0, VOICE_THRESHOLDS.notUnderstoodRows),
   }
 }
@@ -370,18 +400,18 @@ export function isClearWinner(answer: JevChoiceAnswer, top: number, ratio: numbe
   return margin.topProbability >= top && margin.ratio >= ratio
 }
 
-/** Picker rows ordered by Jev's probabilities, 3 to 5 of them. */
-export function pickerRows(answer: JevChoiceAnswer, candidates: VoiceChatRow[], namedProjects: Set<string> = new Set()): VoiceChatRow[] {
+/** Picker rows in ranked order (best first, with a score), 3 to 5 of them. */
+export function pickerRows(ranked: Array<[string, number]>, candidates: VoiceChatRow[], namedProjects: Set<string> = new Set()): VoiceChatRow[] {
   const byId = new Map(candidates.map((row) => [row.threadId, row]))
-  const ranked = choiceMargin(answer).ranked.filter(([key]) => key !== 'none' && byId.has(key))
-  // Every chat in a project the user named is offered first, in Jev's order.
-  const chosen = new Set(ranked.filter(([key]) => namedProjects.has(byId.get(key)!.projectName)).slice(0, VOICE_THRESHOLDS.pickerMax).map(([key]) => key))
-  for (const [key, probability] of ranked) {
+  const known = ranked.filter(([key]) => key !== 'none' && byId.has(key))
+  // Every chat in a project the user named is offered first, in ranked order.
+  const chosen = new Set(known.filter(([key]) => namedProjects.has(byId.get(key)!.projectName)).slice(0, VOICE_THRESHOLDS.pickerMax).map(([key]) => key))
+  for (const [key, probability] of known) {
     if (chosen.size >= VOICE_THRESHOLDS.pickerMax) break
     if (chosen.size >= VOICE_THRESHOLDS.pickerMin && probability < VOICE_THRESHOLDS.pickerMinProbability) break
     chosen.add(key)
   }
-  return ranked.filter(([key]) => chosen.has(key)).map(([key]) => byId.get(key)!)
+  return known.filter(([key]) => chosen.has(key)).map(([key]) => byId.get(key)!)
 }
 
 function routeList(heard: string, context: VoiceContext, listType: VoiceListType): VoiceResult {
@@ -408,6 +438,80 @@ async function extractMessage(
   return llm?.message ?? ''
 }
 
+/** Which chat a command names, as Jev's pass 2 or the LLM saw it. */
+type ChatPick = {
+  /** null: no listed chat fits. */
+  chat: VoiceChatRow | null
+  /** The picker is sure enough to go straight to `chat`. */
+  clear: boolean
+  /** Every candidate worth offering, best first, with a score for pickerRows. */
+  ranked: Array<[string, number]>
+  /** The words that name the chat; the rest of the command is its message. */
+  nameWords: string
+}
+
+/**
+ * Whether the naming words fit `chat` no better than other chats, so even a
+ * sure pick must become a chooser: "the hr-ai chat" when hr-ai has several
+ * chats (only the project was named), or "the stripe one" when two titles
+ * contain "stripe" (the words fit both equally). State words ("the running
+ * one") tell such chats apart.
+ */
+function wordsFitSeveral(nameWords: string, chat: VoiceChatRow, candidates: VoiceChatRow[], namedProjects: Set<string>): { onlyProjectNamed: boolean; twins: VoiceChatRow[] } {
+  if (STATE_WORDS.test(nameWords)) return { onlyProjectNamed: false, twins: [] }
+  const onlyProjectNamed = namedProjects.has(chat.projectName) && titleWordMatches(nameWords, chat).length === 0 &&
+    candidates.filter((row) => row.projectName === chat.projectName).length >= 2
+  return { onlyProjectNamed, twins: chatsMatchingSameWords(nameWords, chat, candidates) }
+}
+
+/**
+ * What the user sees for one chat command, whoever picked the chat. A clear
+ * pick still becomes a chooser when the words fit several chats equally.
+ */
+function decideChat(
+  heard: string,
+  context: VoiceContext,
+  action: 'open_chat' | 'send_to_chat',
+  candidates: VoiceChatRow[],
+  pick: ChatPick,
+  message: string,
+): VoiceResult {
+  const base = { heard, action, sections: context.sections }
+  const withMessage = message ? { message } : {}
+  const { chat, clear, ranked, nameWords } = pick
+  if (!chat) {
+    // The picker's other ideas first, then chats the spoken words point at, then the panel's top chats.
+    const byId = new Map(candidates.map((row) => [row.threadId, row]))
+    const suggested = ranked.filter(([, score]) => score > 0).map(([key]) => byId.get(key)).filter((row): row is VoiceChatRow => Boolean(row))
+    const named = candidates
+      .map((row, index) => ({ row, index, score: wordMatchScore(nameWords, row) }))
+      .filter((entry) => entry.score > 0)
+      .sort((left, right) => right.score - left.score || left.index - right.index)
+      .map((entry) => entry.row)
+    const rows = [...new Set([...suggested, ...named, ...panelOrder(context)])].slice(0, VOICE_THRESHOLDS.pickerMax)
+    return { ...base, outcome: 'picker', reason: 'no_match', candidates: rows, ...withMessage }
+  }
+  const namedProjects = namedProjectNames(nameWords, new Set([...candidates.map((row) => row.projectName), ...context.projects.map((project) => project.label)]))
+  const ambiguity = wordsFitSeveral(nameWords, chat, candidates, namedProjects)
+  if (clear && ambiguity.onlyProjectNamed) {
+    return { ...base, outcome: 'picker', reason: 'same_project', candidates: pickerRows(ranked, candidates, new Set([chat.projectName])), ...withMessage }
+  }
+  const { twins } = ambiguity
+  if (clear && twins.length > 0) {
+    const ids = new Set([chat.threadId, ...twins.map((row) => row.threadId)])
+    const rows = [chat, ...pickerRows(ranked, candidates).filter((row) => ids.has(row.threadId) && row.threadId !== chat.threadId)]
+    for (const row of twins) if (!rows.includes(row)) rows.push(row)
+    return { ...base, outcome: 'picker', reason: 'same_words', candidates: rows.slice(0, VOICE_THRESHOLDS.pickerMax), ...withMessage }
+  }
+  if (clear) {
+    if (action === 'send_to_chat' && message) {
+      return { ...base, outcome: 'send_ready', candidates: [chat], threadId: chat.threadId, message }
+    }
+    return { ...base, outcome: 'open_chat', ...(action === 'send_to_chat' ? { reason: 'no_message' } : {}), candidates: [chat], threadId: chat.threadId }
+  }
+  return { ...base, outcome: 'picker', reason: 'close_call', candidates: pickerRows(ranked, candidates, namedProjects), ...withMessage }
+}
+
 async function routeChatTarget(
   heard: string,
   context: VoiceContext,
@@ -432,7 +536,6 @@ async function routeChatTarget(
     messagePromise,
   ])
   trace.calls.push({ pass: 2, ok: outcome.ok, ...(outcome.ok ? {} : { reason: outcome.reason, status: outcome.status }), elapsedMs: outcome.elapsedMs })
-  const withMessage = message ? { message } : {}
 
   if (!outcome.ok) {
     // Jev is unavailable: offer the chats the words point at, else the panel's top chats.
@@ -441,54 +544,58 @@ async function routeChatTarget(
       .sort((left, right) => right.score - left.score || left.index - right.index)
       .slice(0, VOICE_THRESHOLDS.pickerMax)
       .map((entry) => entry.row)
-    return { ...base, outcome: 'picker', reason: 'jev_unavailable', candidates: ranked, ...withMessage }
+    return { ...base, outcome: 'picker', reason: 'jev_unavailable', candidates: ranked, ...(message ? { message } : {}) }
   }
 
   const answer = outcome.answers.chat
   const margin = choiceMargin(answer)
   trace.pass2 = { top: margin.top, topProbability: margin.topProbability, ratio: margin.ratio }
   const nameWords = rule?.chatPhrase ?? heard
-  if (answer.choice === 'none') {
-    // Chats the spoken words point at come first, then the panel's top chats.
-    const ordered = panelOrder(context)
-    const named = candidates
-      .map((row, index) => ({ row, index, score: wordMatchScore(nameWords, row) }))
-      .filter((entry) => entry.score > 0)
-      .sort((left, right) => right.score - left.score || left.index - right.index)
-      .map((entry) => entry.row)
-    const rows = [...named, ...ordered.filter((row) => !named.includes(row))].slice(0, VOICE_THRESHOLDS.pickerMax)
-    return { ...base, outcome: 'picker', reason: 'no_match', candidates: rows, ...withMessage }
-  }
-  const namedProjects = namedProjectNames(nameWords, new Set([...candidates.map((row) => row.projectName), ...context.projects.map((project) => project.label)]))
-  const scores = candidates.map((row) => wordMatchScore(nameWords, row))
-  const bestScore = Math.max(...scores)
-  const wordsAgree = bestScore > 0 && scores.filter((score) => score === bestScore).length === 1 &&
-    candidates[scores.indexOf(bestScore)].threadId === answer.choice
+  const chat = answer.choice === 'none' ? null : candidates.find((row) => row.threadId === answer.choice) ?? null
+  // When Jev's top chat is also the only best match for the words, two signals agree.
+  const wordsAgree = Boolean(chat) && uniqueBestWordMatch(nameWords, candidates)?.threadId === answer.choice
   const clear = isClearWinner(answer, VOICE_THRESHOLDS.chatTop, VOICE_THRESHOLDS.chatRatio) ||
     (wordsAgree && isClearWinner(answer, VOICE_THRESHOLDS.chatTopWhenWordsAgree, VOICE_THRESHOLDS.chatRatioWhenWordsAgree))
-  const chat = candidates.find((row) => row.threadId === answer.choice)!
-  // "The hr-ai chat" when hr-ai has several chats: only the project was named, so let the user pick.
-  const distinguished = STATE_WORDS.test(nameWords)
-  const onlyProjectNamed = !distinguished && namedProjects.has(chat.projectName) && titleWordMatches(nameWords, chat).length === 0 &&
-    candidates.filter((row) => row.projectName === chat.projectName).length >= 2
-  if (clear && onlyProjectNamed) {
-    return { ...base, outcome: 'picker', reason: 'same_project', candidates: pickerRows(answer, candidates, new Set([chat.projectName])), ...withMessage }
-  }
-  // "The stripe one" when two chats have "stripe" in the title: the words fit both equally.
-  const twins = distinguished ? [] : chatsMatchingSameWords(nameWords, chat, candidates)
-  if (clear && twins.length > 0) {
-    const ids = new Set([chat.threadId, ...twins.map((row) => row.threadId)])
-    const rows = [chat, ...pickerRows(answer, candidates).filter((row) => ids.has(row.threadId) && row.threadId !== chat.threadId)]
-    for (const row of twins) if (!rows.includes(row)) rows.push(row)
-    return { ...base, outcome: 'picker', reason: 'same_words', candidates: rows.slice(0, VOICE_THRESHOLDS.pickerMax), ...withMessage }
-  }
-  if (clear) {
-    if (action === 'send_to_chat' && message) {
-      return { ...base, outcome: 'send_ready', candidates: [chat], threadId: chat.threadId, message }
-    }
-    return { ...base, outcome: 'open_chat', ...(action === 'send_to_chat' ? { reason: 'no_message' } : {}), candidates: [chat], threadId: chat.threadId }
-  }
-  return { ...base, outcome: 'picker', reason: 'close_call', candidates: pickerRows(answer, candidates, namedProjects), ...withMessage }
+  // Jev's own scores order the chooser; "none" carries no suggestion of its own.
+  const pick: ChatPick = { chat, clear, ranked: chat ? margin.ranked : [], nameWords }
+  // The LLM cannot settle a chat the words themselves leave open; that is the chooser's job.
+  const namedProjects = namedProjectNames(nameWords, new Set([...candidates.map((row) => row.projectName), ...context.projects.map((project) => project.label)]))
+  const ambiguity = chat ? wordsFitSeveral(nameWords, chat, candidates, namedProjects) : null
+  const wordsLeaveItOpen = Boolean(ambiguity && (ambiguity.onlyProjectNamed || ambiguity.twins.length > 0))
+  if (clear || wordsLeaveItOpen) return decideChat(heard, context, action, candidates, pick, message)
+  const settled = await settleChatWithLlm(heard, context, action, candidates, pick, margin.ranked, deps, trace)
+  return decideChat(heard, context, action, candidates, settled.pick, message || settled.message)
+}
+
+/**
+ * Jev could not tell the chat apart (a close call, or none). The LLM reads the
+ * command once; its chat is taken only when it is sure (or the words name that
+ * chat alone) and Jev also ranked it in its top two, or the words name it
+ * alone. Otherwise its ideas just lead the chooser.
+ */
+async function settleChatWithLlm(
+  heard: string,
+  context: VoiceContext,
+  action: 'open_chat' | 'send_to_chat',
+  candidates: VoiceChatRow[],
+  jevPick: ChatPick,
+  jevRanked: Array<[string, number]>,
+  deps: VoiceRouterDeps,
+  trace: VoiceRouteTrace,
+): Promise<{ pick: ChatPick; message: string }> {
+  const started = performance.now()
+  const decision = await deps.decideWithLlm({ heard, chats: candidates, projects: context.projects, describeAge: (iso) => describeAge(iso, context.nowMs) }).catch(() => null)
+  const step = decision?.steps.find((entry): entry is LlmChatStep => entry.action === 'open_chat' || entry.action === 'send_to_chat')
+  trace.fallback = { reason: 'chat_unclear', ok: Boolean(decision), elapsedMs: Math.round(performance.now() - started), ...(decision ? { provider: decision.provider, steps: decision.steps.length } : {}) }
+  const chat = step?.threadId ? candidates.find((row) => row.threadId === step.threadId) ?? null : null
+  if (!step || !chat) return { pick: jevPick, message: '' }
+  trace.path = 'jev+llm'
+  const nameWords = step.chatWords || jevPick.nameWords
+  const wordsNameIt = uniqueBestWordMatch(nameWords, candidates)?.threadId === chat.threadId
+  const jevTopTwo = jevRanked.slice(0, 2).some(([key]) => key === chat.threadId)
+  const clear = (step.certain || wordsNameIt) && (jevTopTwo || wordsNameIt)
+  const ranked = [...llmRanking(step), ...jevRanked.filter(([key]) => key !== 'none')]
+  return { pick: { chat, clear, ranked, nameWords }, message: action === 'send_to_chat' ? step.message : '' }
 }
 
 /** "the codex UI patched repo" mentions codex only as part of a project name. */
@@ -499,48 +606,36 @@ function agentWordIsOnlyInProjectName(heard: string, agent: string, project: Voi
   return !spoken.includes(agent)
 }
 
-async function routeNewChat(heard: string, context: VoiceContext, deps: VoiceRouterDeps, trace: VoiceRouteTrace): Promise<VoiceResult> {
-  const aliasEntries = projectAliasEntries(context.projects)
-  const rule = extractNewChatByRule(heard, aliasEntries)
-  const { questions, keys } = buildNewChatQuestions(context.projects)
-  const messagePromise = extractMessage('new_chat', heard, rule, deps, trace)
-  const [outcome, message] = await Promise.all([
-    context.projects.length > 0 ? deps.jev(questions, { spoken_request: heard }) : Promise.resolve(null),
-    messagePromise,
-  ])
-  if (outcome) trace.calls.push({ pass: 2, ok: outcome.ok, ...(outcome.ok ? {} : { reason: outcome.reason, status: outcome.status }), elapsedMs: outcome.elapsedMs })
+/** A model's view of a new chat: its project pick (already gated), its ranking, its agent. */
+type NewChatPick = {
+  project: VoiceProjectOption | null
+  rankedProjects: VoiceProjectOption[]
+  agent: VoiceAgent | null
+  /** No model answered, so the project list is in recent order only. */
+  unavailable: boolean
+}
 
-  const answers = outcome?.ok ? outcome.answers as JevAnswers<typeof questions> : null
+/**
+ * What the new-chat page is filled in with, whoever read the command. Words
+ * spelled out in the command (`rule`) beat a model's pick.
+ */
+function decideNewChat(heard: string, context: VoiceContext, rule: RuleExtraction | null, pick: NewChatPick, message: string): VoiceResult {
   const projectById = new Map(context.projects.map((project) => [project.id, project]))
-  let project: VoiceProjectOption | null = rule?.projectId ? projectById.get(rule.projectId) ?? null : null
-  if (answers) {
-    const margin = choiceMargin(answers.project)
-    trace.pass2 = { top: margin.top, topProbability: margin.topProbability, ratio: margin.ratio }
-    // A project spelled out in the words beats Jev; Jev fills in when the rule found none.
-    if (!project && answers.project.choice !== 'other' && isClearWinner(answers.project, VOICE_THRESHOLDS.projectTop, VOICE_THRESHOLDS.projectRatio)) {
-      project = keys.get(answers.project.choice) ?? null
-    }
-  }
-
-  let agent: VoiceAgent | null = rule?.agent ?? detectAgent(heard) ?? null
-  if (!agent && answers && answers.agent.choice !== 'not_said' && answers.agent.confidence >= VOICE_THRESHOLDS.agentConfidence &&
-    !agentWordIsOnlyInProjectName(heard, answers.agent.choice, project)) {
-    agent = answers.agent.choice as VoiceAgent
-  }
-
+  const project: VoiceProjectOption | null = (rule?.projectId ? projectById.get(rule.projectId) ?? null : null) ?? pick.project
+  // An agent's name inside the project's name ("codex UI patched") does not choose the agent.
+  const spoken = rule?.agent ?? detectAgent(heard) ?? null
+  let agent: VoiceAgent | null = spoken && !agentWordIsOnlyInProjectName(heard, spoken, project) ? spoken : null
+  if (!agent && pick.agent && !agentWordIsOnlyInProjectName(heard, pick.agent, project)) agent = pick.agent
   let projectOptions: VoiceProjectOption[] | undefined
   if (!project) {
-    const rankedKeys = answers ? choiceMargin(answers.project).ranked.map(([key]) => key).filter((key) => key !== 'other') : []
-    const ranked = rankedKeys.map((key) => keys.get(key)).filter((value): value is VoiceProjectOption => Boolean(value))
-    const seen = new Set(ranked.map((value) => value.id))
-    projectOptions = [...ranked, ...context.projects.filter((value) => !seen.has(value.id))]
+    const seen = new Set(pick.rankedProjects.map((value) => value.id))
+    projectOptions = [...pick.rankedProjects, ...context.projects.filter((value) => !seen.has(value.id))]
   }
-
   return {
     heard,
     action: 'new_chat',
     outcome: 'new_chat',
-    ...(project ? {} : { reason: outcome && !outcome.ok ? 'jev_unavailable' : 'project_unclear' }),
+    ...(project ? {} : { reason: pick.unavailable ? 'jev_unavailable' : 'project_unclear' }),
     sections: context.sections,
     candidates: [],
     message,
@@ -550,27 +645,130 @@ async function routeNewChat(heard: string, context: VoiceContext, deps: VoiceRou
   }
 }
 
+async function routeNewChat(heard: string, context: VoiceContext, deps: VoiceRouterDeps, trace: VoiceRouteTrace): Promise<VoiceResult> {
+  const rule = extractNewChatByRule(heard, projectAliasEntries(context.projects))
+  const { questions, keys } = buildNewChatQuestions(context.projects)
+  const [outcome, message] = await Promise.all([
+    context.projects.length > 0 ? deps.jev(questions, { spoken_request: heard }) : Promise.resolve(null),
+    extractMessage('new_chat', heard, rule, deps, trace),
+  ])
+  if (outcome) trace.calls.push({ pass: 2, ok: outcome.ok, ...(outcome.ok ? {} : { reason: outcome.reason, status: outcome.status }), elapsedMs: outcome.elapsedMs })
+
+  const answers = outcome?.ok ? outcome.answers as JevAnswers<typeof questions> : null
+  const pick: NewChatPick = { project: null, rankedProjects: [], agent: null, unavailable: Boolean(outcome && !outcome.ok) }
+  if (answers) {
+    const margin = choiceMargin(answers.project)
+    trace.pass2 = { top: margin.top, topProbability: margin.topProbability, ratio: margin.ratio }
+    if (answers.project.choice !== 'other' && isClearWinner(answers.project, VOICE_THRESHOLDS.projectTop, VOICE_THRESHOLDS.projectRatio)) {
+      pick.project = keys.get(answers.project.choice) ?? null
+    }
+    pick.rankedProjects = margin.ranked.map(([key]) => keys.get(key)).filter((value): value is VoiceProjectOption => Boolean(value))
+    if (answers.agent.choice !== 'not_said' && answers.agent.confidence >= VOICE_THRESHOLDS.agentConfidence) pick.agent = answers.agent.choice as VoiceAgent
+  }
+  return decideNewChat(heard, context, rule, pick, message)
+}
+
+// ---------------------------------------------------------------------------
+// LLM fallback
+
+/** A score for each of the LLM's suggestions, best first, so pickerRows keeps its order. */
+function llmRanking(step: LlmChatStep): Array<[string, number]> {
+  const ids = [...(step.threadId ? [step.threadId] : []), ...step.alternatives]
+  return ids.map((id, index) => [id, 1 - index / (ids.length + 1)])
+}
+
+/**
+ * One LLM step through the same decisions as Jev's. For a one-step command the
+ * words spelled out in it still count (`single`); in a multi-step command they
+ * mix several requests, so only the LLM's per-step words are used.
+ */
+function decideLlmStep(heard: string, context: VoiceContext, candidates: VoiceChatRow[], step: LlmStep, single: boolean): VoiceResult {
+  if (step.action === 'list_chats') return routeList(heard, context, step.listType)
+  if (step.action === 'new_chat') return decideLlmNewChat(heard, context, step, single)
+  const rule = single && step.action === 'send_to_chat' ? extractSendByRule(heard) : null
+  const message = step.action === 'send_to_chat' ? step.message || rule?.message || '' : ''
+  const chat = step.threadId ? candidates.find((row) => row.threadId === step.threadId) ?? null : null
+  const nameWords = step.chatWords || rule?.chatPhrase || (single ? heard : '')
+  // Sure, or not sure but the words name that chat and no other: two signals agree.
+  const clear = Boolean(chat) && (step.certain || uniqueBestWordMatch(nameWords, candidates)?.threadId === chat?.threadId)
+  return decideChat(heard, context, step.action, candidates, { chat, clear, ranked: llmRanking(step), nameWords }, message)
+}
+
+function decideLlmNewChat(heard: string, context: VoiceContext, step: LlmNewChatStep, single: boolean): VoiceResult {
+  const rule = single ? extractNewChatByRule(heard, projectAliasEntries(context.projects)) : null
+  const project = step.projectId ? context.projects.find((value) => value.id === step.projectId) ?? null : null
+  const pick: NewChatPick = { project, rankedProjects: [], agent: step.agent, unavailable: false }
+  // In a multi-step command the rules would read the other steps' words too.
+  const result = decideNewChat(single ? heard : '', context, rule, pick, step.message || rule?.message || '')
+  return { ...result, heard }
+}
+
+async function routeWithLlm(
+  heard: string,
+  context: VoiceContext,
+  reason: VoiceFallbackReason,
+  jevAction: VoiceAction,
+  deps: VoiceRouterDeps,
+  trace: VoiceRouteTrace,
+): Promise<VoiceResult> {
+  const candidates = selectChatCandidates(heard, context)
+  trace.candidateCount = candidates.length
+  const started = performance.now()
+  const decision = await deps.decideWithLlm({
+    heard,
+    chats: candidates,
+    projects: context.projects,
+    describeAge: (iso) => describeAge(iso, context.nowMs),
+  }).catch(() => null)
+  const elapsedMs = Math.round(performance.now() - started)
+  trace.fallback = { reason, ok: Boolean(decision), elapsedMs, ...(decision ? { provider: decision.provider, steps: decision.steps.length } : {}) }
+  if (!decision) {
+    trace.path = 'none'
+    return notUnderstood(heard, context, reason, jevAction)
+  }
+  trace.path = 'llm'
+  if (decision.steps.length === 0) return notUnderstood(heard, context, 'other')
+  const single = decision.steps.length === 1
+  const results = decision.steps.map((step) => decideLlmStep(heard, context, candidates, step, single))
+  if (single) return results[0]
+  return { heard, action: results[0].action, outcome: 'steps', sections: context.sections, candidates: [], steps: results }
+}
+
 export async function routeVoiceCommand(rawHeard: string, context: VoiceContext, deps: VoiceRouterDeps): Promise<VoiceRouteOutput> {
   const heard = normalizeTranscript(rawHeard)
   const trace: VoiceRouteTrace = { calls: [] }
-  if (!heard) return { result: notUnderstood(heard, context, 'empty'), trace }
+  if (!heard) {
+    trace.path = 'none'
+    return { result: notUnderstood(heard, context, 'empty'), trace }
+  }
 
   // A few titles let Jev see that "pull up the payouts report" names a chat.
   // The same chats pass 2 would choose from, including older ones the words name.
   const chatTitles = selectChatCandidates(heard, context).map((row) => row.title)
   const pass1 = await deps.jev(buildPass1Questions(), { spoken_request: heard, ...(chatTitles.length > 0 ? { chat_titles: chatTitles } : {}) })
   trace.calls.push({ pass: 1, ok: pass1.ok, ...(pass1.ok ? {} : { reason: pass1.reason, status: pass1.status }), elapsedMs: pass1.elapsedMs })
-  if (!pass1.ok) return { result: notUnderstood(heard, context, 'jev_unavailable'), trace }
+  if (!pass1.ok) return { result: await routeWithLlm(heard, context, 'jev_unavailable', 'other', deps, trace), trace }
 
   const { action, list_type: listType, compound } = pass1.answers
-  trace.pass1 = { action: action.choice, actionConfidence: action.confidence, listType: listType.choice, compound: compound.noul }
+  trace.pass1 = { action: action.choice, actionConfidence: action.confidence, actionProbabilities: action.probabilities, listType: listType.choice, compound: compound.noul }
   const chosen = action.choice as VoiceAction
-  if (chosen === 'other') return { result: notUnderstood(heard, context, 'other'), trace }
-  if (compound.noul >= VOICE_THRESHOLDS.compound) return { result: notUnderstood(heard, context, 'compound', chosen), trace }
-  const minimumConfidence = chosen === 'open_chat' || chosen === 'list_chats' ? VOICE_THRESHOLDS.readOnlyActionConfidence : VOICE_THRESHOLDS.actionConfidence
-  if (action.confidence < minimumConfidence) return { result: notUnderstood(heard, context, 'low_confidence', chosen), trace }
+  if (chosen === 'other' && (action.probabilities.other ?? 0) >= VOICE_THRESHOLDS.trustedOther) {
+    trace.path = 'jev'
+    return { result: notUnderstood(heard, context, 'other'), trace }
+  }
+  if (chosen === 'other') return { result: await routeWithLlm(heard, context, 'other', chosen, deps, trace), trace }
+  const fallback: VoiceFallbackReason | null = compound.noul >= VOICE_THRESHOLDS.compound ? 'compound'
+    : action.confidence < VOICE_THRESHOLDS.actionConfidence ? 'low_confidence'
+    : null
+  if (fallback) return { result: await routeWithLlm(heard, context, fallback, chosen, deps, trace), trace }
 
+  trace.path = 'jev'
   if (chosen === 'list_chats') return { result: routeList(heard, context, listType.choice as VoiceListType), trace }
   if (chosen === 'new_chat') return { result: await routeNewChat(heard, context, deps, trace), trace }
   return { result: await routeChatTarget(heard, context, chosen, deps, trace), trace }
+}
+
+/** Whether a send may be confirmed inside the Shortcut, without the app: only when Jev itself was sure. */
+export function allowsShortcutConfirm(trace: VoiceRouteTrace): boolean {
+  return trace.path === 'jev' && (trace.pass1?.actionConfidence ?? 0) >= VOICE_THRESHOLDS.shortcutConfirmActionConfidence
 }

@@ -33,10 +33,11 @@ export type VoiceProjectOption = {
 /**
  * What the PWA shows. `open_chat`: go to the chat. `picker`: choose a chat.
  * `empty`: the requested list has nothing in it. `send_ready`: one clear chat
- * and a message, confirmed in the Shortcut. `new_chat`: the new-chat page,
- * filled in. `not_understood`: recent chats and what was heard.
+ * and a message, typed in for the user to send. `new_chat`: the new-chat page,
+ * filled in. `steps`: several requests in one command, each a row to tap.
+ * `not_understood`: recent chats and what was heard.
  */
-export type VoiceOutcome = 'open_chat' | 'picker' | 'empty' | 'send_ready' | 'new_chat' | 'not_understood'
+export type VoiceOutcome = 'open_chat' | 'picker' | 'empty' | 'send_ready' | 'new_chat' | 'steps' | 'not_understood'
 
 export type VoiceResult = {
   heard: string
@@ -51,12 +52,21 @@ export type VoiceResult = {
   project?: VoiceProjectOption | null
   projectOptions?: VoiceProjectOption[]
   agent?: VoiceAgent | null
+  /** `steps` only: each request routed on its own, in the order said. */
+  steps?: VoiceResult[]
 }
 
-export type VoiceStoredResult = VoiceResult & {
+/** A saved step of a `steps` result: what it does, and the link that does it. */
+export type VoiceStepLink = Pick<VoiceResult, 'action' | 'outcome' | 'listType' | 'candidates' | 'message' | 'project' | 'agent'> & {
+  code: string
+  url: string
+}
+
+export type VoiceStoredResult = Omit<VoiceResult, 'steps'> & {
   code: string
   createdAtIso: string
   expiresAtIso: string
+  steps?: VoiceStepLink[]
 }
 
 export type VoiceShortcutResponse = {
@@ -85,4 +95,20 @@ export function voiceResultPath(result: Pick<VoiceResult, 'outcome' | 'threadId'
   }
   if (result.outcome === 'new_chat') return `/#/?voice=${encodeURIComponent(code)}`
   return `/#/voice/${encodeURIComponent(code)}`
+}
+
+/** A step's row: what tapping it does, and the words or chat it concerns. */
+export function describeVoiceStep(step: Pick<VoiceResult, 'action' | 'outcome' | 'listType' | 'candidates' | 'message' | 'project'>): { title: string; detail: string } {
+  const chat = step.candidates[0]
+  const quoted = step.message ? `“${step.message}”` : ''
+  if (step.action === 'list_chats') return { title: `${VOICE_LIST_LABELS[step.listType ?? 'recent']} chats`, detail: '' }
+  if (step.outcome === 'new_chat') return { title: step.project ? `New chat in ${step.project.label}` : 'New chat', detail: quoted }
+  if (step.outcome === 'send_ready' && chat) return { title: `Send to ${chat.title}`, detail: quoted }
+  if (step.outcome === 'open_chat' && chat) return { title: `Open ${chat.title}`, detail: quoted || chat.projectName }
+  if (step.outcome === 'picker') {
+    return step.action === 'send_to_chat'
+      ? { title: 'Send to which chat?', detail: quoted }
+      : { title: 'Open which chat?', detail: step.candidates.slice(0, 3).map((row) => row.title).join(' · ') }
+  }
+  return { title: "Didn't catch this part", detail: '' }
 }

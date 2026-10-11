@@ -1,5 +1,5 @@
 import { randomBytes } from 'node:crypto'
-import type { VoiceResult, VoiceStoredResult } from '../../types/voice'
+import { voiceResultPath, type VoiceResult, type VoiceStepLink, type VoiceStoredResult } from '../../types/voice'
 
 /** Results live for ten minutes, in memory only. */
 export const VOICE_RESULT_TTL_MS = 10 * 60_000
@@ -70,11 +70,19 @@ export class VoiceResultStore {
     this.confirmations = new ExpiringMap(VOICE_CONFIRM_TTL_MS, now)
   }
 
+  /** Saves a result; each step of a `steps` result is saved as its own result, so its link works like any other. */
   save(result: VoiceResult): VoiceStoredResult {
+    const { steps, ...rest } = result
+    const links = steps?.map((step): VoiceStepLink => {
+      const saved = this.save(step)
+      const { action, outcome, listType, candidates, message, project, agent } = saved
+      return { action, outcome, listType, candidates, message, project, agent, code: saved.code, url: voiceResultPath(saved, saved.code) }
+    })
     const code = this.newCode()
     const createdAtMs = this.now()
     const stored: VoiceStoredResult = {
-      ...result,
+      ...rest,
+      ...(links ? { steps: links } : {}),
       code,
       createdAtIso: new Date(createdAtMs).toISOString(),
       expiresAtIso: new Date(createdAtMs + VOICE_RESULT_TTL_MS).toISOString(),

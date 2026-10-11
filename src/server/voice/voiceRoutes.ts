@@ -15,6 +15,7 @@
 import { createHash, timingSafeEqual } from 'node:crypto'
 import type { IncomingMessage, ServerResponse } from 'node:http'
 import {
+  describeVoiceStep,
   isVoiceCode,
   voiceResultPath,
   VOICE_LIST_LABELS,
@@ -26,8 +27,9 @@ import type { ProjectBoardSnapshot } from '../../types/projectBoards'
 import type { ActivityHistoryItem } from '../../utils/notificationActivity'
 import { askJev } from './jevClient'
 import { buildVoiceContext, type VoiceSourceSnapshot } from './voiceContext'
-import { extractMessageWithLlm } from './voiceMessage'
-import { routeVoiceCommand, type VoiceRouteTrace } from './voiceRouter'
+import { decideWithLlm } from './voiceLlmRouter'
+import { extractMessageWithLlm, type LlmEnv } from './voiceMessage'
+import { allowsShortcutConfirm, routeVoiceCommand, type VoiceRouteTrace } from './voiceRouter'
 import { VoiceResultStore } from './voiceStore'
 
 export const VOICE_ENV = {
@@ -236,6 +238,10 @@ export function buildVoiceNotification(result: VoiceStoredResult): VoicePush {
         url,
         tag,
       }
+    case 'steps': {
+      const steps = result.steps ?? []
+      return { title: `${plural(steps.length, 'step')} · tap to choose`, body: steps.map((step) => describeVoiceStep(step).title).join(' · '), url, tag }
+    }
     default:
       return { title: "Didn't catch that", body: `Heard: “${result.heard}”`, url, tag }
   }
@@ -243,6 +249,19 @@ export function buildVoiceNotification(result: VoiceStoredResult): VoicePush {
 
 function shortcutSay(result: VoiceStoredResult, push: VoicePush): string {
   return result.outcome === 'not_understood' ? push.title : push.title.replace(/ · /gu, ', ')
+}
+
+export function voicePathLabel(trace: VoiceRouteTrace): string {
+  return trace.path === 'llm' ? `llm:${trace.fallback?.provider ?? 'unknown'}` : trace.path ?? 'none'
+}
+
+/** Who decided, what came out and how long it took. Never the transcript, titles or message. */
+export function voiceLogLine(result: VoiceResult, trace: VoiceRouteTrace, totalMs: number): string {
+  const path = voicePathLabel(trace)
+  const jev = trace.calls.map((call) => `${call.ok ? 'ok' : call.reason}:${call.elapsedMs}ms`).join(',') || 'none'
+  const fallback = trace.fallback ? ` fallback=${trace.fallback.reason} llm=${trace.fallback.ok ? 'ok' : 'failed'}:${trace.fallback.elapsedMs}ms` : ''
+  const steps = result.steps ? ` steps=${result.steps.length}` : ''
+  return `[voice] path=${path} outcome=${result.outcome}${result.reason ? ` reason=${result.reason}` : ''}${steps} jev=${jev}${fallback}${trace.extraction ? ` extraction=${trace.extraction}` : ''} total=${totalMs}ms`
 }
 
 export function createVoiceCommandHandler(deps: VoiceRouteDeps) {
@@ -275,24 +294,26 @@ export function createVoiceCommandHandler(deps: VoiceRouteDeps) {
     }
   }
 
-  async function runCommand(text: string): Promise<{ stored: VoiceStoredResult; trace: VoiceRouteTrace }> {
+  async function runCommand(text: string): Promise<{ stored: VoiceStoredResult; trace: VoiceRouteTrace; totalMs: number }> {
     const started = performance.now()
     const values = env()
     const snapshot = await deps.collectSnapshot()
     const context = buildVoiceContext(snapshot)
+    const llmEnv: LlmEnv = {
+      anthropicApiKey: values[VOICE_ENV.anthropicApiKey]?.trim(),
+      anthropicWorkspaceId: values[VOICE_ENV.anthropicWorkspaceId]?.trim(),
+      deepseekApiKey: values[VOICE_ENV.deepseekApiKey]?.trim(),
+      kimiApiKey: values[VOICE_ENV.kimiApiKey]?.trim(),
+    }
     const { result, trace } = await routeVoiceCommand(text, context, {
       jev: (questions, state) => askJev(questions, state, { apiKey: values[VOICE_ENV.typesafeApiKey]?.trim() ?? '', fetchImpl }),
-      extractWithLlm: (kind, transcript) => extractMessageWithLlm(kind, transcript, {
-        anthropicApiKey: values[VOICE_ENV.anthropicApiKey]?.trim(),
-        anthropicWorkspaceId: values[VOICE_ENV.anthropicWorkspaceId]?.trim(),
-        deepseekApiKey: values[VOICE_ENV.deepseekApiKey]?.trim(),
-        kimiApiKey: values[VOICE_ENV.kimiApiKey]?.trim(),
-      }, fetchImpl),
+      extractWithLlm: (kind, transcript) => extractMessageWithLlm(kind, transcript, llmEnv, fetchImpl),
+      decideWithLlm: (input) => decideWithLlm(input, llmEnv, fetchImpl),
     })
     const stored = store.save(result)
-    // No transcript, titles or message in logs.
-    log(`[voice] outcome=${result.outcome}${result.reason ? ` reason=${result.reason}` : ''} jev=${trace.calls.map((call) => `${call.ok ? 'ok' : call.reason}:${call.elapsedMs}ms`).join(',') || 'none'}${trace.extraction ? ` extraction=${trace.extraction}` : ''} total=${Math.round(performance.now() - started)}ms`)
-    return { stored, trace }
+    const totalMs = Math.round(performance.now() - started)
+    log(voiceLogLine(result, trace, totalMs))
+    return { stored, trace, totalMs }
   }
 
   async function handleShortcutCommand(req: IncomingMessage, res: ServerResponse): Promise<void> {
@@ -300,18 +321,18 @@ export function createVoiceCommandHandler(deps: VoiceRouteDeps) {
     // notification and the user confirms in the app. `?confirm=shortcut` keeps the in-Shortcut
     // Send/Cancel flow for Shortcuts built for it.
     const confirmInShortcut = new URL(req.url ?? '/', 'http://localhost').searchParams.get('confirm') === 'shortcut'
-    let text: string
     let stored: VoiceStoredResult
+    let trace: VoiceRouteTrace
     try {
-      text = await readCommandText(req)
-      stored = (await runCommand(text)).stored
+      ({ stored, trace } = await runCommand(await readCommandText(req)))
     } catch (error) {
       const say = error instanceof HttpError ? error.message : 'Voice command failed.'
       await deps.notify({ title: "Voice command didn't work", body: say, url: '/#/', tag: 'voice:error' }).catch(() => undefined)
       throw error
     }
     const push = buildVoiceNotification(stored)
-    if (confirmInShortcut && stored.outcome === 'send_ready' && stored.threadId && stored.message) {
+    // Only a send Jev itself was sure of is confirmed in the Shortcut; any other send waits in the app.
+    if (confirmInShortcut && stored.outcome === 'send_ready' && stored.threadId && stored.message && allowsShortcutConfirm(trace)) {
       const chatTitle = stored.candidates[0]?.title ?? 'this chat'
       const token = store.createConfirmation({ threadId: stored.threadId, message: stored.message, chatTitle, code: stored.code })
       const response: VoiceShortcutResponse = {
@@ -365,8 +386,10 @@ export function createVoiceCommandHandler(deps: VoiceRouteDeps) {
 
   async function handleAppCommand(req: IncomingMessage, res: ServerResponse): Promise<void> {
     const text = await readCommandText(req)
-    const { stored } = await runCommand(text)
-    setJson(res, 200, { data: { code: stored.code, url: voiceResultPath(stored, stored.code), result: stored } })
+    const { stored, trace, totalMs } = await runCommand(text)
+    // Who decided and how long it took, for the live test (scripts/voice-live-test.mjs).
+    const meta = { path: voicePathLabel(trace), totalMs, ...(trace.fallback ? { fallback: trace.fallback.reason } : {}) }
+    setJson(res, 200, { data: { code: stored.code, url: voiceResultPath(stored, stored.code), result: stored, meta } })
   }
 
   return (req: IncomingMessage, res: ServerResponse, next: () => void): void => {

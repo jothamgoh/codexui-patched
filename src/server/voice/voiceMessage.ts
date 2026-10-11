@@ -44,7 +44,7 @@ export function stripFillers(text: string): string {
   return value
 }
 
-function cleanMessage(value: string): string {
+export function cleanMessage(value: string): string {
   return value
     .trim()
     .replace(/^["']+|["']+$/gu, '')
@@ -137,6 +137,14 @@ export function matchLeadingProject(words: string[], projects: ProjectAliasEntry
   return best
 }
 
+/** "in codex UI patched": the words after the preposition spell a project of more than one word. */
+function namesProjectSpanningWords(text: string, projects: ProjectAliasEntry[]): boolean {
+  const preposition = PROJECT_PREPOSITION.exec(text)
+  if (!preposition) return false
+  const known = matchLeadingProject(text.slice(preposition[0].length).split(' '), projects)
+  return Boolean(known && known.used > 1)
+}
+
 export function extractNewChatByRule(transcript: string, projects: ProjectAliasEntry[]): RuleExtraction | null {
   const text = stripFillers(transcript)
   const anchor = NEW_CHAT_ANCHOR.exec(text)
@@ -149,7 +157,9 @@ export function extractNewChatByRule(transcript: string, projects: ProjectAliasE
   let agent = BEFORE_ANCHOR.test(before) ? undefined : lead.agent
   if (anchor[1]) agent = agentFromWord(anchor[1])
 
-  const agentAtStart = new RegExp(`^(?:with|using|on|via|in)\\s+${AGENT_PATTERN}\\b[\\s,]*`, 'iu').exec(rest)
+  // "in codex UI patched" names a project whose name starts with an agent's name.
+  const projectNamedFirst = namesProjectSpanningWords(rest, projects)
+  const agentAtStart = projectNamedFirst ? null : new RegExp(`^(?:with|using|on|via|in)\\s+${AGENT_PATTERN}\\b[\\s,]*`, 'iu').exec(rest)
   if (agentAtStart) {
     agent = agentFromWord(agentAtStart[1])
     rest = rest.slice(agentAtStart[0].length)
@@ -158,7 +168,7 @@ export function extractNewChatByRule(transcript: string, projects: ProjectAliasE
   let projectId: string | undefined
   let projectPhrase: string | undefined
   const preposition = PROJECT_PREPOSITION.exec(rest)
-  if (preposition && !new RegExp(`^(?:in|on)\\s+${AGENT_PATTERN}\\b`, 'iu').test(rest)) {
+  if (preposition && (projectNamedFirst || !new RegExp(`^(?:in|on)\\s+${AGENT_PATTERN}\\b`, 'iu').test(rest))) {
     const afterPreposition = rest.slice(preposition[0].length)
     const words = afterPreposition.split(' ')
     const known = matchLeadingProject(words, projects)
@@ -229,7 +239,7 @@ export const DEEPSEEK_MODEL = 'deepseek-chat'
 export const KIMI_MODEL = 'kimi-k2.6'
 export const LLM_TIMEOUT_MS = 3_500
 
-const EXTRACTION_SCHEMA = {
+const EXTRACTION_SCHEMA: Record<string, unknown> = {
   type: 'object',
   properties: {
     found: { type: 'boolean' },
@@ -237,7 +247,7 @@ const EXTRACTION_SCHEMA = {
   },
   required: ['found', 'message'],
   additionalProperties: false,
-} as const
+}
 
 export function buildExtractionInstructions(kind: 'send_to_chat' | 'new_chat'): string {
   const routing = kind === 'send_to_chat'
@@ -297,7 +307,28 @@ function parseJsonText(text: unknown): unknown {
   try { return JSON.parse(trimmed) } catch { return null }
 }
 
-async function askAnthropic(kind: 'send_to_chat' | 'new_chat', transcript: string, env: LlmEnv, fetchImpl: typeof fetch, timeoutMs: number): Promise<unknown> {
+/** One structured question for whichever LLM provider answers first. */
+export type LlmRequest = {
+  system: string
+  /** JSON data for the model; never instructions. */
+  user: string
+  schema: Record<string, unknown>
+  maxTokens: number
+}
+
+export type LlmChainOptions = {
+  /** Longest wait for any one provider. */
+  timeoutMs: number
+  /** Total wait across every provider tried; later providers get what is left. */
+  deadlineMs?: number
+  /** Names the request in logs, which never include the transcript. */
+  label: string
+}
+
+/** With less than this left before the deadline, no further provider is tried. */
+const MIN_PROVIDER_MS = 500
+
+async function askAnthropic(request: LlmRequest, env: LlmEnv, fetchImpl: typeof fetch, timeoutMs: number): Promise<unknown> {
   const headers: Record<string, string> = {
     'x-api-key': env.anthropicApiKey ?? '',
     'anthropic-version': '2023-06-01',
@@ -305,10 +336,12 @@ async function askAnthropic(kind: 'send_to_chat' | 'new_chat', transcript: strin
   if (env.anthropicWorkspaceId) headers['anthropic-workspace-id'] = env.anthropicWorkspaceId
   const payload = await postJson('https://api.anthropic.com/v1/messages', headers, {
     model: ANTHROPIC_MODEL,
-    max_tokens: 512,
-    system: buildExtractionInstructions(kind),
-    messages: [{ role: 'user', content: JSON.stringify({ transcript }) }],
-    output_config: { format: { type: 'json_schema', schema: EXTRACTION_SCHEMA } },
+    max_tokens: request.maxTokens,
+    // Haiku thinks by default; for a short classification that costs seconds and can use up max_tokens.
+    thinking: { type: 'disabled' },
+    system: request.system,
+    messages: [{ role: 'user', content: request.user }],
+    output_config: { format: { type: 'json_schema', schema: request.schema } },
   }, fetchImpl, timeoutMs) as Record<string, unknown>
   if (payload.stop_reason === 'refusal' || payload.stop_reason === 'max_tokens') return null
   const content = Array.isArray(payload.content) ? payload.content : []
@@ -320,18 +353,17 @@ async function askOpenAiCompatible(
   url: string,
   apiKey: string,
   body: Record<string, unknown>,
-  kind: 'send_to_chat' | 'new_chat',
-  transcript: string,
+  request: LlmRequest,
   fetchImpl: typeof fetch,
   timeoutMs: number,
 ): Promise<unknown> {
   const payload = await postJson(url, { Authorization: `Bearer ${apiKey}` }, {
     ...body,
-    max_tokens: 512,
+    max_tokens: request.maxTokens,
     response_format: { type: 'json_object' },
     messages: [
-      { role: 'system', content: buildExtractionInstructions(kind) },
-      { role: 'user', content: JSON.stringify({ transcript }) },
+      { role: 'system', content: request.system },
+      { role: 'user', content: request.user },
     ],
   }, fetchImpl, timeoutMs) as Record<string, unknown>
   const choice = Array.isArray(payload.choices) ? payload.choices[0] as Record<string, unknown> | undefined : undefined
@@ -340,9 +372,43 @@ async function askOpenAiCompatible(
 }
 
 /**
- * Tries Anthropic, then DeepSeek, then Kimi. A provider without a key is
- * skipped silently. Returns null when no provider produced acceptable words.
+ * Tries Anthropic, then DeepSeek, then Kimi, until one answer passes `accept`.
+ * A provider without a key is skipped silently; one that errors, times out or
+ * gives an unacceptable answer hands over to the next. Returns null when none
+ * produced an acceptable answer.
  */
+export async function askLlmChain<T>(
+  request: LlmRequest,
+  accept: (raw: unknown) => T | null,
+  env: LlmEnv,
+  fetchImpl: typeof fetch,
+  options: LlmChainOptions,
+): Promise<{ value: T; provider: LlmProvider } | null> {
+  const started = performance.now()
+  const providers: Array<[LlmProvider, string | undefined, (timeoutMs: number) => Promise<unknown>]> = [
+    ['anthropic', env.anthropicApiKey, (timeoutMs) => askAnthropic(request, env, fetchImpl, timeoutMs)],
+    ['deepseek', env.deepseekApiKey, (timeoutMs) => askOpenAiCompatible('https://api.deepseek.com/chat/completions', env.deepseekApiKey ?? '',
+      { model: DEEPSEEK_MODEL, temperature: 0 }, request, fetchImpl, timeoutMs)],
+    ['kimi', env.kimiApiKey, (timeoutMs) => askOpenAiCompatible('https://api.moonshot.ai/v1/chat/completions', env.kimiApiKey ?? '',
+      { model: KIMI_MODEL, thinking: { type: 'disabled' } }, request, fetchImpl, timeoutMs)],
+  ]
+  for (const [provider, key, ask] of providers) {
+    if (!key) continue
+    const left = options.deadlineMs === undefined ? Number.POSITIVE_INFINITY : options.deadlineMs - (performance.now() - started)
+    if (left < MIN_PROVIDER_MS) break
+    const timeoutMs = Math.min(options.timeoutMs, left)
+    try {
+      const value = accept(await ask(timeoutMs))
+      if (value !== null) return { value, provider }
+      console.info(`[voice] ${provider} ${options.label} rejected: invalid answer`)
+    } catch (error) {
+      console.info(`[voice] ${provider} ${options.label} failed: ${error instanceof Error && error.name === 'AbortError' ? 'timeout' : 'error'}`)
+    }
+  }
+  return null
+}
+
+/** Pulls the message out with the first LLM provider whose words occur in the transcript. */
 export async function extractMessageWithLlm(
   kind: 'send_to_chat' | 'new_chat',
   transcript: string,
@@ -350,22 +416,12 @@ export async function extractMessageWithLlm(
   fetchImpl: typeof fetch = fetch,
   timeoutMs = LLM_TIMEOUT_MS,
 ): Promise<LlmExtraction> {
-  const providers: Array<[LlmProvider, string | undefined, () => Promise<unknown>]> = [
-    ['anthropic', env.anthropicApiKey, () => askAnthropic(kind, transcript, env, fetchImpl, timeoutMs)],
-    ['deepseek', env.deepseekApiKey, () => askOpenAiCompatible('https://api.deepseek.com/chat/completions', env.deepseekApiKey ?? '',
-      { model: DEEPSEEK_MODEL, temperature: 0 }, kind, transcript, fetchImpl, timeoutMs)],
-    ['kimi', env.kimiApiKey, () => askOpenAiCompatible('https://api.moonshot.ai/v1/chat/completions', env.kimiApiKey ?? '',
-      { model: KIMI_MODEL, thinking: { type: 'disabled' } }, kind, transcript, fetchImpl, timeoutMs)],
-  ]
-  for (const [provider, key, ask] of providers) {
-    if (!key) continue
-    try {
-      const message = acceptLlmMessage(transcript, await ask())
-      if (message !== null) return { message, provider }
-      console.info(`[voice] ${provider} message rejected: not verbatim from the transcript`)
-    } catch (error) {
-      console.info(`[voice] ${provider} message extraction failed: ${error instanceof Error && error.name === 'AbortError' ? 'timeout' : 'error'}`)
-    }
+  const request: LlmRequest = {
+    system: buildExtractionInstructions(kind),
+    user: JSON.stringify({ transcript }),
+    schema: EXTRACTION_SCHEMA,
+    maxTokens: 512,
   }
-  return null
+  const answer = await askLlmChain(request, (raw) => acceptLlmMessage(transcript, raw), env, fetchImpl, { timeoutMs, label: 'message extraction' })
+  return answer ? { message: answer.value, provider: answer.provider } : null
 }

@@ -117,7 +117,8 @@ test('dismissed history hides a chat from recent, like the panel', () => {
 
 // --- HTTP handler ------------------------------------------------------------------
 
-function jevResponder() {
+/** A fake Jev. `doubtful`: pass 1 leans to `other` without being sure, so the LLM decides. */
+function jevResponder({ doubtful = false } = {}) {
   return async (_url, init) => {
     const body = JSON.parse(init.body)
     const answers = {}
@@ -131,14 +132,35 @@ function jevResponder() {
       if (id === 'chat') wanted = CHATS.webhook.threadId
       if (id === 'project') wanted = 'hr-ai'
       if (id === 'agent') wanted = 'not_said'
-      const probabilities = Object.fromEntries(keys.map((key) => [key, key === wanted ? 0.96 : 0.04 / (keys.length - 1)]))
-      answers[id] = { type: 'choice', choice: wanted, confidence: 0.95, probabilities }
+      if (id === 'action' && doubtful) wanted = 'other'
+      const top = id === 'action' && doubtful ? 0.6 : 0.96
+      const probabilities = Object.fromEntries(keys.map((key) => [key, key === wanted ? top : (1 - top) / (keys.length - 1)]))
+      answers[id] = { type: 'choice', choice: wanted, confidence: (top - 1 / keys.length) / (1 - 1 / keys.length), probabilities }
     }
     return new Response(JSON.stringify({ model: JEV_MODEL, answers }), { status: 200 })
   }
 }
 
-async function startHandler(t, { env = { CODEXUI_VOICE_SHORTCUT_TOKEN: TOKEN, CODEXUI_VOICE_TYPESAFE_API_KEY: 'jev-test' }, now = () => NOW, sendMessage, transcribe } = {}) {
+/**
+ * Jev unsure, and Claude Haiku answering with `steps(chatIdByTitle)`: the LLM path end to end.
+ * `chatIdByTitle` maps a chat title to the short id the router gave it.
+ */
+function llmResponder(steps) {
+  const jev = jevResponder({ doubtful: true })
+  return async (url, init) => {
+    if (!url.includes('anthropic')) return jev(url, init)
+    const { chats } = JSON.parse(JSON.parse(init.body).messages[0].content)
+    const idOf = Object.fromEntries(chats.map((row) => [row.title, row.id]))
+    const step = (fields) => ({ action: 'none', list_type: 'none', chat_id: '', chat_words: '', chat_certain: false, alternative_chat_ids: [], project_id: '', agent: 'not_said', message: '', ...fields })
+    const text = JSON.stringify({ steps: steps(idOf).map(step) })
+    return new Response(JSON.stringify({ stop_reason: 'end_turn', content: [{ type: 'text', text }] }), { status: 200 })
+  }
+}
+const LLM_ENV = { CODEXUI_VOICE_SHORTCUT_TOKEN: TOKEN, CODEXUI_VOICE_TYPESAFE_API_KEY: 'jev-test', CODEXUI_VOICE_ANTHROPIC_API_KEY: 'ak' }
+const RAMBLE = 'okay so respond to the stripe webhook chat and basically we should deploy it to staging, you know, do you get what I mean'
+const rambleSend = (idOf) => [{ action: 'send_to_chat', chat_id: idOf['Stripe webhook bug'], chat_words: 'stripe webhook chat', chat_certain: true, message: 'we should deploy it to staging' }]
+
+async function startHandler(t, { env = { CODEXUI_VOICE_SHORTCUT_TOKEN: TOKEN, CODEXUI_VOICE_TYPESAFE_API_KEY: 'jev-test' }, now = () => NOW, sendMessage, transcribe, fetchImpl = jevResponder() } = {}) {
   const pushes = []
   const sent = []
   const transcribed = []
@@ -152,7 +174,7 @@ async function startHandler(t, { env = { CODEXUI_VOICE_SHORTCUT_TOKEN: TOKEN, CO
     notify: async (notification) => { pushes.push(notification); return { sent: 1, failed: 0 } },
     env: () => env,
     store,
-    fetchImpl: jevResponder(),
+    fetchImpl,
     log: (line) => logs.push(line),
   })
   const server = createServer((req, res) => handler(req, res, () => { res.statusCode = 404; res.end('next') }))
@@ -421,4 +443,61 @@ test('the web push notifier sends a custom notification to every subscription', 
   const notifier = push.createWebPushTurnNotifier()
   assert.deepEqual(await notifier.sendCustomNotification({ title: 't', body: 'b', url: '/#/', tag: 'x' }), { sent: 0, failed: 0 })
   assert.deepEqual(await notifier.readHistory(), { items: [], dismissals: [] })
+})
+
+// --- LLM fallback through the routes ---------------------------------------------------
+
+test('when Jev is unsure the LLM decides; the in-app route reports the path and timing, never the words', async (t) => {
+  const { call, logs, pushes } = await startHandler(t, { env: LLM_ENV, fetchImpl: llmResponder(rambleSend) })
+  const response = await call('/codex-api/voice/command', { body: { text: RAMBLE } })
+  const { result, url, code, meta } = response.json.data
+  assert.equal(result.outcome, 'send_ready')
+  assert.equal(result.threadId, CHATS.webhook.threadId)
+  assert.equal(result.message, 'we should deploy it to staging')
+  assert.equal(url, `/#/thread/${encodeURIComponent(CHATS.webhook.threadId)}?voice=${code}`)
+  assert.equal(meta.path, 'llm:anthropic')
+  assert.equal(meta.fallback, 'other')
+  assert.equal(typeof meta.totalMs, 'number')
+  assert.equal(pushes.length, 0)
+  const line = logs.find((entry) => entry.startsWith('[voice] path='))
+  assert.match(line, /path=llm:anthropic outcome=send_ready .*fallback=other llm=ok:\d+ms/u)
+  for (const secret of ['stripe', 'webhook', 'staging', 'Stripe webhook bug']) assert.ok(!line.includes(secret), `the log leaves out "${secret}"`)
+})
+
+test('with ?confirm=shortcut a send the LLM decided is never confirmed in the Shortcut; it waits in the app', async (t) => {
+  const { call, pushes, sent } = await startHandler(t, { env: LLM_ENV, fetchImpl: llmResponder(rambleSend) })
+  const response = await call('/codex-api/voice/shortcut/command?confirm=shortcut', { token: TOKEN, body: { text: RAMBLE } })
+  assert.equal(response.json.kind, 'notified')
+  assert.equal(response.json.confirm, undefined)
+  assert.match(pushes.at(-1).title, /^Ready to send · Stripe webhook bug/u)
+  assert.equal(sent.length, 0)
+})
+
+test('several requests become steps; each step is saved with its own link', async (t) => {
+  const steps = (idOf) => [
+    { action: 'send_to_chat', chat_id: idOf['Stripe webhook bug'], chat_words: 'stripe webhook chat', chat_certain: true, message: 'deploy it' },
+    { action: 'list_chats', list_type: 'running' },
+  ]
+  const { call, pushes } = await startHandler(t, { env: LLM_ENV, fetchImpl: llmResponder(steps) })
+  const say = 'tell the stripe webhook chat to deploy it and show me what is running'
+  const { result, url } = (await call('/codex-api/voice/command', { body: { text: say } })).json.data
+  assert.equal(result.outcome, 'steps')
+  assert.equal(url, `/#/voice/${result.code}`, 'the steps chooser')
+  assert.deepEqual(result.steps.map((step) => [step.action, step.outcome]), [['send_to_chat', 'send_ready'], ['list_chats', 'picker']])
+  assert.equal(result.steps[0].url, `/#/thread/${encodeURIComponent(CHATS.webhook.threadId)}?voice=${result.steps[0].code}`)
+  const saved = await call(`/codex-api/voice/${result.steps[0].code}`, { method: 'GET' })
+  assert.equal(saved.json.data.message, 'deploy it', 'the step link prefills like any send')
+  assert.equal(saved.json.data.heard, say)
+
+  await call('/codex-api/voice/shortcut/command', { token: TOKEN, body: { text: say } })
+  assert.equal(pushes.at(-1).title, '2 steps · tap to choose')
+  assert.equal(pushes.at(-1).body, 'Send to Stripe webhook bug · Running chats')
+})
+
+test('an LLM that fails or is not configured leaves "didn\'t catch that"', async (t) => {
+  const failing = async (url, init) => (url.includes('anthropic') ? new Response('{}', { status: 500 }) : jevResponder({ doubtful: true })(url, init))
+  const { call } = await startHandler(t, { env: LLM_ENV, fetchImpl: failing })
+  const { result, meta } = (await call('/codex-api/voice/command', { body: { text: RAMBLE } })).json.data
+  assert.equal(result.outcome, 'not_understood')
+  assert.equal(meta.path, 'none')
 })

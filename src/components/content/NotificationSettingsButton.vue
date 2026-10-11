@@ -152,6 +152,55 @@
           </section>
 
           <template v-if="activityFilter === 'all'">
+            <section v-if="pinnedRows.length > 0" class="notification-section" aria-label="Pinned chats">
+              <div class="notification-section-header">
+                <Pin class="notification-section-icon" />
+                <span>Pinned</span>
+                <span class="notification-section-count">{{ pinnedRows.length }}</span>
+              </div>
+              <div
+                v-for="row in pinnedRows"
+                :key="`pinned:${row.threadId}`"
+                class="notification-recent-row"
+              >
+                <button
+                  class="notification-row notification-recent-main"
+                  type="button"
+                  @click="openThread(row.threadId)"
+                >
+                  <span class="notification-row-icon" :class="`is-${row.tone}`">
+                    <CircleAlert v-if="row.tone === 'failed'" />
+                    <LoaderCircle v-else-if="row.tone === 'running'" />
+                    <Circle v-else-if="row.tone === 'unread'" />
+                    <Pin v-else />
+                  </span>
+                  <span class="notification-row-copy">
+                    <span class="notification-row-title-line">
+                      <span class="notification-row-title">{{ row.title }}</span>
+                      <span v-if="row.pill" class="notification-unread-pill" :class="{ 'is-attention': row.tone === 'failed' }">{{ row.pill }}</span>
+                    </span>
+                    <span class="notification-row-meta">
+                      <span>{{ row.statusLabel }}</span>
+                      <span aria-hidden="true">·</span>
+                      <span>{{ formatRelative(row.activityAt) }}</span>
+                      <kbd v-if="shortcutNumber(row.threadId)" class="notification-shortcut">
+                        ⌘{{ shortcutNumber(row.threadId) }}
+                      </kbd>
+                    </span>
+                  </span>
+                </button>
+                <button
+                  class="notification-more-button"
+                  type="button"
+                  :aria-label="`Unpin ${row.title}`"
+                  title="Unpin"
+                  @click.stop="setPinned(row.threadId, false)"
+                >
+                  <PinOff />
+                </button>
+              </div>
+            </section>
+
             <section v-if="boardWorkActivity.length > 0" class="notification-section notification-board-work" aria-label="Board work">
               <div class="notification-section-header">
                 <SquareKanban class="notification-section-icon" />
@@ -188,12 +237,12 @@
               </div>
             </section>
 
-            <section v-if="runningThreads.length > 0" class="notification-section" aria-label="Chats running">
+            <section v-if="listedRunningThreads.length > 0" class="notification-section" aria-label="Chats running">
               <div class="notification-section-header">
                 <span>Chats running</span>
-                <span class="notification-section-count">{{ runningThreads.length }}</span>
+                <span class="notification-section-count">{{ listedRunningThreads.length }}</span>
               </div>
-              <div v-for="thread in runningThreads" :key="`running:${thread.id}`">
+              <div v-for="thread in listedRunningThreads" :key="`running:${thread.id}`">
               <button
                 class="notification-row"
                 type="button"
@@ -218,13 +267,13 @@
               </div>
             </section>
 
-            <section v-if="unreadThreads.length > 0" class="notification-section">
+            <section v-if="listedUnreadThreads.length > 0" class="notification-section">
               <div class="notification-section-header">
                 <span>Unread</span>
-                <span class="notification-section-count">{{ unreadThreads.length }}</span>
+                <span class="notification-section-count">{{ listedUnreadThreads.length }}</span>
               </div>
               <button
-                v-for="thread in unreadThreads"
+                v-for="thread in listedUnreadThreads"
                 :key="`unread:${thread.id}`"
                 class="notification-row"
                 type="button"
@@ -319,6 +368,15 @@
                   <MailOpen v-if="item.isUnread" />
                   <Mail v-else />
                   {{ item.isUnread ? 'Mark read' : 'Mark unread' }}
+                </button>
+                <button
+                  v-if="!item.projectBoard"
+                  type="button"
+                  @click.stop="setPinned(item.threadId, !pinnedThreadIdSet.has(item.threadId))"
+                >
+                  <PinOff v-if="pinnedThreadIdSet.has(item.threadId)" />
+                  <Pin v-else />
+                  {{ pinnedThreadIdSet.has(item.threadId) ? 'Unpin' : 'Pin' }}
                 </button>
                 <button
                   v-if="item.projectBoard"
@@ -484,6 +542,8 @@ import {
   Mail,
   MailOpen,
   MoreHorizontal,
+  Pin,
+  PinOff,
   Settings2,
   SquareKanban,
   X,
@@ -497,7 +557,7 @@ import {
   type WebPushHistory,
   type WebPushHistoryItem,
 } from '../../api/webPush'
-import { updateSharedThreadReadState } from '../../api/codexGateway'
+import { getThreadSummary, updateSharedThreadReadState } from '../../api/codexGateway'
 import { subscribeInPageRpcNotifications } from '../../api/codexRpcClient'
 import {
   getTelegramNotificationConfig,
@@ -510,6 +570,7 @@ import {
 } from '../../composables/useWebPushNotifications'
 import { useRelativeTimeClock } from '../../composables/useRelativeTimeClock'
 import type { UiServerRequest, UiThread } from '../../types/codex'
+import type { SetThreadPinnedIntent } from '../../utils/pinnedThreads'
 import { compactNotificationText } from '../../utils/notificationText'
 import { formatCompactRelativeTime } from '../../utils/relativeTime'
 import { openProjectBoardDeepLink, projectBoardNotificationDeepLink, type ProjectBoardNotification } from '../../utils/projectBoardNotifications'
@@ -544,6 +605,15 @@ type ManualThreadUnreadOverride = {
 
 type ActivityFilter = 'all' | 'unread'
 
+type PinnedRow = {
+  threadId: string
+  title: string
+  activityAt: string
+  tone: 'failed' | 'running' | 'unread' | 'pinned'
+  statusLabel: string
+  pill: string
+}
+
 const DEFAULT_RECENT_LIMIT = 6
 const MAX_RECENT_ITEMS = 30
 const relativeTimeNow = useRelativeTimeClock()
@@ -558,6 +628,7 @@ const props = defineProps<{
   helpersLoading?: boolean
   helpersError?: string
   pendingRequests?: UiServerRequest[]
+  pinnedThreadIds?: string[]
   boardAttention: Array<{
     questionId: string
     boardId: string
@@ -571,6 +642,7 @@ const props = defineProps<{
 const emit = defineEmits<{
   (event: 'selectThread', threadId: string): void
   (event: 'refreshHelpers'): void
+  (event: 'setThreadPinned', intent: SetThreadPinnedIntent): void
   (event: 'selectBoardQuestion', payload: { boardId: string; featureId: string; questionId: string }): void
 }>()
 
@@ -584,6 +656,8 @@ const swipingRecentItemId = ref('')
 const swipeOffsetX = ref(0)
 const expandedActionItemId = ref('')
 const manualUnreadByThreadId = ref<Record<string, ManualThreadUnreadOverride>>({})
+/** Pinned chats outside the loaded sidebar pages, fetched when the popover opens. */
+const fetchedPinnedThreadById = ref<Record<string, UiThread>>({})
 const historyBusy = ref(false)
 const historyError = ref('')
 const markAllReadBusy = ref(false)
@@ -666,6 +740,13 @@ const runningActivity = computed<RunningActivityItem[]>(() => [
 const unreadThreads = computed(() =>
   activityThreads.value.filter((thread) => isThreadUnread(thread) && !isThreadRunning(thread) && !hasWorkingHelpers(thread.id) && !waitingThreadIds.value.has(thread.id)),
 )
+const pinnedThreadIdSet = computed(() => new Set(props.pinnedThreadIds ?? []))
+const pinnedThreads = computed(() => (props.pinnedThreadIds ?? []).flatMap((threadId) => {
+  const thread = props.threads.find((candidate) => candidate.id === threadId) ?? fetchedPinnedThreadById.value[threadId]
+  return thread ? [thread] : []
+}))
+const listedRunningThreads = computed(() => runningThreads.value.filter((thread) => !pinnedThreadIdSet.value.has(thread.id)))
+const listedUnreadThreads = computed(() => unreadThreads.value.filter((thread) => !pinnedThreadIdSet.value.has(thread.id)))
 const visibleHistory = computed(() => history.value.filter((item) =>
   !threadHelpers.value.childIds.has(item.threadId) &&
   !(props.boardThreadIds ?? []).includes(item.threadId) &&
@@ -716,7 +797,7 @@ const allRecentHistory = computed<RecentActivityItem[]>(() => {
       (Number.isFinite(leftTimestamp) ? leftTimestamp : 0)
   })
 
-  const seen = new Set<string>()
+  const seen = new Set<string>(pinnedThreadIdSet.value)
   return candidates.filter((item) => {
     if (seen.has(item.threadId)) return false
     seen.add(item.threadId)
@@ -769,19 +850,36 @@ const unreadActivity = computed<RecentActivityItem[]>(() => {
     return true
   })
 })
+const pinnedRows = computed<PinnedRow[]>(() => {
+  const unreadIds = new Set(unreadActivity.value.map((item) => item.threadId))
+  return pinnedThreads.value.map((thread) => {
+    const latest = visibleHistory.value.reduce<WebPushHistoryItem | undefined>((best, item) =>
+      item.threadId === thread.id && (!best || Date.parse(item.completedAt) > Date.parse(best.completedAt)) ? item : best, undefined)
+    const isUnread = unreadIds.has(thread.id) || isThreadUnread(thread)
+    const activityAt = thread.updatedAtIso || thread.createdAtIso
+    const row = { threadId: thread.id, title: threadTitle(thread), activityAt, pill: isUnread ? 'Unread' : '' }
+    if (waitingThreadIds.value.has(thread.id)) return { ...row, tone: 'failed', statusLabel: 'Waiting for you', pill: 'Needs you' }
+    if (isThreadRunning(thread) || hasWorkingHelpers(thread.id)) return { ...row, tone: 'running', statusLabel: 'In progress', pill: '' }
+    if (latest && ['failed', 'question', 'native_request'].includes(latest.status)) {
+      return { ...row, tone: 'failed', activityAt: latest.completedAt, statusLabel: activityStatusLabel({ status: latest.status, projectBoard: latest.projectBoard }) }
+    }
+    return { ...row, tone: isUnread ? 'unread' : 'pinned', statusLabel: isUnread ? 'Completed — not opened' : 'Pinned' }
+  })
+})
 const recentHistory = computed(() => allRecentHistory.value.slice(0, recentLimit.value))
 const visibleRecentHistory = computed(() =>
   activityFilter.value === 'unread' ? unreadActivity.value : recentHistory.value,
 )
-const shortcutThreadIds = computed(() => [
-  ...(activityFilter.value === 'unread'
+const shortcutThreadIds = computed(() => [...new Set(
+  activityFilter.value === 'unread'
     ? unreadActivity.value.map((item) => item.threadId)
     : [
+      ...pinnedRows.value.map((row) => row.threadId),
       ...runningActivity.value.map((item) => item.id),
       ...unreadThreads.value.map((thread) => thread.id),
       ...recentHistory.value.map((item) => item.threadId),
-    ]),
-].slice(0, 9))
+    ],
+)].slice(0, 9))
 const hiddenRecentCount = computed(() =>
   Math.max(0, allRecentHistory.value.length - DEFAULT_RECENT_LIMIT),
 )
@@ -792,6 +890,7 @@ const unreadAttentionCount = computed(() => unreadActivity.value.length)
 const totalAttentionCount = computed(() => unreadAttentionCount.value + needsYouCount.value)
 const hasUnreadActivity = computed(() => unreadActivity.value.length > 0)
 const hasActivity = computed(() =>
+  pinnedRows.value.length > 0 ||
   boardWorkActivity.value.length > 0 ||
   runningActivity.value.length > 0 ||
   unreadThreads.value.length > 0 ||
@@ -872,8 +971,13 @@ watch(isOpen, (open) => {
   resetRecentSwipe()
   expandedActionItemId.value = ''
   void refreshHistory()
+  void fetchMissingPinnedThreads()
   void initializeWebPushNotifications(true)
   void refreshTelegramConfig()
+})
+
+watch(() => props.pinnedThreadIds, () => {
+  if (isOpen.value) void fetchMissingPinnedThreads()
 })
 
 watch(threadActivitySignature, () => {
@@ -1014,6 +1118,21 @@ function openThread(threadId: string): void {
   isOpen.value = false
 }
 
+function setPinned(threadId: string, pinned: boolean): void {
+  expandedActionItemId.value = ''
+  emit('setThreadPinned', { threadId, pinned, beforeThreadId: pinned ? props.pinnedThreadIds?.[0] : undefined })
+}
+
+async function fetchMissingPinnedThreads(): Promise<void> {
+  const missing = (props.pinnedThreadIds ?? []).filter((threadId) =>
+    !props.threads.some((thread) => thread.id === threadId) && !fetchedPinnedThreadById.value[threadId])
+  if (missing.length === 0) return
+  const summaries = await Promise.all(missing.map((threadId) => getThreadSummary(threadId).catch(() => null)))
+  const next = { ...fetchedPinnedThreadById.value }
+  for (const summary of summaries) if (summary) next[summary.id] = summary
+  fetchedPinnedThreadById.value = next
+}
+
 function openBoardQuestion(item: { boardId: string; featureId: string; questionId: string }): void {
   void markWebPushHistoryRead({ ids: [`project-board-question:${item.questionId}`] }).then(applyHistoryResult).catch(() => {})
   isOpen.value = false
@@ -1054,7 +1173,7 @@ function openRecentItem(item: RecentActivityItem): void {
   openThread(item.threadId)
 }
 
-function activityStatusLabel(item: RecentActivityItem): string {
+function activityStatusLabel(item: Pick<RecentActivityItem, 'status' | 'projectBoard'>): string {
   if (item.status === 'failed') return 'Needs attention'
   if (item.status === 'question') return 'Question'
   if (item.status === 'answered') return 'Answered'
@@ -1912,6 +2031,10 @@ function onModeChange(event: Event): void {
 
   .notification-row {
     @apply min-h-12 gap-2.5 px-3 py-2.5;
+  }
+
+  .notification-recent-main {
+    @apply pr-12;
   }
 
   .notification-section {

@@ -210,7 +210,9 @@
               :helpers-loading="helperActivity.loading.value"
               :helpers-error="helperActivity.error.value"
               :pending-requests="pendingServerRequests"
+              :pinned-thread-ids="pinnedThreadIds"
               @refresh-helpers="refreshHelperActivity"
+              @set-thread-pinned="updatePinnedThread"
               @select-thread="onSelectThread"
               @select-board-question="openProjectBoardQuestion"
             />

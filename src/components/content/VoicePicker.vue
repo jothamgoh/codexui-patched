@@ -19,7 +19,41 @@
           <p class="voice-picker-hint">Tapping a chat opens it with the message typed in. Nothing is sent until you tap Send.</p>
         </div>
 
-        <section class="voice-picker-section" :aria-label="listHeading">
+        <section v-if="steps.length > 0" class="voice-picker-section" aria-label="Steps">
+          <div class="voice-picker-section-header">
+            <span>Steps</span>
+            <span class="voice-picker-section-count">{{ steps.length }}</span>
+          </div>
+          <NotificationRow
+            v-for="(step, index) in steps"
+            :key="step.code"
+            tone="pinned"
+            :title="step.title"
+            v-bind="stepPill(step, index)"
+            :preview="step.detail"
+            wrap-meta
+            :class="{ 'is-done': step.done }"
+            :aria-label="`Step ${index + 1}: ${step.title}`"
+            @click="openStep(step)"
+          >
+            <template #icon>
+              <Send v-if="step.kind === 'send'" />
+              <SquarePen v-else-if="step.kind === 'new'" />
+              <ListFilter v-else-if="step.kind === 'list'" />
+              <CircleHelp v-else-if="step.kind === 'unknown'" />
+              <MessageSquare v-else />
+            </template>
+            <template #meta>
+              <span>Step {{ index + 1 }}</span>
+              <template v-for="part in step.meta" :key="part">
+                <span aria-hidden="true">·</span>
+                <span>{{ part }}</span>
+              </template>
+            </template>
+          </NotificationRow>
+        </section>
+
+        <section v-else class="voice-picker-section" :aria-label="listHeading">
           <div class="voice-picker-section-header">
             <span>{{ listHeading }}</span>
             <span class="voice-picker-section-count">{{ rows.length }}</span>
@@ -48,6 +82,7 @@
           <p v-if="rows.length === 0" class="voice-picker-empty">No chats to show.</p>
         </section>
 
+        <p v-if="steps.length > 0" class="voice-picker-footnote">Each step opens its page. Come back here for the next one.</p>
         <button v-if="canShowRecent" class="voice-picker-link" type="button" @click="showRecent = true">Not these? Recent chats</button>
       </template>
     </div>
@@ -56,9 +91,10 @@
 
 <script setup lang="ts">
 import { computed, ref, watch } from 'vue'
+import { CircleHelp, ListFilter, MessageSquare, Send, SquarePen } from '@lucide/vue'
 import { getVoiceResult, VoiceResultExpiredError } from '../../api/voice'
 import { useRelativeTimeClock } from '../../composables/useRelativeTimeClock'
-import { VOICE_LIST_TYPES, type VoiceChatRow, type VoiceListType, type VoiceStoredResult } from '../../types/voice'
+import { describeVoiceStep, VOICE_LIST_TYPES, type VoiceChatRow, type VoiceListType, type VoiceStepLink, type VoiceStoredResult } from '../../types/voice'
 import { formatCompactRelativeTime } from '../../utils/relativeTime'
 import { voiceActivityFocus, type ActivityFocus } from '../../utils/voiceLanding'
 import NotificationRow from './NotificationRow.vue'
@@ -66,8 +102,9 @@ import VoiceNote from './VoiceNote.vue'
 
 /**
  * The voice choosers: which chat to open on a close call, which chat gets a
- * spoken message, or what to open when nothing matched. Lists and "didn't
- * catch that" go to the notification panel instead; this page uses its rows.
+ * spoken message, what to open when nothing matched, or the steps of a command
+ * that asked for several things. Lists and "didn't catch that" go to the
+ * notification panel instead; this page uses its rows.
  */
 
 const RECENT_ROWS = 10
@@ -138,15 +175,64 @@ const rows = computed<VoiceChatRow[]>(() => {
   return value.candidates
 })
 
+type StepRow = { code: string; url: string; title: string; detail: string; meta: string[]; kind: 'open' | 'send' | 'new' | 'list' | 'unknown'; done: boolean }
+
+/** Steps already tapped, per result, for this browser session: they show as done when the user comes back. */
+const doneSteps = ref<Set<string>>(new Set())
+const doneKey = (code: string) => `codexui.voice-steps.${code}`
+watch(() => props.code, (code) => {
+  try { doneSteps.value = new Set(JSON.parse(sessionStorage.getItem(doneKey(code)) ?? '[]') as string[]) } catch { doneSteps.value = new Set() }
+}, { immediate: true })
+
+function stepKind(step: VoiceStepLink): StepRow['kind'] {
+  if (step.action === 'list_chats') return 'list'
+  if (step.outcome === 'new_chat') return 'new'
+  if (step.outcome === 'not_understood') return 'unknown'
+  return step.action === 'send_to_chat' ? 'send' : 'open'
+}
+
+function stepMeta(step: VoiceStepLink): string[] {
+  const chat = step.candidates[0]
+  if (step.action === 'list_chats') return [step.outcome === 'empty' ? 'None right now' : `${step.candidates.length} ${step.candidates.length === 1 ? 'chat' : 'chats'}`]
+  if (step.outcome === 'new_chat') return [step.agent === 'claude' ? 'Claude' : step.agent === 'codex' ? 'Codex' : '', step.project ? '' : 'Pick a project'].filter(Boolean)
+  if (step.outcome === 'picker') return [`${step.candidates.length} possible chats`]
+  if (chat && (step.outcome === 'open_chat' || step.outcome === 'send_ready')) return [chat.projectName, chat.agent === 'claude' ? 'Claude' : 'Codex']
+  return []
+}
+
+const steps = computed<StepRow[]>(() => (result.value?.outcome === 'steps' ? result.value.steps ?? [] : []).map((step) => ({
+  code: step.code,
+  url: step.url,
+  ...describeVoiceStep(step),
+  meta: stepMeta(step),
+  kind: stepKind(step),
+  done: doneSteps.value.has(step.code),
+})))
+
+function stepPill(step: StepRow, index: number): { pill: string; pillTone: 'unread' | 'attention' | 'accent' } {
+  if (step.done) return { pill: 'Done', pillTone: 'unread' }
+  const next = steps.value.findIndex((entry) => !entry.done)
+  return index === next ? { pill: 'Next', pillTone: 'accent' } : { pill: '', pillTone: 'unread' }
+}
+
+function openStep(step: StepRow): void {
+  const done = new Set(doneSteps.value).add(step.code)
+  doneSteps.value = done
+  try { sessionStorage.setItem(doneKey(props.code), JSON.stringify([...done])) } catch { /* private mode: done marks just do not persist */ }
+  emit('navigate', step.url)
+}
+
 const title = computed(() => {
   const value = result.value
   if (!value) return 'Voice'
+  if (value.outcome === 'steps') return `You asked for ${steps.value.length} things`
   if (value.message) return 'Send to which chat?'
   return 'Which chat?'
 })
 
 const subtitle = computed(() => {
   if (!result.value) return 'Voice command'
+  if (result.value.outcome === 'steps') return 'Tap each step to do it. Nothing is sent until you tap Send.'
   if (isNoMatch.value) return 'No chat matched what you said'
   return result.value.message ? 'Pick the chat for this message' : 'A few chats matched what you said'
 })
@@ -156,7 +242,7 @@ const listHeading = computed(() => {
   return 'Possible chats'
 })
 
-const canShowRecent = computed(() => Boolean(result.value) && !showRecent.value && !isNoMatch.value)
+const canShowRecent = computed(() => Boolean(result.value) && result.value?.outcome !== 'steps' && !showRecent.value && !isNoMatch.value)
 
 function rowPill(row: VoiceChatRow, index: number): { pill: string; pillTone: 'unread' | 'attention' | 'accent' } {
   if (index === 0 && isCloseCall.value) return { pill: 'Best match', pillTone: 'accent' }
@@ -243,6 +329,15 @@ function select(threadId: string): void {
   @apply inline-flex min-w-4 items-center justify-center rounded-full px-1 text-[10px];
   background: var(--surface-muted);
   color: var(--text-secondary);
+}
+
+.voice-picker-section :deep(.notification-row.is-done) {
+  opacity: 0.6;
+}
+
+.voice-picker-footnote {
+  @apply px-4 pb-1 pt-1 text-xs;
+  color: var(--text-muted);
 }
 
 .voice-picker-status,

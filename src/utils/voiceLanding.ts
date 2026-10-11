@@ -46,6 +46,7 @@ export function queryWithoutActivityLink(query: LocationQuery): LocationQueryRaw
 
 /** The panel section a voice result belongs on, or null when it needs its own chooser. */
 export function voiceActivityFocus(result: Pick<VoiceStoredResult, 'action' | 'outcome' | 'listType'>): ActivityFocus | null {
+  if (result.outcome === 'steps') return null
   if (result.action === 'list_chats') return result.listType ?? 'all'
   if (result.outcome === 'not_understood') return 'all'
   return null

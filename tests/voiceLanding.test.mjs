@@ -11,7 +11,8 @@ async function loadModule(path) {
   return import(`data:text/javascript;base64,${Buffer.from(outputFiles[0].contents).toString('base64')}`)
 }
 
-const { activityLinkFromQuery, queryWithoutActivityLink, voiceActivityFocus, voiceActivityNote, voiceActivityQuery } = await loadModule('../src/utils/voiceLanding.ts')
+const { activityLinkFromQuery, queryWithoutActivityLink, voiceActivityFocus, voiceActivityNote, voiceActivityQuery, planPanelVoiceLanding } = await loadModule('../src/utils/voiceLanding.ts')
+const { describeMicError, voiceMicStatus, formatElapsed, NOTHING_HEARD } = await loadModule('../src/utils/voiceMic.ts')
 
 const code = 'c'.repeat(24)
 
@@ -51,4 +52,40 @@ test('the panel note repeats what was heard, and says when the list was empty', 
   assert.equal(voiceActivityNote({ heard: 'what needs me', outcome: 'empty', listType: 'needs_you' }).note, 'Nothing needs you ✓')
   assert.equal(voiceActivityNote({ heard: 'running?', outcome: 'empty', listType: 'running' }).note, 'Nothing running ✓')
   assert.deepEqual(voiceActivityNote({ heard: 'uh the thing', outcome: 'not_understood' }), { lead: "Didn't catch that", heard: 'uh the thing', note: '' })
+})
+
+test('a command said into the panel: lists and "didn\'t catch that" stay in the panel, the rest open their page', () => {
+  const url = '/#/voice/x'
+  const list = planPanelVoiceLanding({ action: 'list_chats', outcome: 'picker', listType: 'running', heard: "what's running" }, url)
+  assert.deepEqual(list, { kind: 'panel', landing: { focus: 'running', voice: { lead: '', heard: "what's running", note: '' }, inPanel: true } })
+  const empty = planPanelVoiceLanding({ action: 'list_chats', outcome: 'empty', listType: 'unread', heard: 'unread' }, url)
+  assert.equal(empty.landing.voice.note, 'Nothing unread ✓')
+  const missed = planPanelVoiceLanding({ action: 'other', outcome: 'not_understood', heard: 'mm' }, url)
+  assert.equal(missed.landing.focus, 'all')
+  assert.equal(missed.landing.voice.lead, "Didn't catch that")
+  assert.equal(missed.landing.voice.note, 'Tap the mic to say it again.')
+  for (const result of [
+    { action: 'list_chats', outcome: 'open_chat', listType: 'needs_you', heard: 'what needs me' },
+    { action: 'open_chat', outcome: 'open_chat', heard: 'open it' },
+    { action: 'send_to_chat', outcome: 'send_ready', heard: 'tell it' },
+    { action: 'send_to_chat', outcome: 'picker', heard: 'tell the stripe one' },
+    { action: 'new_chat', outcome: 'new_chat', heard: 'new chat' },
+    { action: 'list_chats', outcome: 'steps', heard: 'show unread and running' },
+  ]) assert.deepEqual(planPanelVoiceLanding(result, url), { kind: 'page', url }, `${result.action} ${result.outcome}`)
+})
+
+test('steps never land on the panel, even when the first step is a list', () => {
+  assert.equal(voiceActivityFocus({ action: 'list_chats', outcome: 'steps', listType: 'unread' }), null)
+})
+
+test('the mic says what it is doing and what to do after a failure', () => {
+  assert.deepEqual(voiceMicStatus({ isStarting: false, state: 'idle', error: '', canRetry: false }), { phase: 'idle', text: '', canRetry: false })
+  assert.equal(voiceMicStatus({ isStarting: true, state: 'idle', error: '', canRetry: false }).phase, 'starting')
+  assert.equal(voiceMicStatus({ isStarting: false, state: 'recording', error: '', canRetry: false, elapsedMs: 7_400 }).text, 'Listening… 0:07 · tap to stop')
+  assert.equal(voiceMicStatus({ isStarting: false, state: 'transcribing', error: '', canRetry: false }).text, 'Working…')
+  assert.deepEqual(voiceMicStatus({ isStarting: false, state: 'idle', error: NOTHING_HEARD, canRetry: true }), { phase: 'error', text: NOTHING_HEARD, canRetry: true })
+  assert.equal(formatElapsed(65_000), '1:05')
+  assert.match(describeMicError(Object.assign(new Error('denied'), { name: 'NotAllowedError' })), /Microphone access is blocked/u)
+  assert.match(describeMicError({ name: 'NotFoundError' }), /No microphone/u)
+  assert.equal(describeMicError(new Error('Transcription failed.')), 'Voice command failed: Transcription failed. Tap the mic to try again.')
 })

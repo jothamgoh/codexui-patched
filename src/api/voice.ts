@@ -1,4 +1,4 @@
-import type { VoiceResult, VoiceStoredResult } from '../types/voice'
+import type { VoiceStoredResult } from '../types/voice'
 
 export class VoiceResultExpiredError extends Error {}
 
@@ -18,14 +18,15 @@ export async function getVoiceResult(code: string): Promise<VoiceStoredResult> {
   return payload.data as VoiceStoredResult
 }
 
-/** The in-app mic: same router as the Shortcut, but the app navigates itself and nothing is pushed. */
-export async function runVoiceCommand(text: string): Promise<{ code: string; url: string; result: VoiceResult }> {
-  const response = await fetch('/codex-api/voice/command', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ text }),
-  })
+export type VoiceCommandResponse = { code: string; url: string; result: VoiceStoredResult }
+
+/**
+ * The in-app mic: the recording goes straight to the same router as the
+ * Shortcut, which transcribes it. Nothing is pushed; the app navigates itself.
+ */
+export async function runVoiceCommandAudio(audio: { body: Uint8Array<ArrayBuffer>; contentType: string }, signal?: AbortSignal): Promise<VoiceCommandResponse> {
+  const response = await fetch('/codex-api/voice/command', { method: 'POST', headers: { 'Content-Type': audio.contentType }, body: audio.body, signal })
   const payload = await readJson(response)
   if (!response.ok) throw new Error(typeof payload.error === 'string' ? payload.error : `Voice command failed (${response.status}).`)
-  return payload.data as { code: string; url: string; result: VoiceResult }
+  return payload.data as VoiceCommandResponse
 }

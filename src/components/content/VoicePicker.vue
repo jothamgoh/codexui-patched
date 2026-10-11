@@ -13,7 +13,7 @@
       </div>
 
       <template v-else-if="result">
-        <VoiceNote class="voice-picker-note" :heard="result.heard" @navigate="emit('navigate', $event)" />
+        <VoiceNote class="voice-picker-note" :heard="result.heard" @result="emit('navigate', $event.url)" />
         <div v-if="result.message" class="voice-picker-message">
           <p><span>Message:</span> “{{ result.message }}”</p>
           <p class="voice-picker-hint">Tapping a chat opens it with the message typed in. Nothing is sent until you tap Send.</p>

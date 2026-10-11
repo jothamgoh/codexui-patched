@@ -26,13 +26,17 @@
       align="end"
       :side-offset="8"
       class="notification-popover"
-      :class="{ 'is-landing': landing }"
+      :class="{ 'is-landing': landing && !landing.inPanel }"
       @open-auto-focus.prevent
     >
       <header class="notification-header">
         <div>
           <p class="notification-title">Notifications</p>
-          <p class="notification-subtitle">{{ activitySummary }}</p>
+          <p class="notification-subtitle">
+            <template v-for="(part, index) in activitySummary.split(' · ')" :key="index">
+              <span v-if="index > 0" aria-hidden="true"> · </span><span class="notification-subtitle-part">{{ part }}</span>
+            </template>
+          </p>
         </div>
         <button
           v-if="activeView === 'activity' && unreadAttentionCount > 0"
@@ -48,10 +52,31 @@
           <span class="notification-mark-all-label">{{ markAllReadBusy ? 'Marking…' : 'Mark all as read' }}</span>
           <span class="notification-mark-all-short" aria-hidden="true">{{ markAllReadBusy ? 'Marking…' : 'Read all' }}</span>
         </button>
+        <VoiceCommandMic
+          ref="voiceMicRef"
+          v-model:status="voiceMicStatus"
+          class="notification-voice-mic"
+          size="compact"
+          @result="onPanelVoiceResult"
+        />
         <button class="notification-close" type="button" aria-label="Close notifications" @click="isOpen = false">
           <X />
         </button>
       </header>
+
+      <div
+        v-if="voiceMicStatus.phase !== 'idle'"
+        class="notification-mic-status"
+        :class="`is-${voiceMicStatus.phase}`"
+        role="status"
+        aria-label="Voice mic"
+      >
+        <LoaderCircle v-if="voiceMicStatus.phase === 'working' || voiceMicStatus.phase === 'starting'" class="notification-mic-status-icon is-spinning" aria-hidden="true" />
+        <CircleAlert v-else-if="voiceMicStatus.phase === 'error'" class="notification-mic-status-icon" aria-hidden="true" />
+        <span v-else class="notification-mic-status-dot" aria-hidden="true" />
+        <span class="notification-mic-status-text">{{ voiceMicStatus.text }}</span>
+        <button v-if="voiceMicStatus.canRetry" class="notification-mic-status-retry" type="button" @click="voiceMicRef?.retry()">Retry</button>
+      </div>
 
       <VoiceNote
         v-if="landing?.voice"
@@ -59,7 +84,7 @@
         :lead="landing.voice.lead"
         :heard="landing.voice.heard"
         :note="showLandingNote ? landing.voice.note : ''"
-        @navigate="openVoiceResult"
+        :mic="false"
       />
 
       <div class="notification-tabs" role="tablist" aria-label="Notification views">
@@ -507,6 +532,7 @@ import {
   Bell,
   BellRing,
   CheckCircle2,
+  CircleAlert,
   Circle,
   LoaderCircle,
   Mail,
@@ -553,8 +579,11 @@ import {
   type RecentActivityItem,
   type RunningActivityItem,
 } from '../../utils/notificationActivity'
-import type { ActivityFocus, ActivityLanding } from '../../utils/voiceLanding'
+import { planPanelVoiceLanding, type ActivityFocus, type ActivityLanding } from '../../utils/voiceLanding'
+import { IDLE_MIC_STATUS, type VoiceMicStatus } from '../../utils/voiceMic'
+import type { VoiceCommandResponse } from '../../api/voice'
 import NotificationRow from './NotificationRow.vue'
+import VoiceCommandMic from './VoiceCommandMic.vue'
 import VoiceNote from './VoiceNote.vue'
 import ThreadHelpers from './ThreadHelpers.vue'
 
@@ -605,7 +634,7 @@ const emit = defineEmits<{
   (event: 'refreshHelpers'): void
   (event: 'setThreadPinned', intent: SetThreadPinnedIntent): void
   (event: 'selectBoardQuestion', payload: { boardId: string; featureId: string; questionId: string }): void
-  /** The in-app link of a voice command said from the panel's voice note. */
+  /** The in-app link of a voice command said into the panel's mic. */
   (event: 'openVoiceResult', url: string): void
 }>()
 
@@ -635,6 +664,8 @@ let recentLongPressTimer: ReturnType<typeof setTimeout> | null = null
 let recentLongPressTriggered = false
 /** Set while the panel is open from a deep link (`?activity=`), such as a voice command. */
 const landing = ref<ActivityLanding | null>(null)
+const voiceMicRef = ref<{ retry: () => void } | null>(null)
+const voiceMicStatus = ref<VoiceMicStatus>(IDLE_MIC_STATUS)
 /** The section to scroll to once it has rows; the panel may still be loading. */
 const pendingLandingFocus = ref<ActivityFocus | null>(null)
 const highlightedSection = ref<ActivityFocus | ''>('')
@@ -1113,9 +1144,15 @@ function applyLandingFocus(focus: ActivityFocus): void {
 }
 
 function openVoiceResult(url: string): void {
-  // A list result opens the panel again; any other result needs the page underneath.
   isOpen.value = false
   emit('openVoiceResult', url)
+}
+
+/** A command said into the panel's mic: lists and "didn't catch that" stay here; the rest opens its page. */
+function onPanelVoiceResult(response: VoiceCommandResponse): void {
+  const plan = planPanelVoiceLanding(response.result, response.url)
+  if (plan.kind === 'panel') openActivityCenter(plan.landing)
+  else openVoiceResult(plan.url)
 }
 
 function clearLanding(): void {
@@ -1458,6 +1495,71 @@ function onModeChange(event: Event): void {
 
 .notification-voice {
   @apply mx-4 mb-2;
+}
+
+.notification-voice-mic {
+  @apply -mt-1;
+}
+
+/* The summary wraps between its parts, never inside one. */
+.notification-subtitle-part {
+  white-space: nowrap;
+}
+
+.notification-mic-status {
+  @apply mx-4 mb-2 flex items-center gap-2 rounded-lg border px-3 py-2 text-xs font-medium leading-5;
+  border-color: var(--border-soft);
+  background: var(--surface-muted);
+  color: var(--text-secondary);
+}
+
+.notification-mic-status.is-recording {
+  border-color: color-mix(in srgb, #e5484d 45%, transparent);
+  background: color-mix(in srgb, #e5484d 10%, var(--surface-elevated));
+  color: var(--text-primary);
+}
+
+.notification-mic-status.is-error {
+  border-color: color-mix(in srgb, #e5484d 45%, transparent);
+  color: var(--text-primary);
+}
+
+.notification-mic-status-text {
+  @apply min-w-0 flex-1;
+  overflow-wrap: anywhere;
+}
+
+.notification-mic-status-icon {
+  @apply h-3.5 w-3.5 shrink-0;
+}
+
+.notification-mic-status.is-error .notification-mic-status-icon {
+  color: #e5484d;
+}
+
+.notification-mic-status-dot {
+  @apply h-2 w-2 shrink-0 rounded-full;
+  background: #e5484d;
+  animation: notification-mic-blink 1200ms ease-in-out infinite;
+}
+
+.notification-mic-status-retry {
+  @apply -my-1 inline-flex min-h-8 shrink-0 items-center rounded-md px-2 text-xs font-semibold;
+  color: var(--accent);
+}
+
+.notification-mic-status-retry:hover {
+  background: var(--surface-elevated);
+}
+
+@keyframes notification-mic-blink {
+  50% { opacity: 0.35; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .notification-mic-status-dot {
+    animation: none;
+  }
 }
 
 .notification-title {
@@ -1931,6 +2033,18 @@ function onModeChange(event: Event): void {
 
   .notification-close {
     @apply inline-flex;
+  }
+
+  .notification-voice-mic {
+    @apply -mt-1.5 -mr-1;
+  }
+
+  .notification-header {
+    @apply gap-2;
+  }
+
+  .notification-mic-status-retry {
+    @apply min-h-11;
   }
 
   .notification-mark-all-label {

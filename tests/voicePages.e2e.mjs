@@ -44,7 +44,24 @@ const RESULTS = {
   [code('U')]: stored('U', { heard: 'new chat, check the logs', action: 'new_chat', outcome: 'new_chat', reason: 'project_unclear', message: 'check the logs', project: null, projectOptions: [PROJECTS[1], PROJECTS[2], PROJECTS[0]], agent: null }),
   [code('E')]: stored('E', { heard: 'anything unread', action: 'list_chats', outcome: 'empty', reason: 'empty_list', listType: 'unread', candidates: [] }),
   [code('X')]: stored('X', { heard: 'uh can you, the thing from before', action: 'other', outcome: 'not_understood', reason: 'other', candidates: [ROWS.migration, ROWS.exportJob, ROWS.checkout, ROWS.webhook] }),
+  [code('O')]: stored('O', { heard: 'open the stripe webhook chat', action: 'open_chat', outcome: 'open_chat', threadId: 'thread-webhook', candidates: [ROWS.webhook] }),
+  [code('P')]: stored('P', { heard: 'okay so tell the stripe webhook chat, you know, to deploy it to staging', action: 'send_to_chat', outcome: 'send_ready', threadId: 'thread-webhook', message: 'deploy it to staging', candidates: [ROWS.webhook] }),
+  [code('Q')]: stored('Q', { heard: '', action: 'other', outcome: 'not_understood', reason: 'empty', candidates: [ROWS.migration] }),
 }
+// A command that asked for three things: each step is a saved result of its own.
+RESULTS[code('M')] = stored('M', {
+  heard: 'tell the stripe webhook chat to deploy it to staging, show me what is running and start a new chat in hr-ai to find out why customer emails bounce',
+  action: 'send_to_chat',
+  outcome: 'steps',
+  steps: [
+    { ...RESULTS[code('P')], url: `/#/thread/thread-webhook?voice=${code('P')}` },
+    { ...RESULTS[code('G')], url: `/#/voice/${code('G')}` },
+    { ...RESULTS[code('N')], url: `/#/?voice=${code('N')}` },
+  ],
+})
+/** What the in-app route answers for a result: its code, the link it opens, the result. */
+const PATHS = { O: '/#/thread/thread-webhook', P: `/#/thread/thread-webhook?voice=${code('P')}`, N: `/#/?voice=${code('N')}`, C: `/#/voice/${code('C')}`, M: `/#/voice/${code('M')}` }
+const commandAnswer = (letter) => ({ data: { code: code(letter), url: PATHS[letter] ?? `/#/voice/${code(letter)}`, result: RESULTS[code(letter)] } })
 
 // The live panel: two chats running, one waiting for approval, two unread, one pinned, recent history.
 const thread = (id, name, cwd, minutes, status = 'idle') => ({ id, name, preview: name.toLowerCase(), cwd, createdAt: secs(minutes + 60), updatedAt: secs(minutes), source: 'cli', status: { type: status } })
@@ -99,19 +116,59 @@ let passed = 0
 
 async function scenario(name, run, panelOverrides = {}) {
   const panel = { ...PANEL, ...panelOverrides }
-  const context = await browser.newContext({ viewport: { width: 390, height: 844 }, deviceScaleFactor: 2, hasTouch: true, isMobile: true })
+  const context = await browser.newContext(panel.desktop
+    ? { viewport: { width: 1280, height: 820 }, deviceScaleFactor: 2 }
+    : { viewport: { width: 390, height: 844 }, deviceScaleFactor: 2, hasTouch: true, isMobile: true })
   const page = await context.newPage()
   const errors = []
   page.on('pageerror', (error) => errors.push(`${String(error)} ${String(error.stack ?? '').split('\n').slice(1, 4).join(' | ')}`))
   await page.addInitScript(() => {
+    // A fake microphone: a tone through Web Audio, so the level meter moves, and a recorder that yields one chunk.
+    window.__mic = { deny: false, empty: false, requests: 0 }
+    const devices = navigator.mediaDevices ?? {}
+    Object.defineProperty(navigator, 'mediaDevices', { configurable: true, value: devices })
+    devices.getUserMedia = async () => {
+      window.__mic.requests += 1
+      if (window.__mic.deny) throw new DOMException('Permission denied', 'NotAllowedError')
+      try {
+        const context = new AudioContext()
+        const tone = context.createOscillator()
+        const destination = context.createMediaStreamDestination()
+        tone.connect(destination)
+        tone.start()
+        return destination.stream
+      } catch {
+        return new MediaStream()
+      }
+    }
+    window.MediaRecorder = class {
+      constructor() { this.state = 'inactive'; this.mimeType = 'audio/webm' }
+      start() { this.state = 'recording' }
+      stop() {
+        this.state = 'inactive'
+        setTimeout(() => {
+          if (!window.__mic.empty) this.ondataavailable?.({ data: new Blob(['spoken audio'], { type: 'audio/webm' }) })
+          this.onstop?.()
+        }, 0)
+      }
+    }
     window.EventSource = class { constructor() { this.readyState = 1 } close() {} }
     window.WebSocket = class { constructor() { this.readyState = 0 } send() {} close() {} }
     localStorage.setItem('codex-web-local.theme.v1', 'dark')
   })
   const voiceRequests = []
+  const commandRequests = []
   await page.route('**/codex-api/**', async (route) => {
     const request = route.request()
     const path = new URL(request.url()).pathname
+    if (path === '/codex-api/voice/command' && request.method() === 'POST') {
+      // panel.command: the result letters to answer with, in turn; a number is an HTTP error status.
+      const answer = panel.command?.[commandRequests.length] ?? panel.command?.at(-1)
+      commandRequests.push({ contentType: request.headers()['content-type'] ?? '', bytes: request.postDataBuffer()?.length ?? 0 })
+      await new Promise((resolve) => setTimeout(resolve, panel.commandDelayMs ?? 0))
+      if (typeof answer === 'number') return route.fulfill({ status: answer, json: { error: 'Transcription failed.' } })
+      return route.fulfill({ json: commandAnswer(answer) })
+    }
     if (path.startsWith('/codex-api/voice/')) {
       const voiceCode = path.split('/').at(-1)
       voiceRequests.push({ path, auth: request.headers().authorization ?? null })
@@ -122,6 +179,8 @@ async function scenario(name, run, panelOverrides = {}) {
       const body = request.postDataJSON()
       try { return route.fulfill({ json: { result: rpc(body.method, body.params) } }) } catch (error) { return route.fulfill({ status: 502, json: { error: String(error.message) } }) }
     }
+    // The desktop header's provider status is not under test; "unavailable" keeps it quiet.
+    if (path.startsWith('/codex-api/providers')) return route.fulfill({ status: 503, json: { error: 'Not available in this test.' } })
     if (path === '/codex-api/workspace-roots-state') return route.fulfill({ json: { data: { order: PROJECTS.map((project) => project.id), labels: {}, active: [] } } })
     if (path === '/codex-api/thread-read-state') return route.fulfill({ json: { data: { version: 1, readAtByThreadId: {}, unreadThreadIds: panel.unreadThreadIds } } })
     if (path === '/codex-api/pinned-threads') return route.fulfill({ json: { data: { threadIds: panel.pinnedThreadIds } } })
@@ -130,7 +189,7 @@ async function scenario(name, run, panelOverrides = {}) {
     return route.fulfill({ json: { data: [] } })
   })
   try {
-    await run(page, { voiceRequests })
+    await run(page, { voiceRequests, commandRequests })
     const relevant = errors.filter((error) => !/ResizeObserver|Failed to fetch/u.test(error))
     assert.deepEqual(relevant, [], 'no page errors')
     passed += 1
@@ -151,6 +210,19 @@ const sheet = (page) => page.locator('.notification-popover')
 const section = (page, name) => page.locator(`[data-activity-section="${name}"]`)
 const filterPressed = (page, label) => page.getByRole('group', { name: 'Activity filter' }).getByRole('button', { name: new RegExp(`^${label}`, 'u') }).getAttribute('aria-pressed')
 const voiceNote = (page) => page.getByRole('status', { name: 'Voice command' })
+const panelMic = (page) => sheet(page).locator('.notification-header').getByRole('button', { name: /voice command/u })
+const micStatus = (page) => page.getByRole('status', { name: 'Voice mic' })
+async function openPanel(page) {
+  await page.goto(`${base}#/`)
+  await page.locator('.notification-trigger').click()
+  await sheet(page).waitFor()
+}
+/** Tap the panel mic, then tap it again to stop, as a user would. */
+async function sayIntoPanel(page) {
+  await panelMic(page).click()
+  await micStatus(page).getByText(/^Listening… 0:0\d · tap to stop$/u).waitFor()
+  await page.getByRole('button', { name: 'Stop and run the voice command' }).click()
+}
 async function openedOn(page, focus) {
   await sheet(page).waitFor()
   await page.waitForFunction((name) => document.querySelector(`[data-activity-section="${name}"]`)?.classList.contains('is-landing-focus'), focus)
@@ -282,7 +354,8 @@ try {
     assert.equal(await filterPressed(page, 'All'), 'true')
     assert.equal(await page.locator('.notification-activity').evaluate((el) => el.scrollTop), 0)
     assert.equal(await page.locator('.is-landing-focus').count(), 0)
-    assert.equal(await voiceNote(page).getByRole('button', { name: 'Say a voice command' }).count(), 1)
+    assert.equal(await voiceNote(page).getByRole('button').count(), 0, 'the panel header has the mic')
+    assert.equal(await panelMic(page).getAttribute('aria-label'), 'Say a voice command')
     await page.screenshot({ path: `${shotsDir}/07-not-understood.png` })
   })
 
@@ -398,6 +471,151 @@ try {
     await page.goto(`${base}#/new-thread?activity=running`)
     await openedOn(page, 'running')
   })
+
+  // --- The panel's mic ------------------------------------------------------------
+
+  await scenario('the panel header has a 44 px mic; recording shows a live state, then "Working…", then opens the chat', async (page, { commandRequests }) => {
+    await openPanel(page)
+    const box = await panelMic(page).boundingBox()
+    assert.ok(box.width >= 44 && box.height >= 44, `mic is ${box.width}x${box.height}`)
+    assert.equal(await micStatus(page).count(), 0, 'nothing extra while idle')
+    await page.screenshot({ path: `${shotsDir}/20-panel-mic-idle.png` })
+    await panelMic(page).click()
+    await micStatus(page).getByText(/^Listening… 0:0\d · tap to stop$/u).waitFor()
+    assert.match(await panelMic(page).getAttribute('class'), /is-recording/u)
+    await page.waitForTimeout(250)
+    await page.screenshot({ path: `${shotsDir}/21-panel-mic-recording.png` })
+    await page.getByRole('button', { name: 'Stop and run the voice command' }).click()
+    await micStatus(page).getByText('Working…').waitFor()
+    await page.screenshot({ path: `${shotsDir}/22-panel-mic-working.png` })
+    await page.waitForFunction(() => window.location.hash === '#/thread/thread-webhook')
+    await sheet(page).waitFor({ state: 'detached' })
+    assert.equal(commandRequests.length, 1)
+    assert.match(commandRequests[0].contentType, /^multipart\/form-data; boundary=/u, 'the recording goes straight to the voice route')
+    assert.ok(commandRequests[0].bytes > 0)
+  }, { command: ['O'], commandDelayMs: 600 })
+
+  await scenario('on desktop the mic sits in the panel header and records the same way', async (page) => {
+    await openPanel(page)
+    const box = await panelMic(page).boundingBox()
+    assert.ok(box.width >= 32 && box.width < 44, `a compact ${box.width}px mic on desktop`)
+    await page.screenshot({ path: `${shotsDir}/30-desktop-panel-mic-idle.png` })
+    await panelMic(page).click()
+    await micStatus(page).getByText(/^Listening… 0:0\d · tap to stop$/u).waitFor()
+    await page.waitForTimeout(250)
+    await page.screenshot({ path: `${shotsDir}/31-desktop-panel-mic-recording.png` })
+    await page.getByRole('button', { name: 'Stop and run the voice command' }).click()
+    await voiceNote(page).getByText('Heard: “what\'s running”').waitFor()
+    await page.screenshot({ path: `${shotsDir}/32-desktop-panel-mic-list.png` })
+  }, { command: ['G'], desktop: true })
+
+  await scenario('a spoken list stays in the panel on that section, without becoming a sheet', async (page) => {
+    await openPanel(page)
+    await sayIntoPanel(page)
+    await page.waitForFunction(() => document.querySelector('[data-activity-section="running"]')?.classList.contains('is-landing-focus'))
+    await voiceNote(page).getByText('Heard: “what\'s running”').waitFor()
+    assert.equal(await sheet(page).evaluate((el) => el.classList.contains('is-landing')), false)
+    assert.equal(await page.evaluate(() => window.location.hash), '#/')
+    await page.screenshot({ path: `${shotsDir}/23-panel-mic-list.png` })
+  }, { command: ['G'] })
+
+  await scenario('a spoken send opens the chat with the message typed in and nothing sent', async (page) => {
+    await openPanel(page)
+    await sayIntoPanel(page)
+    await page.waitForFunction(() => document.querySelector('textarea.thread-composer-input')?.value === 'deploy it to staging')
+    await page.getByText('From voice:').waitFor()
+    assert.equal(await page.evaluate(() => window.location.hash), '#/thread/thread-webhook')
+    await page.screenshot({ path: `${shotsDir}/24-panel-mic-send.png` })
+  }, { command: ['P'] })
+
+  await scenario('a spoken new chat opens the new-chat page filled in', async (page) => {
+    await openPanel(page)
+    await sayIntoPanel(page)
+    await page.waitForFunction(() => document.querySelector('textarea.thread-composer-input')?.value === 'find out why customer emails bounce')
+    await page.getByRole('button', { name: 'Choose workspace folder' }).filter({ hasText: 'hr-ai' }).waitFor()
+  }, { command: ['N'] })
+
+  await scenario('an unclear chat opens the chooser', async (page) => {
+    await openPanel(page)
+    await sayIntoPanel(page)
+    await page.getByRole('heading', { name: 'Which chat?' }).waitFor()
+  }, { command: ['C'] })
+
+  await scenario('several requests open the Steps chooser; a tapped step is marked done on the way back', async (page) => {
+    await openPanel(page)
+    await sayIntoPanel(page)
+    await page.getByRole('heading', { name: 'You asked for 3 things' }).waitFor()
+    const steps = page.getByRole('region', { name: 'Steps' })
+    assert.deepEqual(await steps.locator('.notification-row-title').allInnerTexts(), ['Send to Stripe webhook bug', 'Running chats', 'New chat in hr-ai'])
+    assert.equal(await steps.getByText('Next').count(), 1)
+    for (const row of await steps.locator('.notification-row').all()) assert.ok((await row.boundingBox()).height >= 48)
+    await page.screenshot({ path: `${shotsDir}/25-steps-chooser.png` })
+    await page.getByRole('button', { name: 'Step 1: Send to Stripe webhook bug' }).click()
+    await page.waitForFunction(() => document.querySelector('textarea.thread-composer-input')?.value === 'deploy it to staging')
+    await page.goBack()
+    await page.getByRole('heading', { name: 'You asked for 3 things' }).waitFor()
+    await steps.getByText('Done').waitFor()
+    assert.equal(await page.getByRole('button', { name: 'Step 2: Running chats' }).getByText('Next').count(), 1)
+    await page.screenshot({ path: `${shotsDir}/26-steps-chooser-after-one.png` })
+    await page.getByRole('button', { name: 'Step 2: Running chats' }).click()
+    await openedOn(page, 'running')
+  }, { command: ['M'] })
+
+  await scenario("didn't catch that stays in the panel with what was heard and the mic ready", async (page) => {
+    await openPanel(page)
+    await sayIntoPanel(page)
+    await voiceNote(page).getByText("Didn't catch that").waitFor()
+    await voiceNote(page).getByText('Heard: “uh can you, the thing from before”').waitFor()
+    assert.equal(await panelMic(page).getAttribute('aria-label'), 'Say a voice command')
+    assert.equal(await page.evaluate(() => window.location.hash), '#/')
+    await page.screenshot({ path: `${shotsDir}/27-panel-mic-not-understood.png` })
+  }, { command: ['X'] })
+
+  await scenario('a blocked microphone explains how to allow it and keeps the mic ready', async (page, { commandRequests }) => {
+    await openPanel(page)
+    await page.evaluate(() => { window.__mic.deny = true })
+    await panelMic(page).click()
+    await micStatus(page).getByText(/Microphone access is blocked/u).waitFor()
+    assert.equal(await panelMic(page).getAttribute('aria-label'), 'Say a voice command')
+    assert.equal(commandRequests.length, 0)
+    await page.screenshot({ path: `${shotsDir}/28-panel-mic-blocked.png` })
+    await page.evaluate(() => { window.__mic.deny = false })
+    await sayIntoPanel(page)
+    await page.waitForFunction(() => window.location.hash === '#/thread/thread-webhook')
+  }, { command: ['O'] })
+
+  await scenario('an empty recording or silence says so and sends nothing anywhere', async (page, { commandRequests }) => {
+    await openPanel(page)
+    await page.evaluate(() => { window.__mic.empty = true })
+    await sayIntoPanel(page)
+    await micStatus(page).getByText('No audio was recorded. Try recording again.').waitFor()
+    assert.equal(commandRequests.length, 0)
+    await page.evaluate(() => { window.__mic.empty = false })
+    await sayIntoPanel(page)
+    await micStatus(page).getByText("Didn't hear anything. Tap the mic and try again.").waitFor()
+    assert.equal(await page.evaluate(() => window.location.hash), '#/')
+  }, { command: ['Q'] })
+
+  await scenario('a failed command offers Retry, which sends the same recording again', async (page, { commandRequests }) => {
+    await openPanel(page)
+    await sayIntoPanel(page)
+    await micStatus(page).getByText(/Voice command failed: Transcription failed\./u).waitFor()
+    await page.screenshot({ path: `${shotsDir}/29-panel-mic-failed.png` })
+    await micStatus(page).getByRole('button', { name: 'Retry' }).click()
+    await page.waitForFunction(() => window.location.hash === '#/thread/thread-webhook')
+    assert.equal(commandRequests.length, 2)
+    assert.equal(await page.evaluate(() => window.__mic.requests), 1, 'the microphone was opened once')
+  }, { command: [502, 'O'] })
+
+  await scenario('closing the panel while recording stops the microphone and runs nothing', async (page, { commandRequests }) => {
+    await openPanel(page)
+    await panelMic(page).click()
+    await micStatus(page).getByText(/^Listening… 0:0\d · tap to stop$/u).waitFor()
+    await page.getByRole('button', { name: 'Close notifications' }).click()
+    await sheet(page).waitFor({ state: 'detached' })
+    await page.waitForTimeout(200)
+    assert.equal(commandRequests.length, 0)
+  }, { command: ['O'] })
 
   await scenario('an expired result says so instead of guessing', async (page) => {
     await page.goto(`${base}#/voice/${code('Z')}`)

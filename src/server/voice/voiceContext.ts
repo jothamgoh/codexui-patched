@@ -30,6 +30,8 @@ export type VoiceSourceSnapshot = {
   dismissals: Array<{ threadId: string; activityAt: string }>
   boardSnapshot: ProjectBoardSnapshot | null
   workspaceRoots: { order: string[]; labels: Record<string, string> }
+  /** The panel lists pinned chats in their own section instead of Recent. */
+  pinnedThreadIds?: string[]
   nowMs: number
 }
 
@@ -144,6 +146,7 @@ export function buildVoiceContext(snapshot: VoiceSourceSnapshot): VoiceContext {
     pendingRequests,
     history: snapshot.history,
     dismissedActivityByThreadId: Object.fromEntries(snapshot.dismissals.map((item) => [item.threadId, item.activityAt])),
+    pinnedThreadIds: snapshot.pinnedThreadIds,
   })
 
   const chats = new Map(selection.activityThreads.map((thread) => [thread.id, thread]))
@@ -170,7 +173,11 @@ export function buildVoiceContext(snapshot: VoiceSourceSnapshot): VoiceContext {
     needs_you: rows(selection.requestAttention.filter((item) => !item.board).map((item) => toRow(item.threadId, 'needs_you'))),
     running: rows(selection.runningActivity.filter((item) => !item.board).map((item) => toRow(item.threadId, 'running'))),
     unread: rows(selection.unreadActivity.filter((item) => !item.projectBoard).map((item) => toRow(item.threadId, 'unread', item.body))),
-    recent: rows(selection.allRecentHistory.filter((item) => !item.projectBoard).map((item) => toRow(item.threadId, 'recent', item.body))),
+    // Pinned chats lead Recent, as the panel's Pinned section leads its list.
+    recent: rows([
+      ...(snapshot.pinnedThreadIds ?? []).map((threadId) => toRow(threadId, 'recent')),
+      ...selection.allRecentHistory.filter((item) => !item.projectBoard).map((item) => toRow(item.threadId, 'recent', item.body)),
+    ]),
   }
   const otherChats = rows(selection.activityThreads
     .slice()

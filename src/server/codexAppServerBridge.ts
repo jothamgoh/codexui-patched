@@ -2933,6 +2933,7 @@ export function createCodexBridgeMiddleware(): CodexBridgeMiddleware {
     listPendingServerRequests: () => appServer.listPendingServerRequests(),
     readProjectBoards: () => projectBoardService.read(),
     readWorkspaceRoots: () => readWorkspaceRootsState(),
+    readPinnedThreadIds: () => readPinnedThreadIds(),
     transcribe: async (audio: Buffer, contentType: string) => {
       const auth = await readCodexAuth()
       if (!auth) throw new Error('No auth token available for transcription')

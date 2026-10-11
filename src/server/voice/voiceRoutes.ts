@@ -59,6 +59,7 @@ export type VoiceBridgeSources = {
   listPendingServerRequests: () => Array<{ id: number; method: string; params: unknown; receivedAtIso?: string }>
   readProjectBoards: () => Promise<ProjectBoardSnapshot>
   readWorkspaceRoots: () => Promise<{ order: string[]; labels: Record<string, string> }>
+  readPinnedThreadIds: () => Promise<string[]>
   transcribe: (audio: Buffer, contentType: string) => Promise<string>
   sendMessage: (threadId: string, text: string) => Promise<void>
 }
@@ -85,13 +86,14 @@ async function within<T>(promise: Promise<T>, fallback: T, timeoutMs = SOURCE_TI
 
 /** Gathers everything the router needs; a slow or failing source degrades to empty. */
 export async function collectVoiceSnapshot(bridge: VoiceBridgeSources, push: VoicePushSink, now = Date.now()): Promise<VoiceSourceSnapshot> {
-  const [threadSummaries, titles, readState, boardSnapshot, workspaceRoots, history] = await Promise.all([
+  const [threadSummaries, titles, readState, boardSnapshot, workspaceRoots, history, pinnedThreadIds] = await Promise.all([
     within(bridge.listThreads(), [] as unknown[]),
     within(bridge.readTitles(), {} as Record<string, string>),
     within(bridge.readReadState(), { readAtByThreadId: {}, unreadThreadIds: [] }),
     within(bridge.readProjectBoards().then((value): ProjectBoardSnapshot | null => value), null),
     within(bridge.readWorkspaceRoots(), { order: [], labels: {} }),
     within(push.readHistory(), { items: [], dismissals: [] }),
+    within(bridge.readPinnedThreadIds(), [] as string[]),
   ])
   const replyThreadIds = bridge.replyThreadIds()
   // Running helper sub-chats are not in the main list; read them so their parent counts as running.
@@ -110,6 +112,7 @@ export async function collectVoiceSnapshot(bridge: VoiceBridgeSources, push: Voi
     dismissals: history.dismissals,
     boardSnapshot,
     workspaceRoots,
+    pinnedThreadIds,
     nowMs: now,
   }
 }

@@ -99,6 +99,14 @@ test('the server context mirrors the panel: sections, exclusions and flags', () 
   assert.ok(!context.projects.some((project) => project.id.includes('/worktrees/')), 'worktree folders are not projects')
 })
 
+test('pinned chats lead Recent once, and keep their place in Running or Unread', () => {
+  const context = buildVoiceContext(snapshot({ pinnedThreadIds: [CHATS.payouts.threadId, CHATS.exportJob.threadId, 'not-listed'] }))
+  assert.equal(context.sections.recent[0].threadId, CHATS.payouts.threadId)
+  assert.equal(context.sections.recent.filter((row) => row.threadId === CHATS.payouts.threadId).length, 1)
+  assert.ok(context.sections.running.some((row) => row.threadId === CHATS.exportJob.threadId), 'a pinned running chat is still running')
+  assert.ok(!context.sections.recent.some((row) => row.threadId === CHATS.exportJob.threadId))
+})
+
 test('dismissed history hides a chat from recent, like the panel', () => {
   const history = [{ id: 'h1', threadId: CHATS.payouts.threadId, turnId: 't', status: 'completed', title: 'x', body: 'Weekly **payouts** sent', completedAt: new Date(NOW - 60_000).toISOString(), readAt: new Date(NOW).toISOString() }]
   const shown = buildVoiceContext(snapshot({ history }))

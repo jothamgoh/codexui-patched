@@ -1,45 +1,56 @@
 <template>
   <section class="voice-picker" aria-label="Voice result">
-    <header class="voice-picker-header">
-      <h1 class="voice-picker-title">{{ title }}</h1>
-      <VoiceCommandMic v-model:status="micStatus" @navigate="emit('navigate', $event)" />
-    </header>
-    <p v-if="micStatus" class="voice-picker-status" role="status">{{ micStatus }}</p>
+    <div class="voice-picker-card">
+      <header class="voice-picker-header">
+        <h1 class="voice-picker-title">{{ title }}</h1>
+        <p class="voice-picker-subtitle">{{ subtitle }}</p>
+      </header>
 
-    <p v-if="isLoading" class="voice-picker-status" role="status">Loading…</p>
-    <div v-else-if="loadError" class="voice-picker-empty" role="alert">
-      <p>{{ loadError }}</p>
-      <button class="voice-picker-link" type="button" @click="emit('openHome')">Go to chats</button>
-    </div>
-
-    <template v-else-if="result">
-      <p class="voice-picker-heard"><span>Heard:</span> “{{ result.heard }}”</p>
-      <div v-if="result.message" class="voice-picker-message">
-        <p><span>Message:</span> “{{ result.message }}”</p>
-        <p class="voice-picker-hint">Tapping a chat opens it with the message typed in. Nothing is sent until you tap Send.</p>
+      <p v-if="isLoading" class="voice-picker-status" role="status">Loading…</p>
+      <div v-else-if="loadError" class="voice-picker-error" role="alert">
+        <p>{{ loadError }}</p>
+        <button class="voice-picker-link" type="button" @click="emit('openHome')">Go to chats</button>
       </div>
 
+      <template v-else-if="result">
+        <VoiceNote class="voice-picker-note" :heard="result.heard" @navigate="emit('navigate', $event)" />
+        <div v-if="result.message" class="voice-picker-message">
+          <p><span>Message:</span> “{{ result.message }}”</p>
+          <p class="voice-picker-hint">Tapping a chat opens it with the message typed in. Nothing is sent until you tap Send.</p>
+        </div>
 
-      <h2 v-if="listHeading" class="voice-picker-subheading">{{ listHeading }}</h2>
-      <ul v-if="rows.length > 0" class="voice-picker-rows">
-        <li v-for="(row, index) in rows" :key="row.threadId">
-          <button type="button" class="voice-picker-row" :aria-label="`Open ${row.title}`" @click="select(row.threadId)">
-            <span class="voice-picker-dot" :class="`is-${row.status}`" :title="VOICE_LIST_LABELS[row.status]" aria-hidden="true" />
-            <span class="voice-picker-row-copy">
-              <span class="voice-picker-row-title">
-                {{ row.title }}
-                <span v-if="index === 0 && isCloseCall" class="voice-picker-best">best match</span>
-              </span>
-              <span class="voice-picker-row-meta">{{ row.projectName }} · {{ row.agent === 'claude' ? 'Claude' : 'Codex' }} · {{ statusLabel(row) }}</span>
-              <span v-if="row.summary" class="voice-picker-row-summary">{{ row.summary }}</span>
-            </span>
-          </button>
-        </li>
-      </ul>
-      <p v-else class="voice-picker-empty">No chats to show.</p>
+        <section class="voice-picker-section" :aria-label="listHeading">
+          <div class="voice-picker-section-header">
+            <span>{{ listHeading }}</span>
+            <span class="voice-picker-section-count">{{ rows.length }}</span>
+          </div>
+          <NotificationRow
+            v-for="(row, index) in rows"
+            :key="row.threadId"
+            :tone="ROW_TONES[row.status]"
+            :title="row.title"
+            v-bind="rowPill(row, index)"
+            :preview="row.summary"
+            wrap-meta
+            :aria-label="`Open ${row.title}`"
+            @click="select(row.threadId)"
+          >
+            <template #meta>
+              <span>{{ row.projectName }}</span>
+              <span aria-hidden="true">·</span>
+              <span>{{ row.agent === 'claude' ? 'Claude' : 'Codex' }}</span>
+              <template v-for="part in statusParts(row)" :key="part">
+                <span aria-hidden="true">·</span>
+                <span>{{ part }}</span>
+              </template>
+            </template>
+          </NotificationRow>
+          <p v-if="rows.length === 0" class="voice-picker-empty">No chats to show.</p>
+        </section>
 
-      <button v-if="canShowRecent" class="voice-picker-link" type="button" @click="showRecent = true">Not these? Recent chats</button>
-    </template>
+        <button v-if="canShowRecent" class="voice-picker-link" type="button" @click="showRecent = true">Not these? Recent chats</button>
+      </template>
+    </div>
   </section>
 </template>
 
@@ -47,12 +58,27 @@
 import { computed, ref, watch } from 'vue'
 import { getVoiceResult, VoiceResultExpiredError } from '../../api/voice'
 import { useRelativeTimeClock } from '../../composables/useRelativeTimeClock'
-import { VOICE_LIST_LABELS, VOICE_LIST_TYPES, type VoiceChatRow, type VoiceStoredResult } from '../../types/voice'
+import { VOICE_LIST_TYPES, type VoiceChatRow, type VoiceListType, type VoiceStoredResult } from '../../types/voice'
 import { formatCompactRelativeTime } from '../../utils/relativeTime'
 import { voiceActivityFocus, type ActivityFocus } from '../../utils/voiceLanding'
-import VoiceCommandMic from './VoiceCommandMic.vue'
+import NotificationRow from './NotificationRow.vue'
+import VoiceNote from './VoiceNote.vue'
+
+/**
+ * The voice choosers: which chat to open on a close call, which chat gets a
+ * spoken message, or what to open when nothing matched. Lists and "didn't
+ * catch that" go to the notification panel instead; this page uses its rows.
+ */
 
 const RECENT_ROWS = 10
+
+/** The panel's icon for each kind of chat. */
+const ROW_TONES: Record<VoiceListType, 'failed' | 'running' | 'unread' | 'completed'> = {
+  needs_you: 'failed',
+  running: 'running',
+  unread: 'unread',
+  recent: 'completed',
+}
 
 const props = defineProps<{ code: string }>()
 const emit = defineEmits<{
@@ -69,7 +95,6 @@ const result = ref<VoiceStoredResult | null>(null)
 const isLoading = ref(false)
 const loadError = ref('')
 const showRecent = ref(false)
-const micStatus = ref('')
 
 async function load(code: string): Promise<void> {
   isLoading.value = true
@@ -102,71 +127,152 @@ async function load(code: string): Promise<void> {
 watch(() => props.code, (code) => { void load(code) }, { immediate: true })
 
 const panelRows = computed<VoiceChatRow[]>(() => result.value ? VOICE_LIST_TYPES.flatMap((type) => result.value!.sections[type]).slice(0, RECENT_ROWS) : [])
-const isCloseCall = computed(() => !showRecent.value && result.value?.outcome === 'picker' && result.value.reason !== 'no_match')
+const isNoMatch = computed(() => result.value?.reason === 'no_match')
+const isCloseCall = computed(() => !showRecent.value && result.value?.outcome === 'picker' && !isNoMatch.value)
 
 const rows = computed<VoiceChatRow[]>(() => {
   const value = result.value
   if (!value) return []
   if (showRecent.value) return panelRows.value
-  if (value.reason === 'no_match') return value.candidates.length > 0 ? value.candidates : panelRows.value
+  if (isNoMatch.value) return value.candidates.length > 0 ? value.candidates : panelRows.value
   return value.candidates
 })
 
 const title = computed(() => {
   const value = result.value
-  if (!value) return loadError.value ? 'Voice' : 'Chats'
-  if (showRecent.value) return 'Recent chats'
+  if (!value) return 'Voice'
   if (value.message) return 'Send to which chat?'
   return 'Which chat?'
 })
 
-const listHeading = computed(() => {
-  const value = result.value
-  if (!value || showRecent.value) return ''
-  return value.reason === 'no_match' ? 'Recent chats' : ''
+const subtitle = computed(() => {
+  if (!result.value) return 'Voice command'
+  if (isNoMatch.value) return 'No chat matched what you said'
+  return result.value.message ? 'Pick the chat for this message' : 'A few chats matched what you said'
 })
 
-const canShowRecent = computed(() => Boolean(result.value) && !showRecent.value && result.value?.reason !== 'no_match')
+const listHeading = computed(() => {
+  if (showRecent.value || isNoMatch.value) return 'Recent chats'
+  return 'Possible chats'
+})
 
-function statusLabel(row: VoiceChatRow): string {
+const canShowRecent = computed(() => Boolean(result.value) && !showRecent.value && !isNoMatch.value)
+
+function rowPill(row: VoiceChatRow, index: number): { pill: string; pillTone: 'unread' | 'attention' | 'accent' } {
+  if (index === 0 && isCloseCall.value) return { pill: 'Best match', pillTone: 'accent' }
+  if (row.status === 'needs_you') return { pill: 'Needs you', pillTone: 'attention' }
+  if (row.status === 'unread') return { pill: 'Unread', pillTone: 'unread' }
+  return { pill: '', pillTone: 'unread' }
+}
+
+/** The panel's wording: what the chat is doing, then how long ago. */
+function statusParts(row: VoiceChatRow): string[] {
   const age = formatCompactRelativeTime(row.updatedAtIso, now.value)
-  const ageText = age === 'n/a' ? '' : age === 'now' ? 'just now' : `${age} ago`
-  if (row.status === 'running') return ageText ? `running · ${ageText}` : 'running'
-  if (row.status === 'needs_you') return ageText ? `needs you · ${ageText}` : 'needs you'
-  return ageText || VOICE_LIST_LABELS[row.status].toLowerCase()
+  const state = row.status === 'running' ? 'In progress' : row.status === 'needs_you' ? 'Waiting for you' : ''
+  return [state, age === 'n/a' ? '' : age].filter(Boolean)
 }
 
 function select(threadId: string): void {
   if (!result.value) return
   emit('select', { threadId, code: result.value.code, carryMessage: Boolean(result.value.message) })
 }
-
 </script>
 
 <style scoped>
-.voice-picker { display: flex; flex-direction: column; gap: 12px; width: 100%; max-width: 640px; margin: 0 auto; padding: 16px; color: var(--text-primary); overflow-y: auto; }
-.voice-picker-header { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
-.voice-picker-title { font-size: 20px; font-weight: 600; }
-.voice-picker-row:focus-visible, .voice-picker-link:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
-.voice-picker-status { font-size: 13px; color: var(--text-muted); }
-.voice-picker-heard, .voice-picker-message { border: 1px solid var(--border-soft); border-radius: 10px; background: var(--surface-muted); padding: 10px 12px; font-size: 14px; color: var(--text-secondary); overflow-wrap: anywhere; }
-.voice-picker-heard span, .voice-picker-message span { color: var(--text-muted); }
-.voice-picker-message { border-color: var(--accent-soft); background: var(--accent-soft); color: var(--text-primary); }
-.voice-picker-hint { margin-top: 4px; font-size: 12px; color: var(--text-muted); }
-.voice-picker-subheading { font-size: 13px; font-weight: 600; color: var(--text-muted); text-transform: uppercase; letter-spacing: 0.04em; }
-.voice-picker-rows { display: flex; flex-direction: column; border: 1px solid var(--border-soft); border-radius: 12px; overflow: hidden; }
-.voice-picker-rows li + li { border-top: 1px solid var(--border-soft); }
-.voice-picker-row { display: flex; align-items: flex-start; gap: 12px; width: 100%; min-height: 56px; padding: 12px 14px; text-align: left; background: var(--surface-elevated); color: var(--text-primary); cursor: pointer; }
-.voice-picker-row:hover { background: var(--surface-hover); }
-.voice-picker-dot { width: 8px; height: 8px; margin-top: 7px; border-radius: 999px; background: var(--text-faint); flex-shrink: 0; }
-.voice-picker-dot.is-needs_you { background: #e0af68; }
-.voice-picker-dot.is-running { background: var(--accent); box-shadow: 0 0 0 3px var(--accent-soft); }
-.voice-picker-dot.is-unread { background: #9ece6a; }
-.voice-picker-row-copy { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
-.voice-picker-row-title { font-size: 15px; font-weight: 500; overflow-wrap: anywhere; }
-.voice-picker-best { margin-left: 6px; padding: 1px 6px; border-radius: 999px; background: var(--accent-soft); color: var(--accent); font-size: 11px; font-weight: 500; white-space: nowrap; }
-.voice-picker-row-meta { font-size: 12px; color: var(--text-muted); }
-.voice-picker-row-summary { font-size: 13px; color: var(--text-secondary); display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
-.voice-picker-empty { padding: 16px 4px; font-size: 14px; color: var(--text-muted); }
-.voice-picker-link { align-self: flex-start; min-height: 44px; padding: 0 2px; color: var(--accent); background: none; font-size: 14px; cursor: pointer; }
+@reference "tailwindcss";
+
+.voice-picker {
+  @apply mx-auto w-full overflow-y-auto p-4;
+  max-width: 32rem;
+  color: var(--text-primary);
+}
+
+.voice-picker-card {
+  @apply overflow-hidden rounded-lg border pb-2;
+  border-color: var(--border-soft);
+  background: var(--surface-elevated);
+}
+
+.voice-picker-header {
+  @apply px-4 pb-3 pt-4;
+}
+
+.voice-picker-title {
+  @apply text-sm font-semibold;
+  color: var(--text-primary);
+}
+
+.voice-picker-subtitle {
+  @apply mt-0.5 text-xs;
+  color: var(--text-muted);
+}
+
+.voice-picker-note,
+.voice-picker-message {
+  @apply mx-4 mb-2;
+}
+
+.voice-picker-message {
+  @apply rounded-lg border px-3 py-2.5 text-xs leading-5;
+  border-color: var(--accent-soft);
+  background: var(--accent-soft);
+  color: var(--text-primary);
+  overflow-wrap: anywhere;
+}
+
+.voice-picker-message span {
+  color: var(--text-muted);
+}
+
+.voice-picker-hint {
+  @apply mt-1;
+  color: var(--text-muted);
+}
+
+.voice-picker-section {
+  @apply border-t py-2;
+  border-color: var(--border-soft);
+}
+
+.voice-picker-section-header {
+  @apply flex items-center gap-1.5 px-4 pb-1 pt-1 text-[11px] font-semibold uppercase tracking-wide;
+  color: var(--text-muted);
+}
+
+.voice-picker-section-count {
+  @apply inline-flex min-w-4 items-center justify-center rounded-full px-1 text-[10px];
+  background: var(--surface-muted);
+  color: var(--text-secondary);
+}
+
+.voice-picker-status,
+.voice-picker-empty {
+  @apply px-4 py-2 text-xs;
+  color: var(--text-muted);
+}
+
+.voice-picker-error {
+  @apply px-4 pb-2 text-sm;
+  color: var(--text-secondary);
+}
+
+.voice-picker-link {
+  @apply mx-2 flex min-h-11 items-center rounded-md px-2 text-xs font-medium transition;
+  color: var(--accent);
+}
+
+.voice-picker-link:hover {
+  background: var(--surface-muted);
+}
+
+.voice-picker-link:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: -2px;
+}
+
+@media (max-width: 640px) {
+  .voice-picker {
+    @apply px-0.5 py-2;
+  }
+}
 </style>

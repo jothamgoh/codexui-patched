@@ -53,15 +53,14 @@
         </button>
       </header>
 
-      <div v-if="landing?.voice" class="notification-voice" role="status" aria-label="Voice command">
-        <div class="notification-voice-copy">
-          <p v-if="landing.voice.lead" class="notification-voice-lead">{{ landing.voice.lead }}</p>
-          <p v-if="landing.voice.heard" class="notification-voice-heard"><span>Heard:</span> “{{ landing.voice.heard }}”</p>
-          <p v-if="showLandingNote" class="notification-voice-note">{{ landing.voice.note }}</p>
-          <p v-if="voiceMicStatus" class="notification-voice-status">{{ voiceMicStatus }}</p>
-        </div>
-        <VoiceCommandMic v-model:status="voiceMicStatus" @navigate="openVoiceResult" />
-      </div>
+      <VoiceNote
+        v-if="landing?.voice"
+        class="notification-voice"
+        :lead="landing.voice.lead"
+        :heard="landing.voice.heard"
+        :note="showLandingNote ? landing.voice.note : ''"
+        @navigate="openVoiceResult"
+      />
 
       <div class="notification-tabs" role="tablist" aria-label="Notification views">
         <button
@@ -556,7 +555,7 @@ import {
 } from '../../utils/notificationActivity'
 import type { ActivityFocus, ActivityLanding } from '../../utils/voiceLanding'
 import NotificationRow from './NotificationRow.vue'
-import VoiceCommandMic from './VoiceCommandMic.vue'
+import VoiceNote from './VoiceNote.vue'
 import ThreadHelpers from './ThreadHelpers.vue'
 
 type ManualThreadUnreadOverride = {
@@ -640,7 +639,6 @@ const landing = ref<ActivityLanding | null>(null)
 const pendingLandingFocus = ref<ActivityFocus | null>(null)
 const highlightedSection = ref<ActivityFocus | ''>('')
 const activityScrollRef = ref<HTMLElement | null>(null)
-const voiceMicStatus = ref('')
 let landingHighlightTimer: ReturnType<typeof setTimeout> | null = null
 let landingScrollTimer: ReturnType<typeof setTimeout> | null = null
 
@@ -1459,37 +1457,7 @@ function onModeChange(event: Event): void {
 }
 
 .notification-voice {
-  @apply mx-4 mb-2 flex items-center gap-2.5 rounded-lg border px-3 py-2.5 text-xs leading-5;
-  border-color: var(--border-soft);
-  background: var(--surface-muted);
-  color: var(--text-secondary);
-}
-
-.notification-voice-copy {
-  @apply min-w-0 flex-1;
-  overflow-wrap: anywhere;
-}
-
-.notification-voice-lead {
-  @apply text-sm font-semibold;
-  color: var(--text-primary);
-}
-
-.notification-voice-heard > span {
-  color: var(--text-muted);
-}
-
-.notification-voice-status {
-  color: var(--text-muted);
-}
-
-.notification-voice > .voice-command-mic {
-  @apply -my-1;
-}
-
-.notification-voice-note {
-  @apply font-medium;
-  color: var(--text-primary);
+  @apply mx-4 mb-2;
 }
 
 .notification-title {

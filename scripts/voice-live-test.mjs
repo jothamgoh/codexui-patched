@@ -2,16 +2,24 @@
 // Live test of voice routing against a RUNNING CodexUI, with the user's real chats.
 //
 //   node scripts/voice-live-test.mjs [--base http://127.0.0.1:5999] [--repeat N] [--only <journey>] [--chats N]
+//                                    [--local --env-file ~/.config/codexui/.env]
 //
-// It only calls the in-app route POST /codex-api/voice/command with {"text": ...}. That route
-// routes the words and returns the result: it sends no push notification and no chat message.
-// This script never calls a /codex-api/voice/shortcut/ route, never confirms and never sends.
-// Each call spends Jev (and sometimes LLM) credit.
+// It only calls the in-app route POST /codex-api/voice/command with {"text": ..., "dryRun": true}.
+// A dry run routes the words and reports what would be sent without a tap (meta.autoSend), but
+// schedules nothing: no push notification and no chat message. This script never calls a
+// /codex-api/voice/shortcut/ route, never confirms and never sends. Each call spends Jev (and
+// sometimes LLM) credit.
+//
+// --local reads the live chats and projects from the instance the same way, but routes each
+// phrase in this process with this checkout's router (keys from --env-file). Use it to measure a
+// router change before the service runs it. It never calls the command route for the phrases.
 //
 // Phrases are generated at run time from the live chat list and project list, so no real chat
 // title is ever written to the repository. The full results, titles included, go to
 // output/voice-live/ (ignored by git). See docs/voice-commands-success.md for the targets.
 import { mkdirSync, writeFileSync } from 'node:fs'
+import { fileURLToPath } from 'node:url'
+import { build } from 'esbuild'
 
 const args = process.argv.slice(2)
 const option = (name, fallback) => { const index = args.indexOf(name); return index >= 0 ? args[index + 1] : fallback }
@@ -19,17 +27,30 @@ const base = option('--base', 'http://127.0.0.1:5999').replace(/\/+$/u, '')
 const repeat = Number(option('--repeat', '1'))
 const only = option('--only', '')
 const chatCount = Number(option('--chats', '6'))
+const local = args.includes('--local')
 const COMMAND_URL = `${base}/codex-api/voice/command`
 if (!new URL(COMMAND_URL).pathname.endsWith('/codex-api/voice/command')) throw new Error('refusing to call anything but the in-app command route')
 
-async function command(text) {
+async function loadModule(path) {
+  const { outputFiles } = await build({ entryPoints: [fileURLToPath(new URL(path, import.meta.url))], bundle: true, write: false, format: 'esm', platform: 'node', logLevel: 'silent' })
+  return import(`data:text/javascript;base64,${Buffer.from(outputFiles[0].contents).toString('base64')}`)
+}
+const { decideAutoSendAll } = await loadModule('../src/server/voice/voiceAutoSend.ts')
+
+/** Asks the instance. Always a dry run: nothing is ever scheduled or sent. */
+async function remoteCommand(text) {
   const started = performance.now()
-  const response = await fetch(COMMAND_URL, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ text }) })
+  const response = await fetch(COMMAND_URL, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ text, dryRun: true }) })
   const ms = Math.round(performance.now() - started)
   const payload = await response.json().catch(() => ({}))
   if (!response.ok) return { error: payload.error ?? `HTTP ${response.status}`, ms }
-  return { result: payload.data.result, meta: payload.data.meta ?? null, ms }
+  // An instance older than auto-send reports no decision; judge its result here instead.
+  const meta = payload.data.meta ?? {}
+  if (!meta.autoSend) meta.autoSend = decideAutoSendAll(payload.data.result, { autoSend: true }).map((decision) => (decision.auto ? decision.kind : `skip:${decision.skip}`))
+  if (!meta.dryRun && meta.autoSend.some((entry) => !entry.startsWith('skip:'))) meta.olderInstance = true
+  return { result: payload.data.result, meta, ms }
 }
+let command = remoteCommand
 
 // --- What the live instance knows -------------------------------------------
 
@@ -41,8 +62,48 @@ const discovery = await command('show my recent chats')
 if (discovery.error) throw new Error(`The live instance did not answer: ${discovery.error}`)
 const sections = discovery.result.sections
 const rows = [...new Map(['needs_you', 'running', 'unread', 'recent'].flatMap((type) => sections[type]).map((row) => [row.threadId, row])).values()]
-const projectProbe = await command('new chat')
-const projects = (projectProbe.result?.projectOptions ?? []).filter((project) => project.label.replace(/[^a-z0-9]/giu, '').length >= 3)
+// A named project that matches nothing: the chooser lists every project, default or not.
+const projectProbe = await command('new chat in the zzqx project')
+const allProjects = projectProbe.result?.projectOptions ?? []
+const projects = allProjects.filter((project) => project.label.replace(/[^a-z0-9]/giu, '').length >= 3)
+
+let defaultProject = null
+if (local) {
+  if (option('--env-file', '')) {
+    const { loadCodexUiEnv } = await loadModule('../src/server/envFile.ts')
+    loadCodexUiEnv({ explicitPath: option('--env-file', '') })
+  }
+  const { routeVoiceCommand } = await loadModule('../src/server/voice/voiceRouter.ts')
+  const { askJev } = await loadModule('../src/server/voice/jevClient.ts')
+  const { extractMessageWithLlm } = await loadModule('../src/server/voice/voiceMessage.ts')
+  const { decideWithLlm } = await loadModule('../src/server/voice/voiceLlmRouter.ts')
+  const { resolveDefaultProject } = await loadModule('../src/server/voice/voiceRoutes.ts')
+  const env = process.env
+  const llmEnv = { anthropicApiKey: env.CODEXUI_VOICE_ANTHROPIC_API_KEY, anthropicWorkspaceId: env.CODEXUI_VOICE_ANTHROPIC_WORKSPACE_ID, deepseekApiKey: env.CODEXUI_VOICE_DEEPSEEK_API_KEY, kimiApiKey: env.CODEXUI_VOICE_KIMI_API_KEY }
+  if (!env.CODEXUI_VOICE_TYPESAFE_API_KEY) throw new Error('--local needs the voice keys: pass --env-file')
+  defaultProject = resolveDefaultProject({ autoSend: true, delaySeconds: 0, defaultProject: '' }, env, allProjects)
+  const context = { sections: discovery.result.sections, otherChats: [], projects: allProjects, defaultProject, nowMs: Date.now() }
+  const deps = {
+    jev: (questions, state) => askJev(questions, state, { apiKey: env.CODEXUI_VOICE_TYPESAFE_API_KEY }),
+    extractWithLlm: (kind, transcript) => extractMessageWithLlm(kind, transcript, llmEnv),
+    decideWithLlm: (input) => decideWithLlm(input, llmEnv),
+  }
+  command = async (text) => {
+    const started = performance.now()
+    try {
+      const { result, trace } = await routeVoiceCommand(text, { ...context, nowMs: Date.now() }, deps)
+      const ms = Math.round(performance.now() - started)
+      const autoSend = decideAutoSendAll(result, { autoSend: true }).map((decision) => (decision.auto ? decision.kind : `skip:${decision.skip}`))
+      return { result, meta: { path: trace.path === 'llm' ? `llm:${trace.fallback?.provider}` : trace.path ?? 'none', totalMs: ms, autoSend }, ms }
+    } catch (error) {
+      return { error: error instanceof Error ? error.message : String(error), ms: Math.round(performance.now() - started) }
+    }
+  }
+} else {
+  const settings = await fetch(`${base}/codex-api/voice/settings`).then((response) => (response.ok ? response.json() : null)).catch(() => null)
+  const chosen = settings?.data?.defaultProject
+  defaultProject = chosen ? allProjects.find((project) => project.id === chosen) ?? { id: chosen, label: chosen.split('/').at(-1) } : settings?.fallbackProject ?? null
+}
 
 /** Chats whose title words are not shared by any other chat's title: one name, one chat. */
 function distinctChats() {
@@ -111,8 +172,24 @@ projects.slice(0, 3).forEach((project, index) => {
       { action: 'new_chat', project: project.id, messageIncludes: task })
   }
 })
-add('new chat', `new chat, ${TASKS[0]}`, { action: 'new_chat', project: null, message: TASKS[0] })
-add('new chat', `new chat with claude: ${TASKS[1]}`, { action: 'new_chat', project: null, agent: 'claude', message: TASKS[1] })
+// No project named: the default project when there is one, else the chooser.
+add('new chat', `new chat, ${TASKS[0]}`, { action: 'new_chat', project: defaultProject?.id ?? null, message: TASKS[0] })
+add('new chat', `new chat with claude: ${TASKS[1]}`, { action: 'new_chat', project: defaultProject?.id ?? null, agent: 'claude', message: TASKS[1] })
+// A project said but not one of them: the chooser, never the default.
+add('new chat', 'new chat in the zebra garden repo, plan the launch emails', { action: 'new_chat', project: null })
+
+// A task or question on its own: a new chat in the default project with the request as its message.
+for (const say of [
+  'find me the best hotels in Johor Bahru', "what's a good laptop under 2k", 'summarise the latest news on OpenAI',
+  'draft an email to my landlord about the leak', 'how do I reverse a linked list in python', 'plan a three day trip to Penang with good hawker food',
+  'what are the best chicken rice stalls near Tiong Bahru', 'explain how CPF top ups work for self employed people', 'find cheap flights from Singapore to Tokyo in December',
+  'recommend a good ergonomic chair under 500 dollars', 'why does my React useEffect run twice in development', 'give me a recipe for laksa that takes under an hour',
+  'compare the iPhone 17 Pro and the Pixel 11 cameras', 'is it cheaper to take the bus or the train to Kuala Lumpur', 'write a short birthday message for my mum',
+]) add('query', say, { action: 'new_chat', project: defaultProject?.id ?? null, message: say })
+// Not new chats: fragments, questions about chats, unsupported actions.
+for (const say of ['deploy it', 'try that again', 'stop the export job', 'pause all the running agents', 'turn on dark mode']) add('not a new chat', say, { action: 'none' })
+for (const [say, listType] of [["what's running", 'running'], ['anything new?', 'unread']]) add('not a new chat', say, { action: 'list_chats', listType })
+if (first) add('not a new chat', `what did the ${spokenTitle(first)} chat say`, { action: 'none', allowChat: first.threadId })
 
 // Compound requests become steps; a condition inside one message is still one send.
 if (first && second) {
@@ -133,7 +210,9 @@ if (projectA && projectB) {
 }
 
 // Outside scope: "didn't catch that", or at most the chat the words name; never another chat.
-for (const say of ['open spotify', 'what time is it', 'pause all the running agents', 'summarise what finished this morning', 'turn on dark mode', 'send yes to every chat', 'delete all my chats']) add('not understood', say, { action: 'none' })
+for (const say of ['open spotify', 'pause all the running agents', 'summarise what finished this morning', 'turn on dark mode', 'send yes to every chat', 'delete all my chats']) add('not understood', say, { action: 'none' })
+// A question, so a new chat is as right as "didn't catch that".
+add('not understood', 'what time is it', { action: 'none', allowNewChat: true })
 if (first) add('not understood', `what did the ${spokenTitle(first)} chat say`, { action: 'none', allowChat: first.threadId })
 
 // --- Grading ------------------------------------------------------------------
@@ -145,6 +224,7 @@ if (first) add('not understood', `what did the ${spokenTitle(first)} chat say`, 
 function gradeOne(result, expect) {
   if (expect.action === 'none') {
     if (result.outcome === 'not_understood') return 'right'
+    if (expect.allowNewChat && result.outcome === 'new_chat') return 'right'
     if (expect.allowChat && [result.threadId, ...result.candidates.map((row) => row.threadId)].includes(expect.allowChat) && (!result.threadId || result.threadId === expect.allowChat)) return 'right'
     return result.threadId ? 'misroute' : 'wrong'
   }
@@ -184,17 +264,40 @@ function grade(result, expect) {
   return grades.includes('chooser') ? 'chooser' : 'right'
 }
 
+/**
+ * Which parts would go out without a tap, and whether any would go to a chat or project the
+ * phrase did not name (the target is 0); and whether a command that is not a new chat would
+ * start one.
+ */
+function judgeAuto(result, decisions, expect) {
+  const parts = result.outcome === 'steps' ? result.steps.map(stepAsResult) : [result]
+  const wants = expect.steps ?? [expect]
+  let would = false
+  let wrong = 0
+  decisions.forEach((decision, index) => {
+    if (decision.startsWith('skip:')) return
+    would = true
+    const part = parts[index] ?? {}
+    const want = wants[index] ?? {}
+    if (decision === 'send' && (want.action !== 'send_to_chat' || part.threadId !== want.chat)) wrong += 1
+    if (decision === 'new_chat' && (want.action !== 'new_chat' || ('project' in want && (part.project?.id ?? null) !== want.project))) wrong += 1
+  })
+  const misstart = parts.some((part, index) => part.outcome === 'new_chat' && (wants[index]?.action ?? expect.action) !== 'new_chat' && !expect.allowNewChat)
+  return { would, wrong, misstart }
+}
+
 // --- Run ------------------------------------------------------------------------
 
 const selected = cases.filter((entry) => !only || entry.journey === only)
-console.log(`Voice live test against ${base}: ${selected.length} phrases x ${repeat}, from ${rows.length} live chats (${chats.length} used) and ${projects.length} projects`)
+console.log(`Voice live test against ${base}${local ? ' (routed locally with this checkout)' : ' (dry run)'}: ${selected.length} phrases x ${repeat}, from ${rows.length} live chats (${chats.length} used) and ${projects.length} projects; default project ${defaultProject ? 'set' : 'none'}`)
 const runs = []
 for (let round = 0; round < repeat; round += 1) {
   for (const entry of selected) {
     const { result, meta, ms, error } = await command(entry.say)
     const verdict = error ? 'error' : grade(result, entry.expect)
-    runs.push({ ...entry, verdict, ms, path: meta?.path ?? 'unknown', serverMs: meta?.totalMs ?? null, error, outcome: result?.outcome, reason: result?.reason, threadId: result?.threadId, message: result?.message, steps: result?.steps?.map((step) => ({ action: step.action, outcome: step.outcome, threadId: stepAsResult(step).threadId })) })
-    process.stdout.write(verdict === 'right' ? '.' : verdict === 'chooser' ? 'c' : verdict === 'misroute' ? 'M' : 'x')
+    const auto = error ? { would: false, wrong: 0, misstart: false } : judgeAuto(result, meta?.autoSend ?? [], entry.expect)
+    runs.push({ ...entry, verdict, ms, path: meta?.path ?? 'unknown', serverMs: meta?.totalMs ?? null, error, outcome: result?.outcome, reason: result?.reason, threadId: result?.threadId, message: result?.message, project: result?.project?.label ?? null, autoSend: meta?.autoSend, wouldAuto: auto.would, wrongAuto: auto.wrong, misstart: auto.misstart, steps: result?.steps?.map((step) => ({ action: step.action, outcome: step.outcome, threadId: stepAsResult(step).threadId })) })
+    process.stdout.write(auto.wrong ? 'W' : verdict === 'right' ? '.' : verdict === 'chooser' ? 'c' : verdict === 'misroute' ? 'M' : 'x')
   }
 }
 process.stdout.write('\n')
@@ -207,7 +310,9 @@ function percentile(values, p) {
 function tally(entries) {
   const count = (verdict) => entries.filter((entry) => entry.verdict === verdict).length
   const ms = entries.map((entry) => entry.serverMs ?? entry.ms)
-  return `${String(count('right')).padStart(3)}/${String(entries.length).padEnd(3)} right ${String(Math.round((count('right') / entries.length) * 100)).padStart(3)}%  chooser ${count('chooser')}  wrong ${count('wrong') + count('error')}  misroute ${count('misroute')}  p50 ${percentile(ms, 50)} ms  p95 ${percentile(ms, 95)} ms`
+  const auto = entries.filter((entry) => entry.wouldAuto).length
+  const wrongAuto = entries.reduce((sum, entry) => sum + (entry.wrongAuto ?? 0), 0)
+  return `${String(count('right')).padStart(3)}/${String(entries.length).padEnd(3)} right ${String(Math.round((count('right') / entries.length) * 100)).padStart(3)}%  chooser ${count('chooser')}  wrong ${count('wrong') + count('error')}  misroute ${count('misroute')}  auto ${auto}/${entries.length} (${Math.round((auto / entries.length) * 100)}%) wrong-auto ${wrongAuto}  p50 ${percentile(ms, 50)} ms  p95 ${percentile(ms, 95)} ms`
 }
 const journeys = [...new Set(selected.map((entry) => entry.journey))]
 console.log('\nBy journey:')
@@ -215,12 +320,16 @@ for (const journey of journeys) console.log(`  ${journey.padEnd(15)} ${tally(run
 console.log(`  ${'overall'.padEnd(15)} ${tally(runs)}`)
 console.log('By path (latency is server time when the instance reports it, else round trip):')
 for (const path of [...new Set(runs.map((entry) => entry.path))]) console.log(`  ${path.padEnd(15)} ${tally(runs.filter((entry) => entry.path === path))}`)
+const wrongAutos = runs.filter((entry) => entry.wrongAuto > 0)
+const misstarts = runs.filter((entry) => entry.misstart)
+console.log(`\nWould auto-send to a wrong chat or project: ${wrongAutos.length}${wrongAutos.length ? ` (${wrongAutos.map((entry) => `[${entry.journey}] "${entry.say.slice(0, 50)}"`).join(', ')})` : ''}`)
+console.log(`Not new chats, but would start one: ${misstarts.length}${misstarts.length ? ` (${misstarts.map((entry) => `[${entry.journey}] "${entry.say.slice(0, 50)}"`).join(', ')})` : ''}`)
 const misses = runs.filter((entry) => entry.verdict !== 'right')
 if (misses.length > 0) {
   console.log('\nNot right:')
   for (const miss of misses) {
     console.log(`  [${miss.journey}] ${miss.verdict}: "${miss.say}"`)
-    console.log(`      got ${miss.error ?? `${miss.outcome}${miss.reason ? `/${miss.reason}` : ''}`}${miss.message ? ` message "${miss.message}"` : ''}${miss.steps ? ` steps ${miss.steps.map((step) => `${step.action}:${step.outcome}`).join(', ')}` : ''} path ${miss.path} ${miss.serverMs ?? miss.ms} ms`)
+    console.log(`      got ${miss.error ?? `${miss.outcome}${miss.reason ? `/${miss.reason}` : ''}`}${miss.project ? ` project ${miss.project}` : ''}${miss.message ? ` message "${miss.message}"` : ''}${miss.steps ? ` steps ${miss.steps.map((step) => `${step.action}:${step.outcome}`).join(', ')}` : ''} path ${miss.path} ${miss.serverMs ?? miss.ms} ms`)
   }
 }
 mkdirSync('output/voice-live', { recursive: true })

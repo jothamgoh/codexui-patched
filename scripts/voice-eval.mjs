@@ -2,15 +2,18 @@
 // Live evaluation of the voice router against real Jev. Not part of `npm test`:
 // it spends TypeSafe credit (and Anthropic tokens when a rule cannot cut a message).
 //
-//   node scripts/voice-eval.mjs --env-file ~/.config/codexui/.env [--set tuning|holdout|fresh|hard|all] [--shuffle] [--repeat N] [--only <journey>] [--json] [--json-out <file>]
+//   node scripts/voice-eval.mjs --env-file ~/.config/codexui/.env [--set tuning|holdout|fresh|hard|queries|all] [--shuffle] [--repeat N] [--only <journey>] [--json] [--json-out <file>]
 //
-// Uses the fictional chats and labelled phrases in tests/fixtures/voicePhrases.mjs.
+// Uses the fictional chats and labelled phrases in tests/fixtures/voicePhrases.mjs. The queries
+// set (journeys 8 and 9) runs with a default project, as the live service does. Every result is
+// also judged for auto-send (as if the setting were on): how many would go out without a tap,
+// and how many of those would go to the wrong chat or project (the target is 0).
 // Prints accuracy per journey, every misfire, and p50/p95 latency per Jev call
 // and per command. Never prints keys or response bodies.
 import { writeFileSync } from 'node:fs'
 import { fileURLToPath } from 'node:url'
 import { build } from 'esbuild'
-import { CHATS, FRESH_PHRASES, HOLDOUT_PHRASES, HARD_PHRASES, PHRASES, buildContext } from '../tests/fixtures/voicePhrases.mjs'
+import { CHATS, DEFAULT_PROJECT, FRESH_PHRASES, HOLDOUT_PHRASES, HARD_PHRASES, PHRASES, QUERY_PHRASES, buildContext } from '../tests/fixtures/voicePhrases.mjs'
 
 async function loadModule(path) {
   const { outputFiles } = await build({
@@ -40,6 +43,7 @@ const { routeVoiceCommand } = await loadModule('../src/server/voice/voiceRouter.
 const { askJev } = await loadModule('../src/server/voice/jevClient.ts')
 const { extractMessageWithLlm } = await loadModule('../src/server/voice/voiceMessage.ts')
 const { decideWithLlm } = await loadModule('../src/server/voice/voiceLlmRouter.ts')
+const { decideAutoSendAll } = await loadModule('../src/server/voice/voiceAutoSend.ts')
 
 const llmEnv = {
   anthropicApiKey: process.env.CODEXUI_VOICE_ANTHROPIC_API_KEY,
@@ -71,8 +75,8 @@ function shuffled(rows, seed) {
   return copy
 }
 
-function contextFor(round) {
-  const context = buildContext()
+function contextFor(round, phrase) {
+  const context = buildContext(phrase.journey >= 8 ? { defaultProject: DEFAULT_PROJECT } : {})
   if (!flag('--shuffle')) return context
   return {
     ...context,
@@ -113,7 +117,7 @@ function grade(result, phrase) {
     if (missing.length > 0) problems.push(`picker misses ${missing.join(', ')}`)
   }
   if ('message' in expect && (result.message ?? '') !== expect.message && outcomes.includes(result.outcome)) problems.push(`message "${result.message ?? ''}" (want "${expect.message}")`)
-  if ('project' in expect && (result.project?.label ?? null) !== expect.project) problems.push(`project ${result.project?.label ?? null} (want ${expect.project})`)
+  if ('project' in expect && outcomes.includes(result.outcome) && (result.project?.label ?? null) !== expect.project) problems.push(`project ${result.project?.label ?? null} (want ${expect.project})`)
   if ('agent' in expect && (result.agent ?? null) !== expect.agent) problems.push(`agent ${result.agent ?? null} (want ${expect.agent})`)
   return problems
 }
@@ -125,7 +129,7 @@ function percentile(values, p) {
 }
 
 const set = option('--set', 'tuning')
-const source = { tuning: PHRASES, holdout: HOLDOUT_PHRASES, fresh: FRESH_PHRASES, hard: HARD_PHRASES, all: [...PHRASES, ...HOLDOUT_PHRASES, ...FRESH_PHRASES, ...HARD_PHRASES] }[set] ?? PHRASES
+const source = { tuning: PHRASES, holdout: HOLDOUT_PHRASES, fresh: FRESH_PHRASES, hard: HARD_PHRASES, queries: QUERY_PHRASES, all: [...PHRASES, ...HOLDOUT_PHRASES, ...FRESH_PHRASES, ...HARD_PHRASES, ...QUERY_PHRASES] }[set] ?? PHRASES
 const phrases = source.filter((phrase) => !only || String(phrase.journey) === only)
 const byJourney = new Map()
 const misfires = []
@@ -133,7 +137,7 @@ const rows = []
 for (let round = 0; round < repeat; round += 1) {
   for (const phrase of phrases) {
     const started = performance.now()
-    const { result, trace } = await routeVoiceCommand(phrase.say, contextFor(round), deps)
+    const { result, trace } = await routeVoiceCommand(phrase.say, contextFor(round, phrase), deps)
     commandLatencies.push(Math.round(performance.now() - started))
     const problems = grade(result, phrase)
     const tally = byJourney.get(phrase.journey) ?? { total: 0, correct: 0 }
@@ -147,7 +151,18 @@ for (let round = 0; round < repeat; round += 1) {
       return Boolean(step.threadId) && step.action !== 'list_chats' && (!want || step.threadId !== CHATS[want].threadId)
     })
     const ms = commandLatencies.at(-1)
-    rows.push({ say: phrase.say, journey: phrase.journey, outcome: result.outcome, reason: result.reason, wrongChat: wrongChat || wrongStepChat, problems, trace, ms })
+    // Auto-send, judged as if the setting were on: which parts would go out without a tap, and
+    // whether any of them would go to a chat or project the phrase did not name.
+    const decisions = decideAutoSendAll(result, { autoSend: true })
+    const parts = result.outcome === 'steps' ? result.steps : [result]
+    const wants = result.outcome === 'steps' ? (phrase.expect.steps ?? []) : [phrase.expect]
+    const autoParts = decisions.map((decision, index) => ({ decision, part: parts[index], want: wants[index] ?? {} })).filter((entry) => entry.decision.auto)
+    const wrongAuto = autoParts.filter(({ decision, part, want }) => decision.kind === 'send'
+      ? !want.chat || part.threadId !== CHATS[want.chat].threadId || want.action !== 'send_to_chat'
+      : want.action !== 'new_chat' || ('project' in want && (part.project?.label ?? null) !== want.project))
+    const wantsNewChat = [phrase.expect.outcome].flat().includes('new_chat') || phrase.expect.action === 'new_chat'
+    const misstart = !wantsNewChat && (result.outcome === 'new_chat' || (result.steps ?? []).some((step, index) => step.outcome === 'new_chat' && wants[index]?.action !== 'new_chat'))
+    rows.push({ say: phrase.say, journey: phrase.journey, outcome: result.outcome, reason: result.reason, wrongChat: wrongChat || wrongStepChat, problems, trace, ms, autoSend: decisions.map((decision) => (decision.auto ? decision.kind : `skip:${decision.skip}`)), wouldAuto: autoParts.length > 0, wrongAuto: wrongAuto.length, misstart })
     if (problems.length > 0) misfires.push({ say: phrase.say, journey: phrase.journey, problems, trace })
   }
 }
@@ -160,14 +175,16 @@ if (flag('--json')) {
   process.exit(0)
 }
 
-const names = { 1: 'open (clear)', 2: 'open (close call)', 3: 'lists', 4: 'send', 5: 'new chat', 6: 'not understood', 7: 'steps' }
+const names = { 1: 'open (clear)', 2: 'open (close call)', 3: 'lists', 4: 'send', 5: 'new chat', 6: 'not understood', 7: 'steps', 8: 'query -> new chat', 9: 'not a new chat' }
 let total = 0
 let correct = 0
 console.log(`Voice router live eval (${set} set): ${phrases.length} phrases x ${repeat}${flag('--shuffle') ? ', shuffled option order' : ''}`)
 for (const [journey, tally] of [...byJourney].sort((left, right) => left[0] - right[0])) {
   total += tally.total
   correct += tally.correct
-  console.log(`  journey ${journey} ${names[journey].padEnd(18)} ${tally.correct}/${tally.total}  ${Math.round((tally.correct / tally.total) * 100)}%`)
+  const journeyRows = rows.filter((row) => row.journey === journey)
+  const auto = journeyRows.filter((row) => row.wouldAuto).length
+  console.log(`  journey ${journey} ${names[journey].padEnd(18)} ${tally.correct}/${tally.total}  ${Math.round((tally.correct / tally.total) * 100)}%   would auto-send ${auto}/${journeyRows.length}  wrong ${journeyRows.reduce((sum, row) => sum + row.wrongAuto, 0)}`)
 }
 console.log(`  overall                      ${correct}/${total}  ${Math.round((correct / total) * 100)}%`)
 console.log(`Jev call latency ms: p50 ${percentile(callLatencies, 50)}  p95 ${percentile(callLatencies, 95)}  max ${Math.max(...callLatencies)}  (${callLatencies.length} calls)`)
@@ -185,6 +202,10 @@ if (llmCalls.length > 0) {
   const reasons = Object.entries(Object.groupBy(llmCalls, (call) => call.reason)).map(([reason, calls]) => `${reason} ${calls.length}`).join(', ')
   console.log(`LLM fallback: ${llmCalls.length} calls (${reasons}); ${llmCalls.filter((call) => !call.ok).length} failed; p50 ${percentile(llmCalls.map((call) => call.elapsedMs), 50)} ms  p95 ${percentile(llmCalls.map((call) => call.elapsedMs), 95)} ms`)
 }
+const wrongAutos = rows.filter((row) => row.wrongAuto > 0)
+console.log(`Would auto-send: ${rows.filter((row) => row.wouldAuto).length}/${rows.length}; to a wrong chat or project: ${wrongAutos.length}${wrongAutos.length ? ` (${wrongAutos.map((row) => `"${row.say.slice(0, 50)}"`).join(', ')})` : ''}`)
+const misstarts = rows.filter((row) => row.misstart)
+console.log(`Commands started as a new chat that should not be: ${misstarts.length}${misstarts.length ? ` (${misstarts.map((row) => `"${row.say.slice(0, 50)}"`).join(', ')})` : ''}`)
 const wrongChats = rows.filter((row) => row.wrongChat)
 console.log(`Wrong chat opened or readied: ${wrongChats.length}${wrongChats.length ? ` (${wrongChats.map((row) => `"${row.say.slice(0, 40)}"`).join(', ')})` : ''}`)
 const failures = rows.flatMap((row) => row.trace.calls.filter((call) => !call.ok).map((call) => `${call.reason}${call.status ? ` ${call.status}` : ''}`))

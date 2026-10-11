@@ -264,7 +264,7 @@ export const QUERY_PHRASES = [
   // Journey 9: not new chats. Questions about chats, sends, fragments, other apps, unsupported actions.
   { journey: 9, say: "what's running", expect: { action: 'list_chats', outcome: 'picker', listType: 'running' } },
   { journey: 9, say: 'anything new?', expect: { action: 'list_chats', outcome: 'picker', listType: 'unread' } },
-  { journey: 9, say: "what's waiting on me", expect: { action: 'list_chats', outcome: 'open_chat', listType: 'needs_you' } },
+  { journey: 9, say: "what's waiting on me", expect: { action: 'list_chats', outcome: 'open_chat', listType: 'needs_you', chat: 'migration' } },
   { journey: 9, say: 'what did the stripe chat say', expect: { outcome: ['not_understood', 'picker'] } },
   { journey: 9, say: 'open the stripe webhook chat', expect: { action: 'open_chat', outcome: 'open_chat', chat: 'webhook' } },
   { journey: 9, say: 'tell the stripe webhook chat to deploy it', expect: { action: 'send_to_chat', outcome: 'send_ready', chat: 'webhook', message: 'deploy it' } },

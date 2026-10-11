@@ -223,6 +223,9 @@ export function namedProjectNames(words: string, labels: Iterable<string>): Set<
   return named
 }
 
+/** Words that say a project, folder or repository is being named. */
+const PROJECT_WORDS = /\b(?:project|projects|repo|repos|repository|folder|workspace|directory)\b/iu
+
 const STATE_WORDS = /\b(?:running|unread|finished|done|waiting|latest|last|newest|recent|just|busy|working)\b/iu
 
 /** Spoken words, other than the project name, that appear in the chat's title. */
@@ -356,7 +359,7 @@ export function buildNewChatQuestions(projects: VoiceProjectOption[]) {
     const aliases = projectAliases(project.label).filter((alias) => alias !== project.label)
     projectCriteria[key] = aliases.length > 0 ? `${project.label} (also heard as: ${aliases.join(', ')})` : project.label
   }
-  projectCriteria.not_named = 'The request names no project, folder or repository at all.'
+  projectCriteria.not_named = 'The request names no project, folder or repository at all. Naming only an agent (Claude or Codex) is not naming a project.'
   projectCriteria.other = 'A project, folder or repository is named, but it is not in this list.'
   return {
     questions: {
@@ -706,8 +709,11 @@ async function routeNewChat(heard: string, context: VoiceContext, deps: VoiceRou
       pick.project = keys.get(answers.project.choice) ?? null
       pick.basis = 'jev'
     }
+    // Jev sure no project was named; or its best guess, when no word in the request even sounds
+    // like a project ("project", "repo", "folder" or a listed name): two signals agree.
     const notNamed = answers.project.probabilities.not_named ?? 0
-    pick.projectNamed = answers.project.choice === 'not_named' && notNamed >= VOICE_THRESHOLDS.projectNotNamed ? false : answers.project.choice === 'not_named' ? null : true
+    const sure = notNamed >= VOICE_THRESHOLDS.projectNotNamed || !PROJECT_WORDS.test(heard)
+    pick.projectNamed = answers.project.choice === 'not_named' ? (sure ? false : null) : true
     pick.rankedProjects = margin.ranked.map(([key]) => keys.get(key)).filter((value): value is VoiceProjectOption => Boolean(value))
     if (answers.agent.choice !== 'not_said' && answers.agent.confidence >= VOICE_THRESHOLDS.agentConfidence) pick.agent = answers.agent.choice as VoiceAgent
   }

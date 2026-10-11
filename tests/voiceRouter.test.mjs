@@ -693,7 +693,7 @@ test('without a default project, a task with no project opens the project choose
 
 test('Jev must be sure no project was named; a project word in the request blocks the default', async () => {
   const unsureNone = { pass1: { action: { new_chat: 0.95 } }, pass2: { project: { not_named: 0.6, other: 0.3 } } }
-  assert.equal((await routeVoiceCommand('find me the best hotels in Johor Bahru', withDefault(), deps(unsureNone))).result.project, null)
+  assert.equal((await routeVoiceCommand('find me the best hotels for the travel project', withDefault(), deps(unsureNone))).result.project, null)
   const otherProject = { pass1: { action: { new_chat: 0.95 } }, pass2: { project: { other: 0.94 } } }
   assert.equal((await routeVoiceCommand('new chat in the marketing repo, plan the launch', withDefault(), deps(otherProject))).result.project, null)
   // Jev says not named, but the words do name a listed project: not the default.
@@ -728,4 +728,12 @@ test('pass 1 teaches standalone tasks as new chats and keeps fragments and app r
   const { questions } = router.buildNewChatQuestions(PROJECTS)
   assert.ok('not_named' in questions.project.criteria)
   assert.ok('other' in questions.project.criteria)
+})
+
+test('Jev\'s best guess that no project was named counts when no word sounds like a project', async () => {
+  const lean = { pass1: { action: { new_chat: 0.95 } }, pass2: { project: { not_named: 0.6, other: 0.3 } } }
+  const plain = (await routeVoiceCommand('summarise the latest news on OpenAI', withDefault(), deps(lean))).result
+  assert.equal(plain.project?.label, DEFAULT_PROJECT.label)
+  const repo = (await routeVoiceCommand('new chat in the marketing repo, plan the launch', withDefault(), deps(lean))).result
+  assert.equal(repo.project, null, '"repo" in the words: Jev must be sure')
 })

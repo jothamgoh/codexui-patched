@@ -168,10 +168,17 @@ function gradeOne(result, expect) {
   return 'wrong'
 }
 
+function stepAsResult(step) {
+  const candidates = step.candidates ?? []
+  const target = step.outcome === 'send_ready' || step.outcome === 'open_chat' ? candidates[0]?.threadId : undefined
+  return { ...step, candidates, threadId: step.threadId ?? target }
+}
+
 function grade(result, expect) {
   if (!expect.steps) return gradeOne(result, expect)
   if (result.outcome !== 'steps' || (result.steps ?? []).length !== expect.steps.length) return result.threadId ? 'misroute' : 'wrong'
-  const grades = expect.steps.map((want, index) => gradeOne(result.steps[index], want))
+  // A step names its chat through candidates; only a top-level result carries threadId.
+  const grades = expect.steps.map((want, index) => gradeOne(stepAsResult(result.steps[index]), want))
   if (grades.includes('misroute')) return 'misroute'
   if (grades.includes('wrong')) return 'wrong'
   return grades.includes('chooser') ? 'chooser' : 'right'
@@ -186,7 +193,7 @@ for (let round = 0; round < repeat; round += 1) {
   for (const entry of selected) {
     const { result, meta, ms, error } = await command(entry.say)
     const verdict = error ? 'error' : grade(result, entry.expect)
-    runs.push({ ...entry, verdict, ms, path: meta?.path ?? 'unknown', serverMs: meta?.totalMs ?? null, error, outcome: result?.outcome, reason: result?.reason, threadId: result?.threadId, message: result?.message, steps: result?.steps?.map((step) => ({ action: step.action, outcome: step.outcome, threadId: step.threadId })) })
+    runs.push({ ...entry, verdict, ms, path: meta?.path ?? 'unknown', serverMs: meta?.totalMs ?? null, error, outcome: result?.outcome, reason: result?.reason, threadId: result?.threadId, message: result?.message, steps: result?.steps?.map((step) => ({ action: step.action, outcome: step.outcome, threadId: stepAsResult(step).threadId })) })
     process.stdout.write(verdict === 'right' ? '.' : verdict === 'chooser' ? 'c' : verdict === 'misroute' ? 'M' : 'x')
   }
 }

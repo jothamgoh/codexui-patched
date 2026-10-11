@@ -48,6 +48,7 @@ export function buildContext(overrides = {}) {
     },
     otherChats: overrides.otherChats ?? [c.ingress],
     projects: overrides.projects ?? PROJECTS,
+    defaultProject: overrides.defaultProject ?? null,
     nowMs: NOW_MS,
   }
 }
@@ -174,7 +175,8 @@ export const FRESH_PHRASES = [
   { journey: 5, say: 'fresh chat for slack A I, look at the webhook timeouts', expect: { action: 'new_chat', outcome: 'new_chat', project: 'slack-ai', agent: null, message: 'look at the webhook timeouts' } },
   { journey: 5, say: 'new codex thread in notes vault', expect: { action: 'new_chat', outcome: 'new_chat', project: 'notes-vault', agent: 'codex', message: '' } },
   { journey: 6, say: 'pause all the running agents', expect: { outcome: 'not_understood' } },
-  { journey: 6, say: 'how much did I spend on tokens this week', expect: { outcome: 'not_understood' } },
+  // A question, so a new chat is as right as "didn't catch that".
+  { journey: 6, say: 'how much did I spend on tokens this week', expect: { outcome: ['not_understood', 'new_chat'] } },
   { journey: 6, say: 'mm', expect: { outcome: 'not_understood' } },
   { journey: 7, say: 'new chat in hr-ai and another one in notes vault', expect: { outcome: 'steps', steps: [{ action: 'new_chat', project: 'hr-ai' }, { action: 'new_chat', project: 'notes-vault' }] } },
 ]
@@ -218,4 +220,62 @@ export const HARD_PHRASES = [
   { journey: 6, say: 'turn on dark mode', expect: { outcome: 'not_understood' } },
   { journey: 6, say: 'delete all my chats', expect: { outcome: 'not_understood' } },
   { journey: 6, say: 'send yes to every chat', expect: { outcome: 'not_understood' } },
+]
+
+/** The project a new chat starts in when the command names none (Settings or CODEXUI_VOICE_DEFAULT_PROJECT). */
+export const DEFAULT_PROJECT = PROJECTS.find((project) => project.label === 'notes-vault')
+
+/**
+ * Journey 8: a task or question said on its own becomes a new chat in the
+ * default project, with the request as its message. Routed with
+ * buildContext({ defaultProject: DEFAULT_PROJECT }). `projectNamed: false`:
+ * no project was said. Journey 9: commands that must NOT start a new chat.
+ */
+export const QUERY_PHRASES = [
+  ...[
+    'find me the best hotels in Johor Bahru',
+    "what's a good laptop under 2k",
+    'summarise the latest news on OpenAI',
+    'draft an email to my landlord about the leak',
+    'how do I reverse a linked list in python',
+    'compare the iPhone 17 Pro and the Pixel 11 cameras',
+    'plan a three day trip to Penang with good hawker food',
+    'what are the best chicken rice stalls near Tiong Bahru',
+    'write a short birthday message for my mum',
+    'explain how CPF top ups work for self employed people',
+    'is it cheaper to take the bus or the train to Kuala Lumpur',
+    'recommend a good ergonomic chair under 500 dollars',
+    "what's the difference between a Roth IRA and a traditional IRA",
+    'research the best noise cancelling headphones for flights',
+    'give me a recipe for laksa that takes under an hour',
+    'why does my React useEffect run twice in development',
+    'find cheap flights from Singapore to Tokyo in December',
+    'translate thank you for your patience into Japanese',
+  ].map((say) => ({ journey: 8, say, expect: { action: 'new_chat', outcome: 'new_chat', project: 'notes-vault', projectNamed: false, agent: null, message: say } })),
+  { journey: 8, say: 'um can you find me the best hotels in Johor Bahru please', expect: { action: 'new_chat', outcome: 'new_chat', project: 'notes-vault', projectNamed: false, agent: null, message: 'find me the best hotels in Johor Bahru' } },
+  { journey: 8, say: 'with claude, summarise the latest news on OpenAI', expect: { action: 'new_chat', outcome: 'new_chat', project: 'notes-vault', projectNamed: false, agent: 'claude' } },
+  // "new chat" without a project, with a default: the default.
+  { journey: 8, say: 'new chat, find out why the build is slow', expect: { action: 'new_chat', outcome: 'new_chat', project: 'notes-vault', projectNamed: false, agent: null, message: 'find out why the build is slow' } },
+  { journey: 8, say: 'new chat with codex: write a migration guide', expect: { action: 'new_chat', outcome: 'new_chat', project: 'notes-vault', projectNamed: false, agent: 'codex', message: 'write a migration guide' } },
+  // A named project is used; a name said but not matched is the chooser, never the default.
+  { journey: 8, say: 'new chat in hr-ai, find out why customer emails are bouncing', expect: { action: 'new_chat', outcome: 'new_chat', project: 'hr-ai', agent: null, message: 'find out why customer emails are bouncing' } },
+  { journey: 8, say: 'new chat in the marketing repo, plan the launch emails', expect: { action: 'new_chat', outcome: 'new_chat', project: null, projectNamed: true, agent: null } },
+  { journey: 8, say: 'start a new chat in my garden planner project to add watering reminders', expect: { action: 'new_chat', outcome: 'new_chat', project: null, projectNamed: true, agent: null } },
+  // Journey 9: not new chats. Questions about chats, sends, fragments, other apps, unsupported actions.
+  { journey: 9, say: "what's running", expect: { action: 'list_chats', outcome: 'picker', listType: 'running' } },
+  { journey: 9, say: 'anything new?', expect: { action: 'list_chats', outcome: 'picker', listType: 'unread' } },
+  { journey: 9, say: "what's waiting on me", expect: { action: 'list_chats', outcome: 'open_chat', listType: 'needs_you' } },
+  { journey: 9, say: 'what did the stripe chat say', expect: { outcome: ['not_understood', 'picker'] } },
+  { journey: 9, say: 'open the stripe webhook chat', expect: { action: 'open_chat', outcome: 'open_chat', chat: 'webhook' } },
+  { journey: 9, say: 'tell the stripe webhook chat to deploy it', expect: { action: 'send_to_chat', outcome: 'send_ready', chat: 'webhook', message: 'deploy it' } },
+  { journey: 9, say: 'the nightly export job should retry the sheet twice', expect: { action: 'send_to_chat', outcome: ['send_ready', 'picker'], chat: 'exportJob' } },
+  { journey: 9, say: 'deploy it', expect: { outcome: 'not_understood' } },
+  { journey: 9, say: 'try that again', expect: { outcome: 'not_understood' } },
+  { journey: 9, say: 'uh the thing from before', expect: { outcome: 'not_understood' } },
+  { journey: 9, say: 'stop the export job', expect: { outcome: 'not_understood' } },
+  { journey: 9, say: 'pause all the running agents', expect: { outcome: 'not_understood' } },
+  { journey: 9, say: 'open spotify', expect: { outcome: 'not_understood' } },
+  { journey: 9, say: 'summarise what finished this morning', expect: { outcome: 'not_understood' } },
+  { journey: 9, say: 'turn on dark mode', expect: { outcome: 'not_understood' } },
+  { journey: 9, say: 'delete all my chats', expect: { outcome: 'not_understood' } },
 ]

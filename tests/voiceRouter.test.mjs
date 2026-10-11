@@ -2,7 +2,7 @@ import assert from 'node:assert/strict'
 import { fileURLToPath } from 'node:url'
 import test from 'node:test'
 import { build } from 'esbuild'
-import { CHATS, PHRASES, PROJECTS, buildContext } from './fixtures/voicePhrases.mjs'
+import { CHATS, DEFAULT_PROJECT, PHRASES, PROJECTS, QUERY_PHRASES, buildContext } from './fixtures/voicePhrases.mjs'
 
 async function loadModule(path) {
   const { outputFiles } = await build({
@@ -115,7 +115,8 @@ function scriptFor(phrase) {
   let pass2 = {}
   if (expect.chat && (action === 'open_chat' || action === 'send_to_chat')) pass2 = { chat: { [CHATS[expect.chat].threadId]: 0.93 } }
   if (expect.picker) pass2 = { chat: Object.fromEntries(expect.picker.map((key, index) => [CHATS[key].threadId, [0.42, 0.3, 0.2][index] ?? 0.02])) }
-  if (action === 'new_chat') pass2 = { project: { [expect.project ?? 'other']: 0.94 }, agent: { [expect.agent ?? 'not_said']: 0.93 } }
+  const projectKey = expect.projectNamed === false ? 'not_named' : expect.project ?? 'other'
+  if (action === 'new_chat') pass2 = { project: { [projectKey]: 0.94 }, agent: { [expect.agent ?? 'not_said']: 0.93 } }
   // Several requests: the LLM splits them into steps (chats unnamed, so each lands on a chooser).
   const decision = expect.steps?.map((step) => step.action === 'list_chats' ? llmList(step.listType)
     : step.action === 'new_chat' ? llmNew(step.project)
@@ -142,7 +143,7 @@ function assertMatchesExpectation(result, trace, phrase, label) {
     assert.ok(result.candidates.length >= VOICE_THRESHOLDS.pickerMin && result.candidates.length <= VOICE_THRESHOLDS.pickerMax, `${label}: 3-5 picker rows`)
   }
   if ('message' in expect) assert.equal(result.message ?? '', expect.message, `${label}: message`)
-  if ('project' in expect) assert.equal(result.project?.label ?? null, expect.project, `${label}: project`)
+  if ('project' in expect && [expect.outcome].flat().includes(result.outcome)) assert.equal(result.project?.label ?? null, expect.project, `${label}: project`)
   if ('agent' in expect) assert.equal(result.agent ?? null, expect.agent, `${label}: agent`)
   if (expect.outcome === 'not_understood') assert.ok(result.candidates.length > 0, `${label}: recent chats offered`)
   if (expect.action === 'list_chats' && expect.outcome === 'picker') {
@@ -613,4 +614,118 @@ test('only a send Jev itself was sure of may be confirmed inside the Shortcut', 
   assert.equal(at('jev', VOICE_THRESHOLDS.shortcutConfirmActionConfidence - 0.01), false)
   assert.equal(at('llm', 0.99), false)
   assert.equal(at('jev+llm', 0.99), false)
+})
+
+// --- Auto-send inputs: what made a pick sure, and drafts ----------------------------
+
+test('a sure send records what made it sure, for each path', async () => {
+  const sure = { pass1: { action: { send_to_chat: 0.95 } }, pass2: { chat: { [CHATS.webhook.threadId]: 0.93 } } }
+  assert.equal((await routeVoiceCommand('tell the stripe webhook chat to deploy it', buildContext(), deps(sure))).result.basis, 'jev')
+  const modest = { pass1: { action: { send_to_chat: 0.95 } }, pass2: { chat: { [CHATS.shortcut.threadId]: 0.6, [CHATS.pushNotes.threadId]: 0.2 } } }
+  assert.equal((await routeVoiceCommand('tell the iPhone shortcut chat to add a mic', buildContext(), deps(modest))).result.basis, 'jev+words')
+  const near = { pass1: { action: { send_to_chat: 0.95 } }, pass2: { chat: { [CHATS.login.threadId]: 0.5, [CHATS.pushNotes.threadId]: 0.45 } } }
+  const settled = (await routeVoiceCommand('tell the mobile layout chat to add a mic', buildContext(), deps(near, { decision: [llmChat('send_to_chat', 'login', { message: 'add a mic' })] }))).result
+  assert.equal(settled.basis, 'jev+llm', 'the LLM is sure and Jev ranked it in its top two')
+  const llmWords = (await routeVoiceCommand('tell the iPhone shortcut chat to add a microphone', buildContext(), deps(unsure(), { decision: [llmChat('send_to_chat', 'shortcut', { certain: false, chatWords: 'iPhone shortcut chat', message: 'add a microphone' })] }))).result
+  assert.equal(llmWords.basis, 'llm+words')
+  const llmAlone = (await routeVoiceCommand('tell the mobile layout one to add a microphone', buildContext(), deps(unsure(), { decision: [llmChat('send_to_chat', 'login', { certain: true, message: 'add a microphone' })] }))).result
+  assert.equal(llmAlone.outcome, 'send_ready')
+  assert.equal(llmAlone.basis, 'llm', 'the LLM alone: routed, but not enough to send without a tap')
+})
+
+test('a new chat records how its project was chosen', async () => {
+  const jevProject = { pass1: { action: { new_chat: 0.95 } }, pass2: { project: { 'hr-ai': 0.94 } } }
+  assert.equal((await routeVoiceCommand('new chat in hr-ai, fix the build', buildContext(), deps(jevProject))).result.basis, 'words', 'the rule read the name')
+  assert.equal((await routeVoiceCommand('start something for hr-ai and fix the build', buildContext(), deps(jevProject, { llm: { message: 'fix the build', provider: 'anthropic' } }))).result.basis, 'jev')
+  const llmNamed = (await routeVoiceCommand('um new chat in codexui patched and add a mic', buildContext(), deps(unsure('new_chat'), { decision: [llmNew('codexui-patched', { message: 'add a mic', projectNamed: true })] }))).result
+  assert.equal(llmNamed.basis, 'words', 'the rule also read it')
+  const llmOnly = (await routeVoiceCommand('a fresh one for the vault to tidy the inbox', buildContext(), deps(unsure('new_chat'), { decision: [llmNew('notes-vault', { message: 'tidy the inbox', projectNamed: true })] }))).result
+  assert.equal(llmOnly.project?.label, 'notes-vault')
+  assert.equal(llmOnly.basis, 'llm', 'no project name in the words')
+})
+
+test('"draft", "don\'t send" and "just type" mark the result draft-only and stay out of the message', async () => {
+  const sure = { pass1: { action: { send_to_chat: 0.95 } }, pass2: { chat: { [CHATS.webhook.threadId]: 0.93 } } }
+  for (const say of ['draft a reply to the stripe webhook chat saying deploy it', 'tell the stripe webhook chat to deploy it, but don\'t send it', 'just type deploy it in the stripe webhook chat', 'tell the stripe webhook chat to deploy it. I\'ll send it myself']) {
+    const { result } = await routeVoiceCommand(say, buildContext(), deps(sure))
+    assert.equal(result.outcome, 'send_ready', say)
+    assert.equal(result.message, 'deploy it', say)
+    assert.equal(result.draftOnly, true, say)
+    assert.equal(result.heard, say, 'what was heard is kept whole')
+  }
+  const plain = (await routeVoiceCommand('tell the docs chat to draft the release notes', buildContext(), deps(sure))).result
+  assert.equal(plain.draftOnly, undefined, 'asking the agent to draft something is a normal send')
+  const llmDraft = (await routeVoiceCommand('respond to the iPhone shortcut chat with add a mic but hold it for me', buildContext(), deps(unsure(), { decision: [llmChat('send_to_chat', 'shortcut', { chatWords: 'iPhone shortcut chat', message: 'add a mic', draftOnly: true })] }))).result
+  assert.equal(llmDraft.draftOnly, true, 'the LLM can spot a draft the rules miss')
+  const steps = { pass1: { action: { send_to_chat: 0.9 }, compound: 0.9 } }
+  const multi = (await routeVoiceCommand('draft: tell the stripe webhook chat to deploy it and new chat in hr-ai to fix the quiz', buildContext(), deps(steps, { decision: [llmChat('send_to_chat', 'webhook', { chatWords: 'stripe webhook chat', message: 'deploy it' }), llmNew('hr-ai', { message: 'fix the quiz' })] }))).result
+  assert.equal(multi.outcome, 'steps')
+  assert.ok(multi.steps.every((step) => step.draftOnly === true), 'a spoken "draft" covers every step')
+})
+
+// --- Default project and bare tasks ------------------------------------------------
+
+const withDefault = () => buildContext({ defaultProject: DEFAULT_PROJECT })
+
+for (const phrase of QUERY_PHRASES.filter((entry) => entry.journey === 8)) {
+  test(`starts a new chat for "${phrase.say}"`, async () => {
+    const script = scriptFor(phrase)
+    const llm = phrase.expect.message === undefined ? { message: phrase.say, provider: 'anthropic' } : null
+    const { result, trace } = await routeVoiceCommand(phrase.say, withDefault(), deps(script, { llm }))
+    assert.equal(result.outcome, 'new_chat')
+    assert.equal(result.project?.label ?? null, phrase.expect.project)
+    if (phrase.expect.message !== undefined) assert.equal(result.message, phrase.expect.message)
+    if ('agent' in phrase.expect) assert.equal(result.agent ?? null, phrase.expect.agent)
+    if (phrase.expect.projectNamed === false) assert.equal(result.basis, 'default')
+    if (phrase.expect.projectNamed === true) assert.equal(result.reason, 'project_unclear', 'a name said but not matched never falls back to the default')
+    assert.ok(trace.calls.length <= 2)
+  })
+}
+
+test('without a default project, a task with no project opens the project chooser with the message', async () => {
+  const phrase = QUERY_PHRASES[0]
+  const { result } = await routeVoiceCommand(phrase.say, buildContext(), deps(scriptFor(phrase)))
+  assert.equal(result.outcome, 'new_chat')
+  assert.equal(result.project, null)
+  assert.equal(result.reason, 'project_unclear')
+  assert.equal(result.message, phrase.say)
+})
+
+test('Jev must be sure no project was named; a project word in the request blocks the default', async () => {
+  const unsureNone = { pass1: { action: { new_chat: 0.95 } }, pass2: { project: { not_named: 0.6, other: 0.3 } } }
+  assert.equal((await routeVoiceCommand('find me the best hotels in Johor Bahru', withDefault(), deps(unsureNone))).result.project, null)
+  const otherProject = { pass1: { action: { new_chat: 0.95 } }, pass2: { project: { other: 0.94 } } }
+  assert.equal((await routeVoiceCommand('new chat in the marketing repo, plan the launch', withDefault(), deps(otherProject))).result.project, null)
+  // Jev says not named, but the words do name a listed project: not the default.
+  const wrongNone = { pass1: { action: { new_chat: 0.95 } }, pass2: { project: { not_named: 0.95 } } }
+  const named = (await routeVoiceCommand('a fresh one for slack AI to look at the logs', withDefault(), deps(wrongNone, { llm: { message: 'look at the logs', provider: 'anthropic' } }))).result
+  assert.notEqual(named.project?.label, DEFAULT_PROJECT.label)
+})
+
+test('the LLM path uses the default only when it says no project was named', async () => {
+  const say = 'so um I was wondering, what are the best chicken rice stalls near Tiong Bahru'
+  const none = (await routeVoiceCommand(say, withDefault(), deps(unsure('new_chat'), { decision: [llmNew(null, { message: 'what are the best chicken rice stalls near Tiong Bahru', projectNamed: false })] }))).result
+  assert.equal(none.project?.label, DEFAULT_PROJECT.label)
+  assert.equal(none.basis, 'default')
+  const named = (await routeVoiceCommand(say, withDefault(), deps(unsure('new_chat'), { decision: [llmNew(null, { message: 'what are the best chicken rice stalls near Tiong Bahru', projectNamed: true })] }))).result
+  assert.equal(named.project, null)
+})
+
+test('fragments that lean on earlier work never start a chat, even when Jev calls them new chats', async () => {
+  const wrong = { pass1: { action: { new_chat: 0.95 } }, pass2: { project: { not_named: 0.95 } } }
+  for (const say of ['deploy it', 'try that again', 'fix it', 'do the same for the other one', 'uh the thing from before']) {
+    const { result } = await routeVoiceCommand(say, withDefault(), deps(wrong))
+    assert.equal(result.outcome, 'not_understood', say)
+    assert.equal(result.reason, 'fragment', say)
+  }
+})
+
+test('pass 1 teaches standalone tasks as new chats and keeps fragments and app requests out', () => {
+  const { action } = buildPass1Questions()
+  assert.ok(action.criteria.new_chat.examples.includes('find me the best hotels in Johor Bahru'))
+  assert.ok(action.criteria.other.examples.includes('deploy it'))
+  assert.ok(!action.criteria.other.examples.includes('what time is it'))
+  const { questions } = router.buildNewChatQuestions(PROJECTS)
+  assert.ok('not_named' in questions.project.criteria)
+  assert.ok('other' in questions.project.criteria)
 })

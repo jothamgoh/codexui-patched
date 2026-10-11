@@ -213,6 +213,97 @@ export function extractNewChatByRule(transcript: string, projects: ProjectAliasE
   return { message: cleanMessage(rest), projectId, projectPhrase, agent }
 }
 
+// ---------------------------------------------------------------------------
+// A task or question said on its own: a new chat whose message is the request.
+
+const CHAT_WORDS = /\b(?:chat|chats|thread|threads|conversation|session)\b/iu
+const BACK_REFERENCE = /\b(?:it|that|this|them|those|these|again|same|there|before|earlier|thing|stuff|other)\b/iu
+const QUESTION_START = /^(?:what|what's|whats|how|why|who|where|when|which|is|are|can|could|should|does|find|search|look|compare|recommend|suggest|explain|summari[sz]e|write|draft|plan|book)\b/iu
+
+/**
+ * "find me the best hotels in Johor Bahru" -> the whole request, without
+ * filler. Null when the words mention chats or say "new chat" (the rules and
+ * the LLM handle those).
+ */
+export function extractBareTask(transcript: string): RuleExtraction | null {
+  const text = stripFillers(transcript)
+  if (!text || NEW_CHAT_ANCHOR.test(text) || CHAT_WORDS.test(text)) return null
+  const message = cleanMessage(text)
+  return message ? { message } : null
+}
+
+/**
+ * Too short, or leaning on earlier work, to start a chat about: "deploy it",
+ * "try that again", "the thing from before". A question stays a task.
+ */
+export function isBareFragment(transcript: string): boolean {
+  const text = stripFillers(transcript)
+  if (!text || NEW_CHAT_ANCHOR.test(text)) return false
+  const words = text.split(/\s+/u).filter(Boolean)
+  if (words.length < 3) return true
+  if (QUESTION_START.test(text) && words.length >= 3) return false
+  return words.length <= 8 && BACK_REFERENCE.test(text)
+}
+
+// ---------------------------------------------------------------------------
+// Opting out of auto-send: "draft …", "… don't send it", "just type …".
+
+/** "draft", "just type" or "pre-type" at the start. */
+const DRAFT_LEAD = /^(?:(?:um+|uh+|okay|ok|so|hey|please)[\s,]+)*(?:(?:just|only)\s+)?(?:draft|pre-?type|type out|type up|type)\b/iu
+/** What may follow the lead word for it to be a draft of a message: "draft a reply …", "draft: …". */
+const DRAFT_NOUN = /^\s*(?:(?:me\s+)?(?:a|an|the)\s+)?(?:message|reply|response|note|answer)\b[\s,:;\u2014-]*/iu
+const DRAFT_PUNCTUATION = /^\s*[,:;\u2014-]+\s*/u
+/** The rest names a chat: "… to the stripe chat", "… in the hr-ai one". */
+const NAMES_A_CHAT = /\b(?:to|in|into|for)\s+(?:the\s+|my\s+)?(?:[\w'-]+\s+){0,5}(?:chat|thread|conversation|session|one)\b/iu
+/** After a lead, a command verb keeps the rest as it is ("draft: tell the stripe chat to …"). */
+const COMMAND_START = /^(?:tell|ask|get|have|instruct|remind|let|reply|respond|answer|send|message|ping|post|write|say|in|on|new|start|open|create|make)\b/iu
+/** Endings that ask for a draft. Removed so the message does not carry them. */
+const DRAFT_TAILS = [
+  /(?:don'?t|dont|do not)\s+(?:auto[\s-]?)?(?:send|submit|post)(?:\s+(?:it|this|that|anything))?(?:\s+(?:yet|now|straight away|right away))?/iu,
+  /without sending(?:\s+it)?/iu,
+  /(?:as|just)\s+a\s+draft|draft\s+only|(?:just|only)\s+draft\s+it/iu,
+  /(?:i'?ll|i\s+will)\s+(?:send|review|check)\s+it(?:\s+myself)?/iu,
+  /let\s+me\s+(?:review|check|edit|look\s+at)\s+it(?:\s+first)?/iu,
+  /(?:just|only)\s+type\s+it(?:\s+(?:in|out|up))?(?:\s+for\s+me)?/iu,
+]
+/** Anywhere in the command; kept in place because the words may belong to the message. */
+const DRAFT_ANYWHERE = /\b(?:(?:don'?t|dont|do not)\s+auto[\s-]?send|without sending|just type)\b/iu
+
+/**
+ * Whether the user asked only to type the message in, and the command with
+ * those words taken out, so routing and the message never see them.
+ * "draft a reply to the stripe chat saying yes" -> "send to the stripe chat saying yes".
+ */
+export function detectDraftOnly(transcript: string): { text: string; draftOnly: boolean } {
+  let text = normalizeTranscript(transcript)
+  let draftOnly = false
+  for (let pass = 0; pass < 3; pass += 1) {
+    const before = text
+    for (const tail of DRAFT_TAILS) {
+      const match = new RegExp(`(?:^|[\\s,.;:\u2014-]+)(?:(?:but|and|so|just|though|please)\\s+)*(?:${tail.source})[\\s,.!]*$`, 'iu').exec(text)
+      if (match) {
+        text = text.slice(0, match.index).trim()
+        draftOnly = true
+      }
+    }
+    if (text === before) break
+  }
+  const lead = DRAFT_LEAD.exec(text)
+  // "type" alone only counts when another word asks for a draft too ("just type", "type out").
+  if (lead && (!/^type\b/iu.test(lead[0].replace(/^[^a-z]*/iu, '').replace(/^(?:(?:um+|uh+|okay|ok|so|hey|please)[\s,]+)*/iu, '')) || /\b(?:just|only|out|up)\b/iu.test(lead[0]))) {
+    const after = text.slice(lead[0].length)
+    const noun = DRAFT_NOUN.exec(after) ?? DRAFT_PUNCTUATION.exec(after)
+    const rest = (noun ? after.slice(noun[0].length) : after).trim()
+    // "draft an email to my landlord" is a task, not a draft of a message to a chat.
+    if (rest && (noun || COMMAND_START.test(rest) || NAMES_A_CHAT.test(rest))) {
+      draftOnly = true
+      text = COMMAND_START.test(rest) ? rest : `send ${rest.replace(/^for\b/iu, 'to')}`
+    }
+  }
+  if (DRAFT_ANYWHERE.test(text)) draftOnly = true
+  return { text, draftOnly }
+}
+
 /** "with codex" anywhere in the command, for new chats the rules could not cut. */
 export function detectAgent(transcript: string): VoiceAgent | undefined {
   return takeAgentPhrase(normalizeTranscript(transcript)).agent

@@ -12,7 +12,8 @@ async function loadModule(path) {
   return import(`data:text/javascript;base64,${Buffer.from(outputFiles[0].contents).toString('base64')}`)
 }
 
-const { buildLlmRouterRequest, parseLlmDecision, decideWithLlm, userWords, LLM_ROUTER_MAX_STEPS } = await loadModule('../src/server/voice/voiceLlmRouter.ts')
+const { buildLlmRouterRequest, parseLlmDecision, decideWithLlm, userWords, LLM_ROUTER_MAX_STEPS, LLM_ROUTER_SCHEMA, LLM_ROUTER_INSTRUCTIONS } = await loadModule('../src/server/voice/voiceLlmRouter.ts')
+const LLM_ROUTER_SCHEMA_TEXT = JSON.stringify(LLM_ROUTER_SCHEMA) + LLM_ROUTER_INSTRUCTIONS
 
 const chats = [CHATS.webhook, CHATS.bounces, CHATS.shortcut]
 const input = (heard) => ({ heard, chats, projects: PROJECTS, describeAge: () => '5 minutes ago' })
@@ -42,12 +43,32 @@ test('known ids become thread ids and project folders; unknown ids mean none cho
     step({ action: 'send_to_chat', chat_id: idOf(CHATS.webhook.threadId), chat_words: 'stripe webhook chat', chat_certain: true, alternative_chat_ids: ['c9', idOf(CHATS.bounces.threadId), idOf(CHATS.webhook.threadId)], message: 'deploy it to staging' }),
     step({ action: 'open_chat', chat_id: 'c42', chat_certain: true }),
   ])
-  assert.deepEqual(steps[0], { action: 'send_to_chat', threadId: CHATS.webhook.threadId, certain: true, alternatives: [CHATS.bounces.threadId], chatWords: 'stripe webhook chat', message: 'deploy it to staging' })
+  assert.deepEqual(steps[0], { action: 'send_to_chat', threadId: CHATS.webhook.threadId, certain: true, alternatives: [CHATS.bounces.threadId], chatWords: 'stripe webhook chat', message: 'deploy it to staging', draftOnly: false })
   assert.equal(steps[1].threadId, null)
   assert.equal(steps[1].certain, false, 'no chat, so not certain')
   const [newChat] = parse([step({ action: 'new_chat', project_id: 'p2', agent: 'codex', message: 'deploy it' })])
-  assert.deepEqual(newChat, { action: 'new_chat', projectId: '/work/slack-ai', agent: 'codex', message: 'deploy it' })
+  assert.deepEqual(newChat, { action: 'new_chat', projectId: '/work/slack-ai', projectNamed: true, agent: 'codex', message: 'deploy it', draftOnly: false })
   assert.equal(parse([step({ action: 'new_chat', project_id: '/etc' })])[0].projectId, null)
+})
+
+test('project_named tells "no project said" from "a project we could not match"; a missing field is unsure', () => {
+  const heard = 'find me the best hotels in Johor Bahru'
+  const none = parse([step({ action: 'new_chat', project_named: false, message: heard })], heard)[0]
+  assert.equal(none.projectId, null)
+  assert.equal(none.projectNamed, false)
+  assert.equal(parse([step({ action: 'new_chat', project_named: true, message: heard })], heard)[0].projectNamed, true, 'named, but not one of the listed projects')
+  assert.equal(parse([step({ action: 'new_chat', message: heard })], heard)[0].projectNamed, true, 'a model that leaves the field out never picks the default')
+  assert.equal(parse([step({ action: 'new_chat', project_id: 'p1', project_named: false, message: heard })], heard)[0].projectNamed, true, 'a chosen project counts as named')
+})
+
+test('draft_only marks a send or new chat to type in, not send', () => {
+  const heard = 'reply to the stripe webhook chat saying yes, but let me check it first'
+  const [send] = parse([step({ action: 'send_to_chat', chat_id: idOf(CHATS.webhook.threadId), chat_certain: true, message: 'yes', draft_only: true })], heard)
+  assert.equal(send.draftOnly, true)
+  assert.equal(parse([step({ action: 'send_to_chat', chat_id: idOf(CHATS.webhook.threadId), message: 'yes' })], heard)[0].draftOnly, false)
+  assert.equal(parse([step({ action: 'new_chat', message: 'yes', draft_only: true })], heard)[0].draftOnly, true)
+  assert.match(LLM_ROUTER_SCHEMA_TEXT, /draft_only/u)
+  assert.match(LLM_ROUTER_SCHEMA_TEXT, /project_named/u)
 })
 
 test('anything outside the schema is rejected so the next provider is asked', () => {
@@ -91,7 +112,7 @@ test('Haiku is asked with a JSON schema, thinking off and the workspace header',
   const calls = []
   const fetchImpl = async (url, init) => { calls.push({ url, init, body: JSON.parse(init.body) }); return anthropicOk(GOOD) }
   const decision = await decideWithLlm(input(HEARD), { anthropicApiKey: 'ak', anthropicWorkspaceId: 'ws', deepseekApiKey: 'dk' }, fetchImpl)
-  assert.deepEqual(decision, { provider: 'anthropic', steps: [{ action: 'open_chat', threadId: CHATS.bounces.threadId, certain: true, alternatives: [], chatWords: 'email bounces one', message: '' }] })
+  assert.deepEqual(decision, { provider: 'anthropic', steps: [{ action: 'open_chat', threadId: CHATS.bounces.threadId, certain: true, alternatives: [], chatWords: 'email bounces one', message: '', draftOnly: false }] })
   assert.equal(calls.length, 1)
   assert.equal(calls[0].init.headers['anthropic-workspace-id'], 'ws')
   assert.equal(calls[0].body.model, 'claude-haiku-5-5')

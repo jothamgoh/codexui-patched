@@ -48,3 +48,20 @@ test('accepts free-text-only questions and ignores malformed rows', () => {
   assert.deepEqual(requestQuestionAnswerValues(question, { choice: null, text: 'Keep this instruction.' }), ['Keep this instruction.'])
   assert.deepEqual(readRequestQuestions(null), [])
 })
+
+test('a multi-select question sends every picked option, in option order, plus an Other answer', () => {
+  const [question] = readRequestQuestions({ questions: [{ id: 'q0', question: 'Which should I clear?', isOther: true, multiSelect: true, options: [
+    { label: 'Old worktrees', description: '', preview: '  ├─ a\n  └─ b' },
+    { label: 'Caches' },
+    { label: 'Logs' },
+  ] }] })
+  assert.equal(question.multiSelect, true)
+  assert.equal(question.options[0].preview, '  ├─ a\n  └─ b', 'previews keep their leading whitespace')
+  assert.equal(question.options[1].preview, '')
+  assert.deepEqual(requestQuestionAnswerValues(question, { choice: null, choices: [], text: '' }), [])
+  assert.deepEqual(requestQuestionAnswerValues(question, { choice: null, choices: [2, 0], text: 'stale text' }), ['Old worktrees', 'Logs'])
+  assert.deepEqual(requestQuestionAnswerValues(question, { choice: null, choices: [1, -1], text: '  Downloads  ' }), ['Caches', 'Downloads'])
+  assert.deepEqual(requestQuestionAnswerValues(question, { choice: null, choices: [-1], text: ' ' }), [], 'an empty Other is not an answer')
+  const [single] = readRequestQuestions({ questions: [{ id: 'q1', options: [{ label: 'Yes' }] }] })
+  assert.equal(single.multiSelect, false)
+})

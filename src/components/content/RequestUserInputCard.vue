@@ -5,6 +5,7 @@ import { Button } from '../ui/button'
 import { Input } from '../ui/input'
 import DictationField from './DictationField.vue'
 import { readRequestQuestions, requestQuestionAnswerValues, type RequestQuestionDraft } from '../../api/requestUserInput'
+import { isClaudeThreadId } from '../../utils/chatProvider'
 import type { UiServerRequest, UiServerRequestReply } from '../../types/codex'
 
 const props = defineProps<{ request: UiServerRequest; draft: RequestQuestionDraft }>()
@@ -18,18 +19,22 @@ const answer = computed(() => {
   const id = current.value?.id ?? ''
   let value = answers.value.get(id)
   if (!value) {
-    value = { choice: null, text: '' }
+    value = { choice: null, choices: [], text: '' }
     answers.value.set(id, value)
   }
   return answers.value.get(id)!
 })
+const agentName = computed(() => isClaudeThreadId(props.request.threadId) ? 'Claude' : 'Codex')
 const sending = computed(() => props.request.replyState === 'sending')
 const busy = computed(() => sending.value || dictationBusy.value)
 const hasAnswer = computed(() => current.value && requestQuestionAnswerValues(current.value, answer.value).length > 0)
 const isLastQuestion = computed(() => questionIndex.value === questions.value.length - 1)
-const showText = computed(() => current.value && (current.value.options.length === 0 || answer.value.choice === -1))
+const showText = computed(() => current.value && (current.value.options.length === 0 || isPicked(-1)))
 const inputLabel = computed(() => current.value?.options.length ? 'Your answer' : current.value?.question || 'Your answer')
 
+function isPicked(index: number): boolean {
+  return current.value?.multiSelect ? (answer.value.choices ?? []).includes(index) : answer.value.choice === index
+}
 function recommended(label: string): boolean { return /\s*\(recommended\)$/iu.test(label) }
 function optionLabel(label: string): string { return label.replace(/\s*\(recommended\)$/iu, '') }
 
@@ -54,21 +59,27 @@ function continueQuestion(): void {
       <span v-if="questions.length > 1" class="question-card-count">{{ questionIndex + 1 }} of {{ questions.length }}</span>
     </div>
     <fieldset v-if="current" :key="current.id" :disabled="sending" class="question-card-fields">
-      <legend class="question-card-title">{{ current.question || current.header || 'What would you like to do?' }}</legend>
-      <p v-if="current.header && current.question" class="question-card-topic">{{ current.header }}</p>
-      <div v-if="current.options.length" class="question-card-options" role="radiogroup" :aria-label="current.question || current.header">
-        <label v-for="(option, index) in current.options" :key="index" class="question-card-option" :class="{ 'is-selected': answer.choice === index }">
-          <input v-model="answer.choice" type="radio" :name="`question-${request.id}-${current.id}`" :value="index" :disabled="busy" />
+      <legend class="question-card-title">
+        <span v-if="current.header && current.question" class="question-card-chip">{{ current.header }}</span>
+        <span class="question-card-question">{{ current.question || current.header || 'What would you like to do?' }}</span>
+      </legend>
+      <p v-if="current.multiSelect && current.options.length" class="question-card-hint">Choose all that apply.</p>
+      <div v-if="current.options.length" class="question-card-options" :role="current.multiSelect ? 'group' : 'radiogroup'" :aria-label="current.question || current.header">
+        <label v-for="(option, index) in current.options" :key="index" class="question-card-option" :class="{ 'is-selected': isPicked(index) }">
+          <input v-if="current.multiSelect" v-model="answer.choices" type="checkbox" :value="index" :disabled="busy" />
+          <input v-else v-model="answer.choice" type="radio" :name="`question-${request.id}-${current.id}`" :value="index" :disabled="busy" />
           <span class="question-card-option-content">
             <span class="question-card-option-heading">
               <span>{{ optionLabel(option.label) }}</span>
               <span v-if="recommended(option.label)" class="question-card-recommended">Recommended</span>
             </span>
             <span v-if="option.description" class="question-card-option-description">{{ option.description }}</span>
+            <pre v-if="option.preview && isPicked(index)" class="question-card-option-preview">{{ option.preview }}</pre>
           </span>
         </label>
-        <label v-if="current.isOther" class="question-card-option" :class="{ 'is-selected': answer.choice === -1 }">
-          <input v-model="answer.choice" type="radio" :name="`question-${request.id}-${current.id}`" :value="-1" :disabled="busy" />
+        <label v-if="current.isOther" class="question-card-option" :class="{ 'is-selected': isPicked(-1) }">
+          <input v-if="current.multiSelect" v-model="answer.choices" type="checkbox" :value="-1" :disabled="busy" />
+          <input v-else v-model="answer.choice" type="radio" :name="`question-${request.id}-${current.id}`" :value="-1" :disabled="busy" />
           <span class="question-card-option-heading">Other</span>
         </label>
       </div>
@@ -77,10 +88,10 @@ function continueQuestion(): void {
         <DictationField v-else v-model="answer.text" multiline :label="inputLabel" placeholder="Type here" :rows="3" :disabled="sending" @busy-change="dictationBusy = $event" />
       </div>
     </fieldset>
-    <p v-else class="question-card-error" role="alert">This question couldn’t be displayed. Stop the turn and ask Codex to try again.</p>
+    <p v-else class="question-card-error" role="alert">This question couldn’t be displayed. Stop the turn and ask {{ agentName }} to try again.</p>
     <p v-if="request.replyError" class="question-card-error" role="alert">{{ request.replyError }} Your answer is still here; try submitting again.</p>
     <div class="question-card-footer">
-      <p>Codex will continue after you answer.</p>
+      <p>{{ agentName }} will continue after you answer.</p>
       <div class="question-card-actions">
         <Button v-if="questionIndex > 0" type="button" variant="ghost" size="sm" :disabled="busy" @click="questionIndex -= 1">Back</Button>
         <Button type="submit" size="sm" :disabled="busy || !hasAnswer">{{ sending ? 'Sending…' : isLastQuestion ? 'Submit' : 'Continue' }}</Button>
@@ -96,18 +107,21 @@ function continueQuestion(): void {
 .question-card-status svg { @apply size-4 shrink-0; }
 .question-card-count { @apply ml-auto tabular-nums; }
 .question-card-fields { @apply m-0 min-w-0 border-0 p-0; }
-.question-card-title { @apply mb-1 w-full text-base font-medium leading-6; overflow-wrap: anywhere; }
-.question-card-topic { @apply mb-3 text-xs text-muted-foreground; }
+.question-card-title { @apply mb-1 flex w-full flex-col items-start gap-1.5; }
+.question-card-chip { @apply rounded-md bg-muted px-1.5 py-0.5 text-[11px] font-medium leading-4 text-muted-foreground; }
+.question-card-question { @apply text-base font-medium leading-6; overflow-wrap: anywhere; }
+.question-card-hint { @apply mt-1 text-xs text-muted-foreground; }
 .question-card-options { @apply mt-3 flex flex-col gap-2; }
 .question-card-option { @apply flex min-w-0 cursor-pointer items-start gap-3 rounded-lg border border-border px-3 py-2.5 text-sm hover:bg-muted/50; }
 .question-card-option:has(input:focus-visible) { @apply outline-2 outline-offset-2 outline-ring; }
 .question-card-option:has(input:disabled) { @apply cursor-default opacity-60; }
 .question-card-option.is-selected { @apply border-foreground/50 bg-muted/50; }
 .question-card-option input { @apply mt-1 shrink-0 accent-foreground; }
-.question-card-option-content { @apply min-w-0; }
+.question-card-option-content { @apply min-w-0 flex-1; }
 .question-card-option-heading { @apply flex flex-wrap items-center gap-x-2 gap-y-1 font-medium; overflow-wrap: anywhere; }
 .question-card-recommended { @apply rounded bg-muted px-1.5 py-0.5 text-[10px] font-normal text-muted-foreground; }
 .question-card-option-description { @apply mt-1 block text-xs leading-5 text-muted-foreground; overflow-wrap: anywhere; }
+.question-card-option-preview { @apply mt-2 max-h-64 overflow-auto rounded-md border border-border bg-muted/40 p-2 font-mono text-xs leading-5 whitespace-pre; }
 .question-card-freeform { @apply mt-3; }
 .question-card-error { @apply mt-3 text-sm text-destructive; }
 .question-card-footer { @apply mt-4 flex flex-wrap items-center justify-between gap-3; }

@@ -2538,9 +2538,12 @@ export class ClaudeBackend {
           question: readString(question.question),
           isOther: true,
           isSecret: false,
+          multiSelect: question.multiSelect === true,
           options: (Array.isArray(question.options) ? question.options : []).map(asRecord).filter(Boolean).map((option) => ({
             label: readString(option?.label),
             description: readString(option?.description),
+            // Mockups and code keep their leading whitespace.
+            ...(typeof option?.preview === 'string' && option.preview.trim() ? { preview: option.preview } : {}),
           })),
         })),
       },

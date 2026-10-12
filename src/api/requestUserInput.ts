@@ -4,10 +4,17 @@ export type RequestQuestion = {
   question: string
   isOther: boolean
   isSecret: boolean
-  options: Array<{ label: string; description: string }>
+  /** Claude's AskUserQuestion can let the user pick several options. */
+  multiSelect: boolean
+  /** `preview` is a mockup or code sample Claude attached to an option. */
+  options: Array<{ label: string; description: string; preview: string }>
 }
 
-export type RequestQuestionAnswer = { choice: number | null; text: string }
+/**
+ * `choice` is the picked option of a single-choice question and `choices` every
+ * pick of a multi-select one; -1 stands for Other, answered in `text`.
+ */
+export type RequestQuestionAnswer = { choice: number | null; choices?: number[]; text: string }
 export type RequestQuestionDraft = { index: number; answers: Map<string, RequestQuestionAnswer> }
 
 export type AsyncQuestion = { id: string; title: string; options: string[] }
@@ -65,10 +72,15 @@ export function readRequestQuestions(params: unknown): RequestQuestion[] {
       question: typeof question.question === 'string' ? question.question : '',
       isOther: question.isOther === true,
       isSecret: question.isSecret === true,
+      multiSelect: question.multiSelect === true,
       options: Array.isArray(question.options) ? question.options.flatMap((value) => {
         const option = record(value)
         return typeof option?.label === 'string' && option.label
-          ? [{ label: option.label, description: typeof option.description === 'string' ? option.description : '' }]
+          ? [{
+            label: option.label,
+            description: typeof option.description === 'string' ? option.description : '',
+            preview: typeof option.preview === 'string' ? option.preview : '',
+          }]
           : []
       }) : [],
     }]
@@ -77,8 +89,13 @@ export function readRequestQuestions(params: unknown): RequestQuestion[] {
 
 export function requestQuestionAnswerValues(question: RequestQuestion, answer?: RequestQuestionAnswer): string[] {
   if (!answer) return []
+  const text = answer.text.trim()
+  if (question.multiSelect && question.options.length > 0) {
+    const picks = answer.choices ?? []
+    const labels = question.options.flatMap((option, index) => picks.includes(index) ? [option.label] : [])
+    return question.isOther && picks.includes(-1) && text ? [...labels, text] : labels
+  }
   if (question.options.length === 0 || (question.isOther && answer.choice === -1)) {
-    const text = answer.text.trim()
     return text ? [text] : []
   }
   const option = answer.choice === null ? undefined : question.options[answer.choice]

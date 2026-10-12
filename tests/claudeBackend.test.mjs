@@ -655,6 +655,32 @@ test('keeps a Claude question open for a day', async () => {
   })
 })
 
+test('returns every multi-select pick of a Claude question and passes option previews to the card', async () => {
+  await withComputerUseRunner({ CODEXUI_CLAUDE_COMPUTER_USE_APPROVAL: 'never' }, async ({ backend, runnerOptions }) => {
+    const matcher = runnerOptions.hooks.PreToolUse.find((entry) => entry.matcher === 'AskUserQuestion')
+    const toolInput = { questions: [{ question: 'Which should I clear?', header: 'Cleanup', multiSelect: true, options: [
+      { label: 'Worktrees', description: 'Old checkouts', preview: '  a/\n  b/' },
+      { label: 'Caches', description: 'Build caches' },
+    ] }] }
+    const result = matcher.hooks[0](
+      { hook_event_name: 'PreToolUse', tool_name: 'AskUserQuestion', tool_input: toolInput },
+      'toolu_question',
+      { signal: new AbortController().signal },
+    )
+    await new Promise((resolve) => setImmediate(resolve))
+    const [pending] = backend.listPendingServerRequests()
+    assert.equal(pending.method, 'item/tool/requestUserInput')
+    const [question] = pending.params.questions
+    assert.equal(question.multiSelect, true)
+    assert.equal(question.options[0].preview, '  a/\n  b/')
+    assert.equal('preview' in question.options[1], false)
+    await backend.respondToServerRequest({ id: pending.id, result: { answers: { q0: { answers: ['Worktrees', 'Caches'] } } } })
+    const output = (await result).hookSpecificOutput
+    assert.equal(output.permissionDecision, 'allow')
+    assert.deepEqual(output.updatedInput.answers, { 'Which should I clear?': 'Worktrees, Caches' })
+  })
+})
+
 test('starts a Claude chat without Mac control when the computer-use plugin is broken', async () => {
   await withComputerUseRunner({ CODEXUI_CLAUDE_COMPUTER_USE_MCP_FILE: '/missing/computer-use.mcp.json', CODEXUI_CLAUDE_COMPUTER_USE_APPROVAL: 'ask' }, async ({ runnerOptions }) => {
     assert.ok(runnerOptions, 'the runner must still start')

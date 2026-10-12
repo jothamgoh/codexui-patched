@@ -280,7 +280,8 @@ try {
    const quietStatus=mainComposer.locator('[data-dictation-status]');
    const statusBounds=await quietStatus.boundingBox();
    assert.ok(statusBounds.height<=1&&statusBounds.width<=1,'Routine speech status is available to screen readers without adding visible prose');
-   assert.equal(await mainComposer.getByRole('button',{name:'Send message',exact:true}).isDisabled(),true);
+   // Sending while dictating transcribes first (564ef87), so Send stays available.
+   assert.equal(await mainComposer.getByRole('button',{name:'Transcribe and send',exact:true}).isEnabled(),true);
    if(label==='mobile'){
      assert.ok((await mic.boundingBox()).height>=44);
      assert.ok((await mainComposer.getByRole('button',{name:'Cancel dictation',exact:true}).boundingBox()).width>=44);

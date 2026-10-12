@@ -54,7 +54,8 @@ function unreadWithOverrides(overrides) {
 function projectNew(selection, threads) {
   return {
     activityThreadIds: selection.activityThreads.map((row) => row.id),
-    requestAttention: selection.requestAttention,
+    // The question text came after the old panel; it is checked on its own below.
+    requestAttention: selection.requestAttention.map(({ detail: _detail, ...item }) => item),
     waitingThreadIds: [...selection.waitingThreadIds],
     boardWorkActivity: selection.boardWorkActivity,
     runningThreadIds: [...selection.runningThreadIds],
@@ -233,4 +234,22 @@ test('a chat whose reply finished but whose background work runs is running, in 
   assert.equal(isThreadInBackground(backgroundOnly), true)
   assert.equal(isThreadInBackground(replying), false, 'a live reply is never shown as background work')
   assert.equal(isThreadInBackground(thread('idle', { inProgress: false })), false)
+})
+
+test('a chat waiting for an answer shows the question it asks', () => {
+  const selection = selectNotificationActivity({
+    threads: [thread('ask', { inProgress: true }), thread('approve', { inProgress: true })],
+    boardAttention: [],
+    pendingRequests: [
+      { id: 5, method: 'item/tool/requestUserInput', threadId: 'ask', receivedAtIso: minutesAgo(1), params: { threadId: 'ask', questions: [{ id: 'q0', question: 'Which cutoff should I use?' }, { id: 'q1', question: 'Keep pinned chats?' }] } },
+      { id: 6, method: 'item/commandExecution/requestApproval', threadId: 'approve', receivedAtIso: minutesAgo(2), params: { threadId: 'approve', command: 'rm -rf build' } },
+    ],
+    history: [],
+    dismissedActivityByThreadId: {},
+  })
+  const byThread = Object.fromEntries(selection.requestAttention.map((item) => [item.threadId, item]))
+  assert.equal(byThread.ask.label, 'Answer needed')
+  assert.equal(byThread.ask.detail, 'Which cutoff should I use? (+1 more question)')
+  assert.equal(byThread.approve.label, 'Approval needed')
+  assert.equal(byThread.approve.detail, '', 'an approval never shows its command line')
 })

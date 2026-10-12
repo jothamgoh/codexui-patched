@@ -14,9 +14,13 @@
             <LoaderCircle />
             {{ compactCount(runningActivity.length) }}
           </span>
-          <span v-if="totalAttentionCount > 0" class="notification-trigger-count is-unread">
+          <span v-if="needsYouCount > 0" class="notification-trigger-count is-needs-you">
+            <MessageCircleQuestion />
+            {{ compactCount(needsYouCount) }}
+          </span>
+          <span v-if="unreadAttentionCount > 0" class="notification-trigger-count is-unread">
             <Circle />
-            {{ compactCount(totalAttentionCount) }}
+            {{ compactCount(unreadAttentionCount) }}
           </span>
         </span>
       </button>
@@ -177,7 +181,7 @@
               :title="item.title"
               :pill="item.label"
               pill-tone="attention"
-              :preview="`Open the chat to ${item.label === 'Approval needed' ? 'review and approve or decline.' : 'answer and continue.'}`"
+              :preview="item.detail || `Open the chat to ${item.label === 'Approval needed' ? 'review and approve or decline.' : 'answer and continue.'}`"
               @click="openThread(item.threadId)"
             >
               <template #meta>
@@ -586,6 +590,7 @@ import {
   LoaderCircle,
   Mail,
   MailOpen,
+  MessageCircleQuestion,
   MoreHorizontal,
   Pin,
   PinOff,
@@ -1521,6 +1526,11 @@ function onModeChange(event: Event): void {
 .notification-trigger-count.is-unread {
   background: #22c55e;
   color: #052e16;
+}
+
+/* A chat waiting for an answer or approval, apart from chats that are merely unread. */
+.notification-trigger-count.is-needs-you {
+  background: #d97706;
 }
 
 .notification-trigger-count.is-unread svg {

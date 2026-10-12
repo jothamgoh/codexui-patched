@@ -1,4 +1,5 @@
 import type { UiServerRequest, UiThread } from '../types/codex'
+import { inputRequestSummary, readInputRequestDetail } from './inputRequestNotifications'
 import { compactNotificationText } from './notificationText'
 import type { ProjectBoardActivity } from './projectBoardActivity'
 import type { ProjectBoardNotification } from './projectBoardNotifications'
@@ -41,7 +42,7 @@ export type NotificationActivityInput = {
   boardActivity?: ProjectBoardActivity[]
   boardActivityTitles?: Record<string, string>
   boardAttention: BoardAttentionItem[]
-  pendingRequests?: Array<Pick<UiServerRequest, 'id' | 'method' | 'threadId' | 'receivedAtIso'>>
+  pendingRequests?: Array<Pick<UiServerRequest, 'id' | 'method' | 'threadId' | 'receivedAtIso'> & { params?: unknown }>
   history: ActivityHistoryItem[]
   /** Thread id -> the activity time the user dismissed. */
   dismissedActivityByThreadId: Record<string, string>
@@ -55,6 +56,8 @@ export type RequestAttentionItem = {
   threadId: string
   title: string
   label: 'Approval needed' | 'Answer needed'
+  /** The question, or what the approval is for; empty when the request does not say. */
+  detail: string
   receivedAtIso: string
   board?: ProjectBoardActivity
 }
@@ -115,6 +118,11 @@ export function isThreadInBackground(thread: UiThread): boolean {
   return !thread.inProgress && thread.hasBackgroundTasks === true
 }
 
+function requestSummary(request: { method: string; params?: unknown }): string {
+  const asked = readInputRequestDetail(request.method, request.params)
+  return asked ? inputRequestSummary(asked) : ''
+}
+
 function timestampOrZero(value: string): number {
   const timestamp = Date.parse(value)
   return Number.isFinite(timestamp) ? timestamp : 0
@@ -168,6 +176,7 @@ export function selectNotificationActivity(input: NotificationActivityInput): No
       threadId: request.threadId,
       title: threadHelpers.childIds.has(request.threadId) ? (thread ? activityThreadTitle(thread) : 'Helper needs your input') : board?.title || (thread ? activityThreadTitle(thread) : 'Chat needs your input'),
       label: request.method.endsWith('/requestApproval') ? 'Approval needed' : 'Answer needed',
+      detail: requestSummary(request),
       receivedAtIso: request.receivedAtIso,
       board,
     }

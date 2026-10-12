@@ -25,38 +25,51 @@ function readString(value: unknown): string {
   return typeof value === 'string' ? value.trim() : ''
 }
 
-export function readInputRequestNotification(value: unknown, occurredAt: string): InputRequestNotification | null {
-  const request = asRecord(value)
-  const params = asRecord(request?.params)
-  const method = readString(request?.method)
+export type InputRequestDetail = Pick<InputRequestNotification, 'kind' | 'detail' | 'moreQuestions'>
+
+/** What a question or approval request asks, or null for any other request. */
+export function readInputRequestDetail(method: string, value: unknown): InputRequestDetail | null {
+  const params = asRecord(value)
   const approval = APPROVAL_METHOD.test(method)
   if (!approval && method !== 'item/tool/requestUserInput') return null
-  const threadId = readString(params?.threadId)
-  if (!Number.isInteger(request?.id) || !threadId) return null
+  if (approval) return { kind: 'approval', detail: readString(params?.title) || readString(params?.reason), moreQuestions: 0 }
   const questions = (Array.isArray(params?.questions) ? params.questions : []).map(asRecord).filter((question) => question !== null)
   const first = questions[0]
+  return {
+    kind: 'question',
+    detail: readString(first?.question) || readString(first?.header),
+    moreQuestions: Math.max(0, questions.length - 1),
+  }
+}
+
+export function readInputRequestNotification(value: unknown, occurredAt: string): InputRequestNotification | null {
+  const request = asRecord(value)
+  const threadId = readString(asRecord(request?.params)?.threadId)
+  const asked = readInputRequestDetail(readString(request?.method), request?.params)
+  if (!asked || !Number.isInteger(request?.id) || !threadId) return null
   return {
     id: `input-request:${threadId}:${String(request?.id)}`,
     requestId: Number(request?.id),
     threadId,
-    kind: approval ? 'approval' : 'question',
-    detail: approval
-      ? readString(params?.title) || readString(params?.reason)
-      : readString(first?.question) || readString(first?.header),
-    moreQuestions: approval ? 0 : Math.max(0, questions.length - 1),
+    ...asked,
     occurredAt,
   }
 }
 
+/** The question itself, with how many more follow it. */
+export function inputRequestSummary(asked: InputRequestDetail): string {
+  if (!asked.detail) return ''
+  const more = asked.moreQuestions > 0
+    ? ` (+${String(asked.moreQuestions)} more ${asked.moreQuestions === 1 ? 'question' : 'questions'})`
+    : ''
+  return `${asked.detail}${more}`
+}
+
 export function inputRequestNotificationCopy(event: InputRequestNotification, threadTitle: string): { title: string; body: string } {
   const label = event.kind === 'question' ? 'Answer needed' : 'Approval needed'
-  const more = event.moreQuestions > 0
-    ? ` (+${String(event.moreQuestions)} more ${event.moreQuestions === 1 ? 'question' : 'questions'})`
-    : ''
   return {
     title: threadTitle.trim() ? `${label} · ${threadTitle.trim()}` : label,
-    body: event.detail
-      ? `${event.detail}${more}`
-      : event.kind === 'question' ? 'Your answer is needed to continue.' : 'Your approval is needed to continue.',
+    body: inputRequestSummary(event)
+      || (event.kind === 'question' ? 'Your answer is needed to continue.' : 'Your approval is needed to continue.'),
   }
 }

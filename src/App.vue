@@ -36,6 +36,7 @@
         <SidebarThreadTree :groups="sidebarProjectGroups" :board-threads="boardThreads" :project-display-name-by-id="projectDisplayNameById"
           v-if="!isSidebarCollapsed"
           :pinned-thread-ids="pinnedThreadIds"
+          :waiting-thread-ids="waitingThreadIds"
           :selected-thread-id="selectedThreadId" :is-loading="isLoadingThreads"
           search-query=""
           :show-shortcut-hints="isCommandKeyHeld"
@@ -729,13 +730,15 @@ const {
 } = useProjectBoards({ showBrowserNotifications: true })
 const composerDraftStore = useComposerDraftStore()
 const boardActivity = computed(() => collectProjectBoardActivity(projectBoardSnapshot.value))
-const boardPendingThreadIds = computed(() => new Set(pendingServerRequests.value.map((request) => request.threadId).filter(Boolean)))
+const pendingRequestThreadIds = computed(() => new Set(pendingServerRequests.value.map((request) => request.threadId).filter(Boolean)))
+const waitingThreadIds = computed(() => [...pendingRequestThreadIds.value])
 const boardThreads = computed(() => Object.fromEntries(boardActivity.value.filter((item) => item.threadId).map((item) => [item.threadId, {
   boardId: item.boardId, featureId: item.featureId, title: item.title,
-  status: (boardPendingThreadIds.value.has(item.threadId) ? 'needs_input' : item.runKind === 'follow_up' ? item.featureStatus : item.status === 'running' || item.status === 'paused' ? 'working' : item.status) as ProjectBoardStatus,
+  status: (pendingRequestThreadIds.value.has(item.threadId) ? 'needs_input' : item.runKind === 'follow_up' ? item.featureStatus : item.status === 'running' || item.status === 'paused' ? 'working' : item.status) as ProjectBoardStatus,
 }])))
 const sidebarProjectGroups = computed<UiProjectGroup[]>(() => {
-  const groups = projectGroups.value.map((group) => ({ ...group, threads: group.threads.map((thread) => boardThreads.value[thread.id]?.status === 'needs_input' ? { ...thread, inProgress: false } : thread) }))
+  // A chat blocked on the user's answer is not working, board chat or not.
+  const groups = projectGroups.value.map((group) => ({ ...group, threads: group.threads.map((thread) => pendingRequestThreadIds.value.has(thread.id) ? { ...thread, inProgress: false } : thread) }))
   const known = new Set(groups.flatMap((group) => group.threads.map((thread) => thread.id)))
   for (const activity of boardActivity.value) {
     if (!activity.threadId || known.has(activity.threadId)) continue
@@ -746,7 +749,7 @@ const sidebarProjectGroups = computed<UiProjectGroup[]>(() => {
     if (!group) { group = { projectName: board.projectName, threads: [] }; groups.push(group) }
     group.threads.unshift({ id: activity.threadId, title: activity.title, projectName: group.projectName, cwd: board.projectPath,
       createdAtIso: activity.updatedAtIso, updatedAtIso: activity.updatedAtIso, preview: activity.summary,
-      inProgress: activity.status === 'running' && !boardPendingThreadIds.value.has(activity.threadId), unread: false, hasWorktree: false })
+      inProgress: activity.status === 'running' && !pendingRequestThreadIds.value.has(activity.threadId), unread: false, hasWorktree: false })
     known.add(activity.threadId)
   }
   return groups
@@ -771,7 +774,7 @@ const sourceChatBoardProgress = computed(() => {
     const card = snapshot.cards.find((entry) => entry.id === question.cardId)
     return card?.parentCardId || card?.id
   }))
-  const statuses = features.map((card) => boardPendingThreadIds.value.has(card.threadId) || questionFeatures.has(card.id)
+  const statuses = features.map((card) => pendingRequestThreadIds.value.has(card.threadId) || questionFeatures.has(card.id)
     ? 'needs_input' : boardActivity.value.find((item) => item.featureId === card.id)?.status || card.status)
   const needsYou = statuses.filter((status) => ['blocked', 'needs_input', 'review'].includes(status)).length
   const done = features.filter((card, index) => boardActivity.value.find((item) => item.featureId === card.id)?.runKind === 'follow_up' ? card.status === 'done' : statuses[index] === 'done').length

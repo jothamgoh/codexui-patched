@@ -445,6 +445,8 @@ const props = defineProps<{
   groups: UiProjectGroup[]
   projectDisplayNameById: Record<string, string>
   pinnedThreadIds: string[]
+  /** Chats waiting for the user's answer or approval. */
+  waitingThreadIds?: string[]
   selectedThreadId: string
   isLoading: boolean
   searchQuery: string
@@ -837,9 +839,11 @@ function getThreadTitleTooltip(thread: UiThread): string {
   return isThreadInBackground(thread) ? `${summary}\nReply finished · background task still running` : summary
 }
 
+const waitingThreadIdSet = computed(() => new Set(props.waitingThreadIds ?? []))
+
 function getThreadStatusLabel(thread: UiThread): string {
   const status = props.boardThreads?.[thread.id]?.status
-  if (status === 'needs_input') return 'Needs you'
+  if (status === 'needs_input' || waitingThreadIdSet.value.has(thread.id)) return 'Needs you'
   if (isThreadInBackground(thread)) return 'Background'
   if (isThreadRunning(thread)) return 'Running'
   if (status) return { backlog: 'Backlog', working: 'Paused', review: 'Review', blocked: 'Blocked', done: 'Done' }[status]
@@ -849,7 +853,7 @@ function getThreadStatusLabel(thread: UiThread): string {
 
 function getThreadStatusState(thread: UiThread): string {
   const status = props.boardThreads?.[thread.id]?.status
-  if (status === 'needs_input') return status
+  if (status === 'needs_input' || waitingThreadIdSet.value.has(thread.id)) return 'needs_input'
   if (isThreadInBackground(thread)) return 'background'
   return isThreadRunning(thread) ? 'working' : status === 'working' ? 'paused' : status || getThreadState(thread)
 }
@@ -1977,6 +1981,10 @@ onBeforeUnmount(() => {
   background: var(--accent-soft);
   border-color: color-mix(in srgb, var(--accent) 40%, transparent);
   color: var(--accent-strong);
+}
+
+.thread-status-label[data-state='needs_input'] {
+  @apply w-auto whitespace-nowrap px-1 tracking-normal;
 }
 
 .thread-status-label[data-state='blocked'],

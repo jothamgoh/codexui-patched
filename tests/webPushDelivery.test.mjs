@@ -147,3 +147,31 @@ test('each page load reports which service worker version is running', async () 
   listeners.message({ data: { type: 'codexui-sw-version' }, ports: [{ postMessage: (message) => { reply = message } }] })
   assert.match(reply.version, /^receipts-/u)
 })
+
+test('a chat waiting for an answer alerts with the question and opens that chat', async () => {
+  const { mkdir, mkdtemp, rm } = await import('node:fs/promises')
+  const { join } = await import('node:path')
+  const { pathToFileURL } = await import('node:url')
+  // Inside the checkout, so web-push resolves from its node_modules.
+  const cacheDir = new URL('../node_modules/.cache/', import.meta.url).pathname
+  await mkdir(cacheDir, { recursive: true })
+  const bundleDir = await mkdtemp(join(cacheDir, 'codexui-web-push-test-'))
+  try {
+    const outfile = join(bundleDir, 'webPushTurnNotifier.mjs')
+    await build({ entryPoints: [new URL('../src/server/webPushTurnNotifier.ts', import.meta.url).pathname], outfile, bundle: true, platform: 'node', format: 'esm', external: ['web-push', 'markdown-it'], logLevel: 'silent' })
+    const { buildInputRequestPayload } = await import(pathToFileURL(outfile).href)
+    const question = { id: 'input-request:claude-abc:5', requestId: 5, threadId: 'claude-abc', kind: 'question', detail: `Which cutoff should I use? ${'Context. '.repeat(40)}`, moreQuestions: 0, occurredAt: '2026-10-12T10:00:00.000Z' }
+    const payload = buildInputRequestPayload(question, 'Clean up old chats', 'unfocused')
+    assert.equal(payload.title, 'Answer needed · Clean up old chats')
+    assert.match(payload.body, /^Which cutoff should I use\?/u)
+    assert.ok(payload.body.length <= 180, 'the body fits a lock-screen alert')
+    assert.equal(payload.url, '/#/thread/claude-abc')
+    assert.equal(payload.tag, question.id, 'a repeated alert for the same request replaces the earlier one')
+    assert.equal(payload.mode, 'unfocused', 'each device keeps its own alert mode')
+
+    const approval = buildInputRequestPayload({ ...question, kind: 'approval', detail: '' }, '', 'always')
+    assert.deepEqual({ title: approval.title, body: approval.body }, { title: 'Approval needed', body: 'Your approval is needed to continue.' })
+  } finally {
+    await rm(bundleDir, { recursive: true, force: true })
+  }
+})

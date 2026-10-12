@@ -27,6 +27,9 @@ const {
   projectBoardNotificationCopy,
 } = await import(`data:text/javascript;base64,${Buffer.from(compiled).toString('base64')}`)
 const utilityModuleUrl = `data:text/javascript;base64,${Buffer.from(compiled).toString('base64')}`
+const inputRequestModuleUrl = `data:text/javascript;base64,${Buffer.from(ts.transpileModule(await readFile(new URL('../src/utils/inputRequestNotifications.ts', import.meta.url), 'utf8'), {
+  compilerOptions: { module: ts.ModuleKind.ES2022, target: ts.ScriptTarget.ES2022 },
+}).outputText).toString('base64')}`
 
 async function importModule(path, replacements = []) {
   let text = await readFile(new URL(path, import.meta.url), 'utf8')
@@ -363,6 +366,7 @@ test('board delivery reuses the durable inbox and device/Telegram preferences wi
     ["'node:os'", JSON.stringify(osStub)],
     ['../utils/notificationText', textModule],
     ['../utils/projectBoardNotifications', utilityModuleUrl],
+    ['../utils/inputRequestNotifications', inputRequestModuleUrl],
   ])
   const event = { id: 'project-board-question:q / 1', kind: 'question', boardId: 'b / 1', featureId: 'f-1', cardId: 'f-1', questionId: 'q / 1', occurredAt: '2026-09-06T01:00:00Z' }
   const notifier = createWebPushTurnNotifier()
@@ -399,6 +403,7 @@ test('board delivery reuses the durable inbox and device/Telegram preferences wi
   const { createTelegramTurnNotifier } = await importModule('../src/server/telegramTurnNotifier.ts', [
     ["'node:os'", JSON.stringify(osStub)],
     ['../utils/projectBoardNotifications', utilityModuleUrl],
+    ['../utils/inputRequestNotifications', inputRequestModuleUrl],
   ])
   const telegram = createTelegramTurnNotifier()
   telegram.handleProjectBoardNotification(event)
@@ -406,6 +411,12 @@ test('board delivery reuses the durable inbox and device/Telegram preferences wi
   assert.equal(telegramSent.length, 1)
 
   assert.match(telegramSent[0].text, /https:\/\/example\.test\/#\/board\/b%20%2F%201\?feature=f-1&question=q\+%2F\+1/u)
+  const questionEvent = { id: 'input-request:claude-abc:5', requestId: 5, threadId: 'claude-abc', kind: 'question', detail: 'PRIVATE question text?', moreQuestions: 0, occurredAt: '2026-09-06T01:05:00Z' }
+  telegram.handleInputRequest(questionEvent, 'Clean up old chats')
+  telegram.handleInputRequest(questionEvent, 'Clean up old chats')
+  assert.equal(telegramSent.length, 2, 'A waiting question sends one Telegram message')
+  assert.equal(telegramSent[1].text, 'Answer needed · Clean up old chats\nhttps://example.test/#/thread/claude-abc')
+  telegramSent.pop()
   process.env.CODEXUI_TELEGRAM_NOTIFICATIONS = 'false'
   createTelegramTurnNotifier().handleProjectBoardNotification({ ...event, id: 'other' })
   assert.equal(telegramSent.length, 1)
@@ -458,4 +469,15 @@ test('board delivery reuses the durable inbox and device/Telegram preferences wi
   assert.equal(resolvedNative.readAt, '2026-09-07T01:02:00Z')
   assert.equal(resolvedNative.projectBoard.requestId, 51)
   assert.equal(globalThis.__boardPushDeliveries.length, sentBefore + 2, 'Resolving a native request must not send another device notification')
+
+  // An ordinary chat waiting for an answer alerts every enrolled device in its own mode.
+  const question = { id: 'input-request:claude-abc:5', requestId: 5, threadId: 'claude-abc', kind: 'question', detail: 'Which cutoff should I use?', moreQuestions: 0, occurredAt: '2026-09-07T01:03:00Z' }
+  const sentBeforeQuestion = globalThis.__boardPushDeliveries.length
+  await nativePush.handleInputRequest(question, 'Clean up old chats')
+  const questionPushes = globalThis.__boardPushDeliveries.slice(sentBeforeQuestion)
+  assert.deepEqual(questionPushes.map(({ payload }) => payload.mode).sort(), ['always', 'unfocused'])
+  for (const { payload } of questionPushes) {
+    assert.deepEqual([payload.title, payload.body, payload.url, payload.tag], ['Answer needed · Clean up old chats', 'Which cutoff should I use?', '/#/thread/claude-abc', question.id])
+  }
+  assert.equal(JSON.parse(await readFile(stateFile, 'utf8')).history.some((item) => item.id === question.id), false, 'The live request, not the inbox, lists a waiting question')
 })

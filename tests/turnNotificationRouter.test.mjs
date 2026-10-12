@@ -36,9 +36,14 @@ const boardUtilitySource = await readFile(new URL('../src/utils/projectBoardNoti
 const boardUtilityModuleUrl = `data:text/javascript;base64,${Buffer.from(ts.transpileModule(boardUtilitySource, {
   compilerOptions: { module: ts.ModuleKind.ES2022, target: ts.ScriptTarget.ES2022 },
 }).outputText).toString('base64')}`
+const inputRequestSource = await readFile(new URL('../src/utils/inputRequestNotifications.ts', import.meta.url), 'utf8')
+const inputRequestModuleUrl = `data:text/javascript;base64,${Buffer.from(ts.transpileModule(inputRequestSource, {
+  compilerOptions: { module: ts.ModuleKind.ES2022, target: ts.ScriptTarget.ES2022 },
+}).outputText).toString('base64')}`
+const { inputRequestNotificationCopy } = await import(inputRequestModuleUrl)
 const { createTurnNotificationRouter } = await importTypeScriptModule(
   '../src/server/turnNotificationRouter.ts',
-  [['../utils/codexThreadSource.js', threadSourceModuleUrl], ['./projectBoardNotificationEvents.js', boardEventModuleUrl], ['../utils/projectBoardNotifications', boardUtilityModuleUrl]],
+  [['../utils/codexThreadSource.js', threadSourceModuleUrl], ['./projectBoardNotificationEvents.js', boardEventModuleUrl], ['../utils/projectBoardNotifications', boardUtilityModuleUrl], ['../utils/inputRequestNotifications', inputRequestModuleUrl]],
 )
 
 const delay = (milliseconds) => new Promise((resolve) => setTimeout(resolve, milliseconds))
@@ -60,6 +65,8 @@ function createHarness({
   const boardTelegram = []
   const boardPublished = []
   const nativeHistorySyncs = []
+  const inputPush = []
+  const inputTelegram = []
   const bridge = {
     listThreads,
     readThread,
@@ -77,6 +84,7 @@ function createHarness({
     telegramTurnNotifier: {
       handleNotification(notification) { telegram.push(notification) },
       handleProjectBoardNotification(event) { boardTelegram.push(event) },
+      handleInputRequest(event, threadTitle) { inputTelegram.push({ event, threadTitle }) },
     },
     webPushTurnNotifier: {
       handleNotification(notification) { webPush.push(notification) },
@@ -86,6 +94,7 @@ function createHarness({
         return true
       },
       async syncProjectBoardNativeRequests(ids, atIso) { nativeHistorySyncs.push({ ids, atIso }) },
+      async handleInputRequest(event, threadTitle) { inputPush.push({ event, threadTitle }) },
       async removeThreadHistory(threadIds) {
         removedHistory.push([...threadIds])
       },
@@ -104,6 +113,8 @@ function createHarness({
     boardTelegram,
     boardPublished,
     nativeHistorySyncs,
+    inputPush,
+    inputTelegram,
   }
 }
 
@@ -156,6 +167,71 @@ test('alerts native Lead approvals without a browser, deduplicates replay and re
   await delay(15)
   assert.deepEqual(harness.nativeHistorySyncs.at(-1).ids, [])
   assert.equal(harness.boardPush.length, 2, 'Resolving a request does not send another device alert')
+  assert.equal(harness.inputPush.some((item) => ['lead', 'child'].includes(item.event.threadId)), false, 'Board chats alert only through their board')
+  harness.router.dispose()
+})
+
+test('alerts once when an ordinary chat waits for an answer, naming the chat and the question', async () => {
+  const question = {
+    id: 5,
+    method: 'item/tool/requestUserInput',
+    params: { threadId: 'claude-abc', turnId: 'turn', itemId: 'toolu_1', questions: [
+      { id: 'q0', header: 'Cutoff', question: 'Which cutoff should I use?', options: [] },
+      { id: 'q1', header: 'Pinned', question: 'Keep pinned chats?', options: [] },
+    ] },
+    receivedAtIso: '2026-10-12T10:00:00.000Z',
+  }
+  let pending = [question]
+  const harness = createHarness({
+    readThread: async (threadId) => ({ thread: { id: threadId, name: 'Clean up old chats', preview: 'first prompt' } }),
+    listPendingServerRequests: () => pending,
+  })
+  harness.emit({ method: 'server/request', params: question, atIso: question.receivedAtIso })
+  harness.emit({ method: 'server/request', params: question, atIso: question.receivedAtIso })
+  await delay(15)
+
+  assert.equal(harness.inputPush.length, 1, 'A replayed request alerts once')
+  assert.equal(harness.inputTelegram.length, 1)
+  const { event, threadTitle } = harness.inputPush[0]
+  assert.equal(threadTitle, 'Clean up old chats')
+  assert.deepEqual(
+    { kind: event.kind, threadId: event.threadId, requestId: event.requestId, detail: event.detail, moreQuestions: event.moreQuestions },
+    { kind: 'question', threadId: 'claude-abc', requestId: 5, detail: 'Which cutoff should I use?', moreQuestions: 1 },
+  )
+  assert.deepEqual(inputRequestNotificationCopy(event, threadTitle), {
+    title: 'Answer needed · Clean up old chats',
+    body: 'Which cutoff should I use? (+1 more question)',
+  })
+
+  const approval = { id: 6, method: 'item/commandExecution/requestApproval', params: { threadId: 'codex-chat', turnId: 'turn', command: 'PRIVATE command', reason: 'Needs network access' } }
+  pending = [question, approval]
+  harness.emit({ method: 'server/request', params: approval, atIso: question.receivedAtIso })
+  harness.emit({ method: 'server/request', params: { id: 7, method: 'item/tool/call', params: { threadId: 'codex-chat', tool: 'x' } }, atIso: question.receivedAtIso })
+  await delay(15)
+  assert.equal(harness.inputPush.length, 2, 'Only questions and approvals alert')
+  assert.equal(harness.inputPush[1].event.kind, 'approval')
+  assert.equal(harness.inputPush[1].event.detail, 'Needs network access')
+  assert.equal(JSON.stringify(harness.inputPush[1]).includes('PRIVATE'), false, 'An approval alert never carries the command line')
+  harness.router.dispose()
+})
+
+test('does not alert for a request answered before the alert went out', async () => {
+  let releaseLookup
+  const lookup = new Promise((resolve) => { releaseLookup = resolve })
+  let pending = []
+  const harness = createHarness({
+    readThread: async () => { await lookup; return { thread: { id: 'chat', name: 'Chat' } } },
+    listPendingServerRequests: () => pending,
+  })
+  const question = { id: 9, method: 'item/tool/requestUserInput', params: { threadId: 'chat', turnId: 'turn', questions: [{ id: 'q0', question: 'Ship it?' }] } }
+  pending = [question]
+  harness.emit({ method: 'server/request', params: question, atIso: '2026-10-12T10:00:00.000Z' })
+  await delay(5)
+  pending = []
+  releaseLookup()
+  await delay(15)
+  assert.equal(harness.inputPush.length, 0)
+  assert.equal(harness.inputTelegram.length, 0)
   harness.router.dispose()
 })
 

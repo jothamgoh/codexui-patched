@@ -8,6 +8,7 @@ import {
 import type { ProjectBoardSnapshot } from '../types/projectBoards'
 import { isProjectBoardNotification, projectBoardNativeRequestNotification, type ProjectBoardNotification } from '../utils/projectBoardNotifications'
 import { collectProjectBoardNotifications, projectBoardThreadIds } from './projectBoardNotificationEvents.js'
+import { readInputRequestNotification, type InputRequestNotification } from '../utils/inputRequestNotifications'
 
 type BridgeNotification = {
   method: string
@@ -28,6 +29,7 @@ type NotificationBridge = {
 type TurnNotificationSink = {
   handleNotification: (notification: BridgeNotification) => void
   handleProjectBoardNotification?: (event: ProjectBoardNotification) => void | Promise<unknown>
+  handleInputRequest?: (event: InputRequestNotification, threadTitle: string) => void | Promise<unknown>
 }
 
 type WebPushNotificationSink = TurnNotificationSink & {
@@ -50,6 +52,18 @@ type TurnNotificationRouterOptions = {
 
 const DEFAULT_THREAD_LOOKUP_TIMEOUT_MS = 4_000
 const DEFAULT_BACKFILL_REQUEST_TIMEOUT_MS = 5_000
+const MAX_REMEMBERED_INPUT_REQUESTS = 200
+
+function asRecord(value: unknown): Record<string, unknown> | null {
+  return value !== null && typeof value === 'object' && !Array.isArray(value) ? value as Record<string, unknown> : null
+}
+
+function firstText(...values: unknown[]): string {
+  for (const value of values) {
+    if (typeof value === 'string' && value.trim()) return value.trim()
+  }
+  return ''
+}
 
 async function withTimeout<T>(
   promise: Promise<T>,
@@ -81,6 +95,7 @@ export function createTurnNotificationRouter(
   let boardThreadIds = new Set<string>()
   let boardDeliveryQueue = Promise.resolve()
   const nativeRequestEvents = new Map<number, ProjectBoardNotification>()
+  const notifiedInputRequestIds = new Set<string>()
 
   const removeInternalHistory = (threadIds: Iterable<string>): void => {
     void options.webPushTurnNotifier.removeThreadHistory(threadIds).catch((error: unknown) => {
@@ -131,6 +146,41 @@ export function createTurnNotificationRouter(
     if (!event) return
     nativeRequestEvents.set(event.requestId!, event)
     deliverBoardEvent(event)
+  }
+
+  const readThreadTitle = async (threadId: string): Promise<string> => {
+    try {
+      const payload = asRecord(await withTimeout(options.bridge.readThread(threadId), threadLookupTimeoutMs, `thread title lookup for ${threadId}`))
+      const thread = asRecord(payload?.thread)
+      return firstText(thread?.name, thread?.title, thread?.preview)
+    } catch {
+      return ''
+    }
+  }
+
+  const isPending = (event: InputRequestNotification): boolean => {
+    const pending = options.bridge.listPendingServerRequests?.()
+    return !pending || pending.some((request) => request.id === event.requestId && asRecord(request.params)?.threadId === event.threadId)
+  }
+
+  // Board chats alert through their board above; every other chat that waits
+  // on the user alerts here, because its turn cannot complete until answered.
+  const observeInputRequest = (request: unknown, atIso: string): void => {
+    const event = readInputRequestNotification(request, atIso)
+    if (disposed || !event || boardThreadIds.has(event.threadId) || notifiedInputRequestIds.has(event.id)) return
+    notifiedInputRequestIds.add(event.id)
+    if (notifiedInputRequestIds.size > MAX_REMEMBERED_INPUT_REQUESTS) {
+      notifiedInputRequestIds.delete(notifiedInputRequestIds.values().next().value as string)
+    }
+    void readThreadTitle(event.threadId).then(async (threadTitle) => {
+      // The user may have answered while the title loaded.
+      if (disposed || !isPending(event)) return
+      await options.telegramTurnNotifier.handleInputRequest?.(event, threadTitle)
+      await options.webPushTurnNotifier.handleInputRequest?.(event, threadTitle)
+    }).catch((error: unknown) => {
+      const message = error instanceof Error ? error.message : String(error)
+      console.warn(`[notifications] Could not deliver an input request notification: ${message}`)
+    })
   }
 
   const syncNativeRequestHistory = (atIso: string): void => {
@@ -217,7 +267,11 @@ export function createTurnNotificationRouter(
 
   const unsubscribe = options.bridge.subscribeNotifications((notification) => {
     if (notification.method === 'server/request') {
-      boardSnapshotQueue = boardSnapshotQueue.then(() => observeNativeRequest(notification.params, notification.atIso || new Date().toISOString()))
+      const atIso = notification.atIso || new Date().toISOString()
+      boardSnapshotQueue = boardSnapshotQueue.then(() => {
+        observeNativeRequest(notification.params, atIso)
+        observeInputRequest(notification.params, atIso)
+      })
       return
     }
     if (notification.method === 'server/request/resolved') {

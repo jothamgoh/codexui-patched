@@ -3,6 +3,7 @@ import { homedir } from 'node:os'
 import { dirname, join } from 'node:path'
 import type { IncomingMessage, ServerResponse } from 'node:http'
 import { projectBoardNotificationCopy, projectBoardNotificationDeepLink, type ProjectBoardNotification } from '../utils/projectBoardNotifications'
+import { inputRequestNotificationCopy, type InputRequestNotification } from '../utils/inputRequestNotifications'
 
 type BridgeNotification = {
   method: string
@@ -18,7 +19,8 @@ type TurnCompletedNotification = {
   threadUrl: string
   errorMessage: string
   durationMs: number | null
-  boardMessage?: string
+  /** Replaces the default "codex complete" line. */
+  message?: string
 }
 
 type TelegramConfig = {
@@ -33,6 +35,7 @@ export type TelegramTurnNotifier = {
   statusMessage: string
   handleNotification: (notification: BridgeNotification) => void
   handleProjectBoardNotification: (event: ProjectBoardNotification) => void
+  handleInputRequest: (event: InputRequestNotification, threadTitle: string) => void
   handleRequest: (req: IncomingMessage, res: ServerResponse, next: () => void) => void
 }
 
@@ -203,7 +206,7 @@ function truncateMessage(text: string, maxLength: number): string {
 }
 
 function formatTelegramMessage(notification: TurnCompletedNotification): string {
-  const lines = [notification.boardMessage || 'codex complete']
+  const lines = [notification.message || 'codex complete']
   if (notification.threadUrl) lines.push(notification.threadUrl)
   return lines.join('\n')
 }
@@ -277,10 +280,34 @@ export function createTelegramTurnNotifier(): TelegramTurnNotifier {
       threadUrl: normalizedPublicBaseUrl ? `${normalizedPublicBaseUrl}/${projectBoardNotificationDeepLink(event)}` : '',
       errorMessage: '',
       durationMs: null,
-      boardMessage: `${copy.title}\n${copy.body}`,
+      message: `${copy.title}\n${copy.body}`,
     }).catch((error: unknown) => {
       const message = error instanceof Error ? error.message : String(error)
       console.warn(`[telegram] Failed to send board notification: ${message}`)
+    })
+  }
+
+  // Like completions, the message names the chat but leaves its content in the app.
+  const handleInputRequest = (event: InputRequestNotification, threadTitle: string): void => {
+    if (!enabled || seenTurnKeys.has(event.id)) return
+    seenTurnKeys.add(event.id)
+    seenTurnOrder.push(event.id)
+    while (seenTurnOrder.length > seenTurnLimit) {
+      const oldest = seenTurnOrder.shift()
+      if (oldest) seenTurnKeys.delete(oldest)
+    }
+    void sendNotification({
+      threadId: event.threadId,
+      turnId: event.id,
+      status: event.kind,
+      threadTitle,
+      threadUrl: buildThreadUrl(normalizedPublicBaseUrl, event.threadId),
+      errorMessage: '',
+      durationMs: null,
+      message: inputRequestNotificationCopy(event, threadTitle).title,
+    }).catch((error: unknown) => {
+      const message = error instanceof Error ? error.message : String(error)
+      console.warn(`[telegram] Failed to send input request notification: ${message}`)
     })
   }
 
@@ -345,6 +372,7 @@ export function createTelegramTurnNotifier(): TelegramTurnNotifier {
       : `Telegram turn notifications ${enabled ? 'enabled' : 'disabled'} (${config.source}${normalizedPublicBaseUrl ? `, base URL ${normalizedPublicBaseUrl}` : ', no public base URL configured'}).`,
     handleNotification,
     handleProjectBoardNotification,
+    handleInputRequest,
     handleRequest,
   }
 }

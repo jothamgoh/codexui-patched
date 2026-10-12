@@ -6,6 +6,7 @@ import type { IncomingMessage, ServerResponse } from 'node:http'
 import webPush from 'web-push'
 import type { PushSubscription, WebPushError } from 'web-push'
 import { compactNotificationText } from '../utils/notificationText'
+import { inputRequestNotificationCopy, type InputRequestNotification } from '../utils/inputRequestNotifications'
 import {
   projectBoardNotificationCopy,
   projectBoardNotificationDeepLink,
@@ -103,6 +104,8 @@ export type WebPushTurnNotifier = {
   handleNotification: (notification: BridgeNotification) => void
   syncProjectBoardNativeRequests: (pendingEventIds: string[], atIso: string) => Promise<void>
   handleProjectBoardNotification: (event: ProjectBoardNotification) => Promise<boolean>
+  /** Alerts every device that a chat is waiting for an answer or an approval. */
+  handleInputRequest: (event: InputRequestNotification, threadTitle: string) => Promise<void>
   resolveProjectBoardQuestions: (questionIds: string[], atIso: string) => Promise<void>
   handleRequest: (req: IncomingMessage, res: ServerResponse, next: () => void) => void
   removeThreadHistory: (threadIds: Iterable<string>) => Promise<void>
@@ -413,6 +416,19 @@ function buildPayload(turn: CompletedTurn, mode: NotificationMode): PushPayload 
   }
 }
 
+export function buildInputRequestPayload(event: InputRequestNotification, threadTitle: string, mode: NotificationMode): PushPayload {
+  const copy = inputRequestNotificationCopy(event, threadTitle)
+  return {
+    title: compactNotificationText(copy.title, 'Agents', 120),
+    body: compactNotificationText(copy.body, '', MAX_NOTIFICATION_BODY_LENGTH),
+    url: `/#/thread/${encodeURIComponent(event.threadId)}`,
+    tag: event.id,
+    mode,
+    icon: '/icons/agents-192.png',
+    badge: '/icons/agents-192.png',
+  }
+}
+
 function buildTestPayload(mode: NotificationMode, destination: string): PushPayload {
   return {
     title: 'Agents notifications',
@@ -534,17 +550,23 @@ export function createWebPushTurnNotifier(): WebPushTurnNotifier {
     }
   }
 
-  const sendCompletedTurn = async (turn: CompletedTurn): Promise<void> => {
+  const sendToSubscriptions = async (payloadFor: (mode: NotificationMode) => PushPayload): Promise<void> => {
     const state = await statePromise
     if (state.subscriptions.length === 0) return
 
     const expiredEndpoints = new Set<string>()
     await Promise.all(state.subscriptions.map(async (entry) => {
-      const result = await sendToEntry(entry, buildPayload(turn, entry.mode))
+      const result = await sendToEntry(entry, payloadFor(entry.mode))
       if (result.status === 'expired') expiredEndpoints.add(entry.subscription.endpoint)
     }))
     await removeSubscriptions(expiredEndpoints)
   }
+
+  const sendCompletedTurn = (turn: CompletedTurn): Promise<void> =>
+    sendToSubscriptions((mode) => buildPayload(turn, mode))
+
+  const handleInputRequest = (event: InputRequestNotification, threadTitle: string): Promise<void> =>
+    sendToSubscriptions((mode) => buildInputRequestPayload(event, threadTitle, mode))
 
   const recordCompletedTurn = async (turn: CompletedTurn): Promise<boolean> => {
     return mutateState((state) => {
@@ -953,6 +975,7 @@ export function createWebPushTurnNotifier(): WebPushTurnNotifier {
     statusMessage: `Web Push initializing (state ${stateFile}).`,
     handleNotification,
     handleProjectBoardNotification,
+    handleInputRequest,
     resolveProjectBoardQuestions,
     syncProjectBoardNativeRequests,
     handleRequest,

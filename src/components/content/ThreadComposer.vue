@@ -2,7 +2,7 @@
   <form class="thread-composer" @submit.prevent>
     <div class="thread-composer-shell" :class="{ 'thread-composer-shell--no-top-radius': hasQueueAbove }">
       <div v-if="responseTextAnnotations.length > 0" class="thread-composer-response-annotations">
-        <Popover>
+        <Popover @update:open="(open: boolean) => { if (!open) cancelAnnotationEdit() }">
           <PopoverTrigger as-child>
             <button class="thread-composer-response-annotations-trigger" type="button">
               <MessageSquareQuote class="thread-composer-response-annotations-trigger-icon" />
@@ -27,9 +27,32 @@
               >
                 <div class="thread-composer-response-annotation-content">
                   <p class="thread-composer-response-annotation-quote">{{ annotation.text }}</p>
-                  <p v-if="annotation.annotation" class="thread-composer-response-annotation-comment">
-                    {{ annotation.annotation }}
-                  </p>
+                  <form
+                    v-if="editingAnnotationId === annotation.id"
+                    class="thread-composer-response-annotation-editor"
+                    @submit.prevent="saveAnnotationEdit(annotation.id)"
+                  >
+                    <DictationField
+                      v-model="annotationEditText"
+                      multiline
+                      label="Comment"
+                      placeholder="Add an optional comment…"
+                      :rows="2"
+                      @busy-change="annotationEditBusy = $event"
+                    />
+                    <div class="thread-composer-response-annotation-editor-actions">
+                      <Button type="button" variant="ghost" size="sm" @click="cancelAnnotationEdit">Cancel</Button>
+                      <Button type="submit" size="sm" :disabled="annotationEditBusy">Save</Button>
+                    </div>
+                  </form>
+                  <template v-else>
+                    <p v-if="annotation.annotation" class="thread-composer-response-annotation-comment">
+                      {{ annotation.annotation }}
+                    </p>
+                    <button type="button" class="thread-composer-response-annotation-edit" @click="startAnnotationEdit(annotation)">
+                      {{ annotation.annotation ? 'Edit comment' : 'Add a comment' }}
+                    </button>
+                  </template>
                 </div>
                 <Button
                   type="button"
@@ -546,6 +569,7 @@ import IconTablerPlayerStopFilled from '../icons/IconTablerPlayerStopFilled.vue'
 import ComposerDropdown from './ComposerDropdown.vue'
 import ComposerSearchDropdown from './ComposerSearchDropdown.vue'
 import ComposerSkillPicker from './ComposerSkillPicker.vue'
+import DictationField from './DictationField.vue'
 
 type SkillItem = ComposerSelectedSkill
 const GOAL_SLASH_COMMAND_PATH = '__codex-command:goal'
@@ -1089,8 +1113,33 @@ function addResponseAnnotation(annotation: ResponseTextAnnotation): void {
 }
 
 function removeResponseAnnotation(annotationId: string): void {
+  if (editingAnnotationId.value === annotationId) cancelAnnotationEdit()
   composerDraftStore.removeResponseAnnotation(props.activeThreadId, annotationId)
 }
+
+// The list edits a comment in place, by typing or voice. It needs no marker in
+// the response, so it also works after a reload or for text scrolled away.
+const editingAnnotationId = ref('')
+const annotationEditText = ref('')
+const annotationEditBusy = ref(false)
+
+function startAnnotationEdit(annotation: ResponseTextAnnotation): void {
+  editingAnnotationId.value = annotation.id
+  annotationEditText.value = annotation.annotation ?? ''
+}
+
+function cancelAnnotationEdit(): void {
+  editingAnnotationId.value = ''
+  annotationEditText.value = ''
+}
+
+function saveAnnotationEdit(annotationId: string): void {
+  if (annotationEditBusy.value) return
+  composerDraftStore.updateResponseAnnotation(props.activeThreadId, annotationId, annotationEditText.value)
+  cancelAnnotationEdit()
+}
+
+watch(() => props.activeThreadId, cancelAnnotationEdit)
 
 function selectionCountLabel(count: number): string {
   return `${count} ${count === 1 ? 'selection' : 'selections'}`
@@ -1747,6 +1796,44 @@ watch(
 :global(.thread-composer-response-annotation-remove) {
   flex: none;
   color: var(--text-tertiary) !important;
+}
+
+:global(.thread-composer-response-annotation-edit) {
+  margin-top: 0.25rem;
+  padding: 0;
+  border: 0;
+  background: none;
+  color: var(--text-secondary);
+  font-size: 0.75rem;
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+
+:global(.thread-composer-response-annotation-edit:hover) {
+  color: var(--text-primary);
+}
+
+:global(.thread-composer-response-annotation-editor) {
+  display: flex;
+  flex-direction: column;
+  gap: 0.375rem;
+  margin-top: 0.375rem;
+}
+
+:global(.thread-composer-response-annotation-editor-actions) {
+  display: flex;
+  justify-content: flex-end;
+  gap: 0.375rem;
+}
+
+@media (pointer: coarse) {
+  :global(.thread-composer-response-annotation-edit) {
+    min-height: 2.75rem;
+  }
+
+  :global(.thread-composer-response-annotation-editor-actions button) {
+    min-height: 2.75rem;
+  }
 }
 
 .thread-composer-attachments {

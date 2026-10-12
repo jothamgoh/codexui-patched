@@ -21,7 +21,8 @@
           >
             <template #left>
               <span class="thread-left-stack">
-                <span v-if="thread.inProgress || thread.hasBackgroundTasks || thread.unread" class="thread-status-indicator" :data-state="getThreadState(thread)" />
+                <BackgroundWorkMark v-if="getThreadState(thread) === 'background'" class="thread-status-indicator" data-state="background" />
+                <span v-else-if="thread.inProgress || thread.unread" class="thread-status-indicator" :data-state="getThreadState(thread)" />
                 <button class="thread-pin-button" type="button" title="pin" @click="togglePin(thread.id)">
                   <IconTablerPin class="thread-icon" />
                 </button>
@@ -159,8 +160,9 @@
         >
           <template #left>
             <span class="thread-left-stack">
+              <BackgroundWorkMark v-if="getThreadState(thread) === 'background'" class="thread-status-indicator" data-state="background" />
               <span
-                v-if="thread.inProgress || thread.hasBackgroundTasks || thread.unread"
+                v-else-if="thread.inProgress || thread.unread"
                 class="thread-status-indicator"
                 :data-state="getThreadState(thread)"
               />
@@ -328,8 +330,9 @@
               >
                 <template #left>
                   <span class="thread-left-stack">
+                    <BackgroundWorkMark v-if="getThreadState(thread) === 'background'" class="thread-status-indicator" data-state="background" />
                     <span
-                      v-if="thread.inProgress || thread.hasBackgroundTasks || thread.unread"
+                      v-else-if="thread.inProgress || thread.unread"
                       class="thread-status-indicator"
                       :data-state="getThreadState(thread)"
                     />
@@ -434,6 +437,8 @@ import IconTablerFolderOpen from '../icons/IconTablerFolderOpen.vue'
 import IconTablerGitFork from '../icons/IconTablerGitFork.vue'
 import IconTablerPin from '../icons/IconTablerPin.vue'
 import SidebarMenuRow from './SidebarMenuRow.vue'
+import BackgroundWorkMark from '../content/BackgroundWorkMark.vue'
+import { isThreadInBackground, isThreadRunning } from '../../utils/notificationActivity'
 import { isClaudeThreadId } from '../../utils/chatProvider'
 
 const props = defineProps<{
@@ -828,12 +833,14 @@ function getThreadTitleTooltip(thread: UiThread): string {
   const boardThread = props.boardThreads?.[thread.id]
   if (boardThread) return `${title}\n${boardThread.featureId ? 'Board feature' : 'Board planning'} · ${getThreadStatusLabel(thread)}`
   const preview = normalizeThreadLabel(thread.preview)
-  return preview && preview !== title ? `${title}\n${preview}` : title
+  const summary = preview && preview !== title ? `${title}\n${preview}` : title
+  return isThreadInBackground(thread) ? `${summary}\nReply finished · background task still running` : summary
 }
 
 function getThreadStatusLabel(thread: UiThread): string {
   const status = props.boardThreads?.[thread.id]?.status
   if (status === 'needs_input') return 'Needs you'
+  if (isThreadInBackground(thread)) return 'Background'
   if (isThreadRunning(thread)) return 'Running'
   if (status) return { backlog: 'Backlog', working: 'Paused', review: 'Review', blocked: 'Blocked', done: 'Done' }[status]
   if (thread.unread) return 'Unread'
@@ -843,6 +850,7 @@ function getThreadStatusLabel(thread: UiThread): string {
 function getThreadStatusState(thread: UiThread): string {
   const status = props.boardThreads?.[thread.id]?.status
   if (status === 'needs_input') return status
+  if (isThreadInBackground(thread)) return 'background'
   return isThreadRunning(thread) ? 'working' : status === 'working' ? 'paused' : status || getThreadState(thread)
 }
 
@@ -1601,12 +1609,9 @@ function hasThreads(group: UiProjectGroup): boolean {
   return projectThreads(group).length > 0
 }
 
-function isThreadRunning(thread: UiThread): boolean {
-  return thread.inProgress || thread.hasBackgroundTasks === true
-}
-
-function getThreadState(thread: UiThread): 'working' | 'unread' | 'idle' {
-  if (isThreadRunning(thread)) return 'working'
+function getThreadState(thread: UiThread): 'working' | 'background' | 'unread' | 'idle' {
+  if (thread.inProgress) return 'working'
+  if (isThreadInBackground(thread)) return 'background'
   if (thread.unread) return 'unread'
   return 'idle'
 }
@@ -1954,6 +1959,13 @@ onBeforeUnmount(() => {
   color: rgb(5 150 105);
 }
 
+.thread-status-label[data-state='background'] {
+  @apply w-auto px-1 tracking-normal;
+  background: var(--surface-muted);
+  border-color: var(--border-subtle);
+  color: var(--text-secondary);
+}
+
 .thread-status-label[data-state='unread'] {
   background: var(--accent-soft);
   border-color: color-mix(in srgb, var(--accent) 40%, transparent);
@@ -2128,10 +2140,16 @@ onBeforeUnmount(() => {
   @apply border-2 border-zinc-500 border-t-transparent bg-transparent animate-spin;
 }
 
+.thread-status-indicator[data-state='background'] {
+  @apply text-zinc-500;
+}
+
 .thread-row:hover .thread-status-indicator[data-state='unread'],
 .thread-row:hover .thread-status-indicator[data-state='working'],
+.thread-row:hover .thread-status-indicator[data-state='background'],
 .thread-row:focus-within .thread-status-indicator[data-state='unread'],
-.thread-row:focus-within .thread-status-indicator[data-state='working'] {
+.thread-row:focus-within .thread-status-indicator[data-state='working'],
+.thread-row:focus-within .thread-status-indicator[data-state='background'] {
   @apply opacity-0;
 }
 </style>

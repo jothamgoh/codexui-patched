@@ -4,6 +4,7 @@
       <slot name="icon">
         <CircleAlert v-if="tone === 'failed'" />
         <LoaderCircle v-else-if="tone === 'running'" />
+        <BackgroundWorkMark v-else-if="tone === 'background'" />
         <Circle v-else-if="tone === 'unread'" />
         <Pin v-else-if="tone === 'pinned'" />
         <SquareKanban v-else-if="tone === 'board'" />
@@ -24,13 +25,14 @@
 
 <script setup lang="ts">
 import { CheckCircle2, Circle, CircleAlert, LoaderCircle, Pin, SquareKanban } from '@lucide/vue'
+import BackgroundWorkMark from './BackgroundWorkMark.vue'
 
 /**
  * One chat row in the notification panel's look. The panel and the voice
  * choosers both use it, so the app has a single list style.
  */
 withDefaults(defineProps<{
-  tone: 'failed' | 'running' | 'unread' | 'completed' | 'pinned' | 'board'
+  tone: 'failed' | 'running' | 'background' | 'unread' | 'completed' | 'pinned' | 'board'
   title: string
   pill?: string
   pillTone?: 'unread' | 'attention' | 'accent'

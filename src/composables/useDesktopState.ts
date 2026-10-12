@@ -1354,10 +1354,11 @@ export function useDesktopState() {
       const backgroundCount = backgroundTasksByThreadId.value[threadId]?.length ?? 0
       if (backgroundCount === 0) return null
       return {
-        activityLabel: `Running ${backgroundCount} background ${backgroundCount === 1 ? 'task' : 'tasks'}`,
+        activityLabel: `Reply finished · ${backgroundCount} background ${backgroundCount === 1 ? 'task' : 'tasks'} still running`,
         activityDetails: [],
         reasoningText: '',
         errorText: '',
+        background: true,
       }
     }
 

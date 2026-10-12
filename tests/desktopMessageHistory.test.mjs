@@ -444,7 +444,7 @@ test('pending approvals and questions replace generic thinking without ending th
   assert.equal(f.state.selectedLiveOverlay.value, null)
 })
 
-test('background work shows the live dots after the reply ends, and only while it runs', async (t) => {
+test('background work after the reply shows a still background line, and only while it runs', async (t) => {
   const f = fixture(t, { readBackgroundTasks: (tasks) => tasks })
   await f.state.refreshAll({ loadSelectedThread: false })
   const first = await f.read()
@@ -452,7 +452,8 @@ test('background work shows the live dots after the reply ends, and only while i
   await first.pending
   assert.equal(f.state.selectedLiveOverlay.value, null)
   f.emit('thread/backgroundTasks/updated', { tasks: [{ id: 'b1', type: 'local_bash', description: 'npm run build' }] })
-  assert.equal(f.state.selectedLiveOverlay.value?.activityLabel, 'Running 1 background task')
+  assert.equal(f.state.selectedLiveOverlay.value?.activityLabel, 'Reply finished · 1 background task still running')
+  assert.equal(f.state.selectedLiveOverlay.value?.background, true, 'not the live reply dots')
   assert.deepEqual(f.state.selectedThreadBackgroundTasks.value.map((task) => task.id), ['b1'])
   const sidebarRow = () => f.state.projectGroups.value.flatMap((group) => group.threads).find((thread) => thread.id === 'chat-1')
   assert.equal(sidebarRow().hasBackgroundTasks, true, 'the sidebar shows the chat as running')

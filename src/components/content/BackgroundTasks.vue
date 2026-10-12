@@ -2,7 +2,7 @@
   <div v-if="tasks.length > 0" class="background-tasks">
     <div class="background-tasks-inner">
       <button class="background-tasks-summary" type="button" :aria-expanded="expanded" @click="expanded = !expanded">
-        <span class="background-tasks-pulse" aria-hidden="true" />
+        <BackgroundWorkMark class="background-tasks-mark" />
         <span class="background-tasks-label">{{ summary }}</span>
         <svg class="background-tasks-chevron" :class="{ 'is-open': expanded }" xmlns="http://www.w3.org/2000/svg"
           width="1em" height="1em" viewBox="0 0 24 24" aria-hidden="true">
@@ -23,6 +23,7 @@
 <script setup lang="ts">
 import { computed, ref } from 'vue'
 import type { UiBackgroundTask } from '../../api/codexGateway'
+import BackgroundWorkMark from './BackgroundWorkMark.vue'
 
 const props = defineProps<{ tasks: UiBackgroundTask[] }>()
 
@@ -30,7 +31,10 @@ defineEmits<{ stop: [taskId: string] }>()
 
 const expanded = ref(false)
 
+// One task is named, so a monitor that waits for hours reads as what it is.
 const summary = computed(() => {
+  const [only] = props.tasks
+  if (props.tasks.length === 1 && only?.description) return `Running in the background: ${only.description}`
   const count = props.tasks.length
   return `${count} background ${count === 1 ? 'task' : 'tasks'} running`
 })
@@ -62,8 +66,8 @@ function typeLabel(type: string): string {
   @apply flex w-full min-w-0 items-center gap-2 border-0 bg-transparent py-1 text-left text-sm text-zinc-700;
 }
 
-.background-tasks-pulse {
-  @apply h-2 w-2 shrink-0 animate-pulse rounded-full bg-emerald-500;
+.background-tasks-mark {
+  @apply text-zinc-500;
 }
 
 .background-tasks-label {

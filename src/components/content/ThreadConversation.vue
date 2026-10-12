@@ -284,8 +284,9 @@
         <div class="message-row" data-role="assistant">
           <div class="message-stack" data-role="assistant">
             <article class="live-overlay-inline" aria-live="polite">
-              <p class="live-overlay-label">
-                <span class="live-overlay-dots" aria-hidden="true">
+              <p class="live-overlay-label" :class="{ 'is-background': liveOverlay.background }">
+                <BackgroundWorkMark v-if="liveOverlay.background" />
+                <span v-else class="live-overlay-dots" aria-hidden="true">
                   <span class="live-overlay-dot" />
                   <span class="live-overlay-dot" />
                   <span class="live-overlay-dot" />
@@ -652,6 +653,7 @@ import markdownit from 'markdown-it'
 import ConversationItem from './ConversationItem.vue'
 import SubAgentActivityCard from './SubAgentActivityCard.vue'
 import RequestUserInputCard from './RequestUserInputCard.vue'
+import BackgroundWorkMark from './BackgroundWorkMark.vue'
 import AsyncQuestionCard from './AsyncQuestionCard.vue'
 import { readAsyncQuestionReplies, type AsyncQuestion, type AsyncQuestionDraft } from '../../api/requestUserInput'
 import type { RequestQuestionDraft } from '../../api/requestUserInput'
@@ -2378,6 +2380,17 @@ onBeforeUnmount(() => {
 @keyframes live-shimmer {
   0% { background-position: 100% 0; }
   100% { background-position: -100% 0; }
+}
+
+/* Background work after the reply: still, not the live reply's dots and shimmer. */
+.live-overlay-label.is-background {
+  @apply font-normal text-zinc-500;
+}
+
+.live-overlay-label.is-background .live-overlay-label-text {
+  animation: none;
+  background: none;
+  -webkit-text-fill-color: currentColor;
 }
 
 .live-overlay-reasoning-details {

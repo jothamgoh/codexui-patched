@@ -267,9 +267,9 @@
                 <span class="notification-section-count">{{ listedRunningThreads.length }}</span>
               </div>
               <div v-for="thread in listedRunningThreads" :key="`running:${thread.id}`">
-              <NotificationRow tone="running" :title="threadTitle(thread)" @click="openThread(thread.id)">
+              <NotificationRow :tone="runningTone(thread)" :title="threadTitle(thread)" @click="openThread(thread.id)">
                 <template #meta>
-                  <span>In progress</span>
+                  <span>{{ runningTone(thread) === 'background' ? 'Reply finished · background task running' : 'In progress' }}</span>
                   <span aria-hidden="true">·</span>
                   <span>{{ formatRelative(thread.updatedAtIso) }}</span>
                   <kbd v-if="shortcutNumber(thread.id)" class="notification-shortcut">
@@ -622,6 +622,7 @@ import type { ProjectBoardActivity } from '../../utils/projectBoardActivity'
 import type { ThreadSourceMap } from '../../utils/threadHelpers'
 import {
   activityThreadTitle,
+  isThreadInBackground,
   isThreadRunning,
   MAX_RECENT_ACTIVITY_ITEMS,
   selectNotificationActivity,
@@ -648,7 +649,7 @@ type PinnedRow = {
   threadId: string
   title: string
   activityAt: string
-  tone: 'failed' | 'running' | 'unread' | 'pinned'
+  tone: 'failed' | 'running' | 'background' | 'unread' | 'pinned'
   statusLabel: string
   pill: string
 }
@@ -766,6 +767,9 @@ const threadHelpers = computed(() => activity.value.threadHelpers)
 const requestAttention = computed(() => activity.value.requestAttention)
 const waitingThreadIds = computed(() => activity.value.waitingThreadIds)
 const hasWorkingHelpers = (threadId: string) => activity.value.hasWorkingHelpers(threadId)
+/** A chat whose reply has finished while Claude background work runs on looks calmer than a live reply. */
+const runningTone = (thread: UiThread): 'running' | 'background' =>
+  isThreadInBackground(thread) && !hasWorkingHelpers(thread.id) ? 'background' : 'running'
 const needsYouCount = computed(() => props.boardAttention.length + requestAttention.value.length)
 const boardWorkActivity = computed(() => activity.value.boardWorkActivity)
 const runningThreads = computed(() => activity.value.runningThreads)
@@ -790,7 +794,11 @@ const pinnedRows = computed<PinnedRow[]>(() => {
     const activityAt = thread.updatedAtIso || thread.createdAtIso
     const row = { threadId: thread.id, title: threadTitle(thread), activityAt, pill: isUnread ? 'Unread' : '' }
     if (waitingThreadIds.value.has(thread.id)) return { ...row, tone: 'failed', statusLabel: 'Waiting for you', pill: 'Needs you' }
-    if (isThreadRunning(thread) || hasWorkingHelpers(thread.id)) return { ...row, tone: 'running', statusLabel: 'In progress', pill: '' }
+    if (isThreadRunning(thread) || hasWorkingHelpers(thread.id)) {
+      return runningTone(thread) === 'background'
+        ? { ...row, tone: 'background', statusLabel: 'Reply finished · background task running', pill: '' }
+        : { ...row, tone: 'running', statusLabel: 'In progress', pill: '' }
+    }
     if (latest && isAttentionStatus(latest.status)) {
       return { ...row, tone: 'failed', activityAt: latest.completedAt, statusLabel: activityStatusLabel({ status: latest.status, projectBoard: latest.projectBoard }) }
     }

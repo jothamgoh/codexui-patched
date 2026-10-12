@@ -16,7 +16,7 @@ async function loadModule(path) {
   return import(`data:text/javascript;base64,${Buffer.from(outputFiles[0].contents).toString('base64')}`)
 }
 
-const { selectNotificationActivity } = await loadModule('../src/utils/notificationActivity.ts')
+const { selectNotificationActivity, isThreadInBackground, isThreadRunning } = await loadModule('../src/utils/notificationActivity.ts')
 const { legacyPanelSelection } = await loadModule('./fixtures/legacyNotificationPanel.ts')
 const panelSource = await readFile(new URL('../src/components/content/NotificationSettingsButton.vue', import.meta.url), 'utf8')
 
@@ -224,4 +224,13 @@ test('the panel reads its sections from the shared selection instead of its own 
   assert.match(panelSource, /selectNotificationActivity\(\{/u)
   assert.doesNotMatch(panelSource, /collectThreadHelpers\(/u)
   assert.doesNotMatch(panelSource, /candidates\.sort\(/u)
+})
+
+test('a chat whose reply finished but whose background work runs is running, in the background', () => {
+  const backgroundOnly = thread('background', { inProgress: false, hasBackgroundTasks: true })
+  const replying = thread('replying', { inProgress: true, hasBackgroundTasks: true })
+  assert.equal(isThreadRunning(backgroundOnly), true, 'it stays in the running filter and section')
+  assert.equal(isThreadInBackground(backgroundOnly), true)
+  assert.equal(isThreadInBackground(replying), false, 'a live reply is never shown as background work')
+  assert.equal(isThreadInBackground(thread('idle', { inProgress: false })), false)
 })

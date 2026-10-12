@@ -110,6 +110,11 @@ export function isThreadRunning(thread: UiThread): boolean {
   return thread.inProgress || thread.hasBackgroundTasks === true
 }
 
+/** The reply has finished; only Claude background work is still running. */
+export function isThreadInBackground(thread: UiThread): boolean {
+  return !thread.inProgress && thread.hasBackgroundTasks === true
+}
+
 function timestampOrZero(value: string): number {
   const timestamp = Date.parse(value)
   return Number.isFinite(timestamp) ? timestamp : 0

@@ -326,6 +326,8 @@ export type UiLiveOverlay = {
   activityDetails: string[]
   reasoningText: string
   errorText: string
+  /** The reply has finished and only Claude background work is still running. */
+  background?: boolean
 }
 
 export type UiProjectGroup = {

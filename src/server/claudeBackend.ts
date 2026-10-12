@@ -83,6 +83,12 @@ const LIST_CACHE_MS = 2_500
 const COMMANDS_CACHE_MS = 10 * 60_000
 const RUNNER_IDLE_MS = 15 * 60_000
 const INTERRUPT_SETTLE_MS = 8_000
+/**
+ * How long a Claude question waits for its answer. Claude Code otherwise
+ * cancels the answering hook after 10 minutes and the question fails, even
+ * when a push notification sent the user to answer it.
+ */
+const QUESTION_WAIT_SECONDS = 24 * 60 * 60
 const SEARCH_FILE_LIMIT = 300
 const SEARCH_MAX_BYTES = 40 * 1024 * 1024
 const DEFAULT_CONTEXT_WINDOW = 200_000
@@ -1992,7 +1998,7 @@ export class ClaudeBackend {
       ...(modelInfo?.supportsAdaptiveThinking ? { thinking: { type: 'adaptive' as const, display: 'summarized' as const } } : {}),
       hooks: {
         PreToolUse: [
-          { matcher: 'AskUserQuestion', hooks: [askQuestion] },
+          { matcher: 'AskUserQuestion', hooks: [askQuestion], timeout: QUESTION_WAIT_SECONDS },
           ...(computerUseApproval ? [{ matcher: 'mcp__cua_repl__js', hooks: [approveComputerUse] }] : []),
         ],
       },

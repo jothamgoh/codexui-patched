@@ -648,6 +648,13 @@ test('gives Claude unattended Mac control when approval is set to never', async 
   })
 })
 
+test('keeps a Claude question open for a day', async () => {
+  await withComputerUseRunner({ CODEXUI_CLAUDE_COMPUTER_USE_APPROVAL: 'never' }, async ({ runnerOptions }) => {
+    const matcher = runnerOptions.hooks.PreToolUse.find((entry) => entry.matcher === 'AskUserQuestion')
+    assert.equal(matcher.timeout, 24 * 60 * 60, "Claude Code's 10-minute hook default would fail a question the user answers later")
+  })
+})
+
 test('starts a Claude chat without Mac control when the computer-use plugin is broken', async () => {
   await withComputerUseRunner({ CODEXUI_CLAUDE_COMPUTER_USE_MCP_FILE: '/missing/computer-use.mcp.json', CODEXUI_CLAUDE_COMPUTER_USE_APPROVAL: 'ask' }, async ({ runnerOptions }) => {
     assert.ok(runnerOptions, 'the runner must still start')

@@ -22,11 +22,13 @@ const fieldDisabled = computed(() => [attrs.disabled, attrs.readonly].some(value
 
 function candidate(text: string) {
   const words = props.multiline ? text : text.replace(/\s*\n\s*/g, ' ')
-  if (model.value === insertion.value) {
-    return { value: model.value.slice(0, insertion.start) + words + model.value.slice(insertion.end), caret: insertion.start + words.length }
-  }
-  const value = model.value + (model.value ? props.multiline ? '\n' : ' ' : '') + words
-  return { value, caret: value.length }
+  // Words go where the caret was when recording began, or after text typed since.
+  const target = model.value === insertion.value ? insertion : { value: model.value, start: model.value.length, end: model.value.length }
+  const before = target.value.slice(0, target.start)
+  const after = target.value.slice(target.end)
+  const lead = !before || /\s$/u.test(before) ? '' : props.multiline && !after ? '\n' : ' '
+  const trail = after && !/^\s/u.test(after) ? ' ' : ''
+  return { value: before + lead + words + trail + after, caret: before.length + lead.length + words.length }
 }
 
 const overflow = computed(() => {

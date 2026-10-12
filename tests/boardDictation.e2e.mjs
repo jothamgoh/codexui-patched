@@ -81,6 +81,11 @@ try {
   assert.equal(await plan.inputValue(), 'One\nTwo')
   assert.equal(await page.evaluate(() => fixture.submits), 0)
 
+  // Words dictated after existing text start on their own line instead of joining its last word.
+  await record('Goal or plan')
+  await finish('Three')
+  assert.equal(await plan.inputValue(), 'One\nTwo\nThree')
+
   // A failed request preserves audio for Retry; typing while it transcribes is retained.
   await record('Goal or plan')
   await finish('', 500)

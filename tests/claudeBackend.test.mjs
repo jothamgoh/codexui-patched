@@ -648,10 +648,31 @@ test('gives Claude unattended Mac control when approval is set to never', async 
   })
 })
 
-test('keeps a Claude question open for a day', async () => {
-  await withComputerUseRunner({ CODEXUI_CLAUDE_COMPUTER_USE_APPROVAL: 'never' }, async ({ runnerOptions }) => {
+test('carries on without an answer after 15 minutes, telling Claude the user is away', async (t) => {
+  await withComputerUseRunner({ CODEXUI_CLAUDE_COMPUTER_USE_APPROVAL: 'never' }, async ({ backend, runnerOptions }) => {
     const matcher = runnerOptions.hooks.PreToolUse.find((entry) => entry.matcher === 'AskUserQuestion')
-    assert.equal(matcher.timeout, 24 * 60 * 60, "Claude Code's 10-minute hook default would fail a question the user answers later")
+    assert.ok(matcher.timeout * 1000 > 15 * 60_000, "the hook outlasts the wait, or Claude Code's 10-minute default fails the question")
+    t.mock.timers.enable({ apis: ['setTimeout'] })
+    const result = matcher.hooks[0](
+      { hook_event_name: 'PreToolUse', tool_name: 'AskUserQuestion', tool_input: { questions: [{ question: 'Ship it?', header: 'Ship', multiSelect: false, options: [{ label: 'Yes', description: '' }, { label: 'No', description: '' }] }] } },
+      'toolu_away',
+      { signal: new AbortController().signal },
+    )
+    await new Promise((resolve) => setImmediate(resolve))
+    const [pending] = backend.listPendingServerRequests()
+    assert.equal(Date.parse(pending.params.expiresAtIso) - Date.parse(pending.receivedAtIso), 15 * 60_000, 'the card shows when Claude carries on')
+    t.mock.timers.tick(15 * 60_000 - 1)
+    await new Promise((resolve) => setImmediate(resolve))
+    assert.equal(backend.listPendingServerRequests().length, 1, 'still waiting just before the deadline')
+    let settled = null
+    void result.then((value) => { settled = value })
+    t.mock.timers.tick(1)
+    for (let turn = 0; turn < 5 && !settled; turn += 1) await new Promise((resolve) => setImmediate(resolve))
+    assert.ok(settled, 'Claude is told to carry on at the deadline')
+    const output = settled.hookSpecificOutput
+    assert.equal(output.permissionDecision, 'deny')
+    assert.match(output.permissionDecisionReason, /^No answer after 15 minutes; the user is probably away\. Carry on/u)
+    assert.deepEqual(backend.listPendingServerRequests(), [], 'the card goes away')
   })
 })
 

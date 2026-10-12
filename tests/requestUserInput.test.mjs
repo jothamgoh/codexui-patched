@@ -5,7 +5,8 @@ import ts from 'typescript'
 
 const source = await readFile(new URL('../src/api/requestUserInput.ts', import.meta.url), 'utf8')
 const compiled = ts.transpileModule(source, { compilerOptions: { module: ts.ModuleKind.ES2022, target: ts.ScriptTarget.ES2022 } }).outputText
-const { readRequestQuestions, requestQuestionAnswerValues, normalizeAsyncQuestions, encodeAsyncQuestionReply, readAsyncQuestionReplies } = await import(`data:text/javascript;base64,${Buffer.from(compiled).toString('base64')}`)
+const moduleUnderTest = await import(`data:text/javascript;base64,${Buffer.from(compiled).toString('base64')}`)
+const { readRequestQuestions, requestQuestionAnswerValues, normalizeAsyncQuestions, encodeAsyncQuestionReply, readAsyncQuestionReplies } = moduleUnderTest
 
 test('native async questions preserve source indices and support legacy free-text messages', () => {
   const item = { id: 'question-call', delivery: 'async', text: 'Fallback', questions: [null, { title: 'Choose an approach', options: ['Small', null, 'Large'] }] }
@@ -64,4 +65,11 @@ test('a multi-select question sends every picked option, in option order, plus a
   assert.deepEqual(requestQuestionAnswerValues(question, { choice: null, choices: [-1], text: ' ' }), [], 'an empty Other is not an answer')
   const [single] = readRequestQuestions({ questions: [{ id: 'q1', options: [{ label: 'Yes' }] }] })
   assert.equal(single.multiSelect, false)
+})
+
+test('reads when an agent carries on without an answer, and nothing when it waits', () => {
+  const { readRequestDeadline } = moduleUnderTest
+  assert.equal(readRequestDeadline({ expiresAtIso: '2026-10-12T12:52:00.000Z' })?.toISOString(), '2026-10-12T12:52:00.000Z')
+  assert.equal(readRequestDeadline({ questions: [] }), null)
+  assert.equal(readRequestDeadline({ expiresAtIso: 'soon' }), null)
 })

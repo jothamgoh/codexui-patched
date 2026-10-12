@@ -83,12 +83,14 @@ const LIST_CACHE_MS = 2_500
 const COMMANDS_CACHE_MS = 10 * 60_000
 const RUNNER_IDLE_MS = 15 * 60_000
 const INTERRUPT_SETTLE_MS = 8_000
+/** How long a Claude question waits for an answer before Claude carries on (the user's choice). */
+const QUESTION_ANSWER_WAIT_MS = 15 * 60_000
 /**
- * How long a Claude question waits for its answer. Claude Code otherwise
- * cancels the answering hook after 10 minutes and the question fails, even
- * when a push notification sent the user to answer it.
+ * Claude Code cancels a hook after 10 minutes by default, which fails the
+ * question with an error, so the answering hook's own limit outlasts the wait.
  */
-const QUESTION_WAIT_SECONDS = 24 * 60 * 60
+const QUESTION_HOOK_TIMEOUT_SECONDS = 30 * 60
+const QUESTION_AWAY_REASON = 'No answer after 15 minutes; the user is probably away. Carry on with your best judgment and say in your reply what you assumed. Do not ask this again with AskUserQuestion this turn; mention it in your final reply instead.'
 const SEARCH_FILE_LIMIT = 300
 const SEARCH_MAX_BYTES = 40 * 1024 * 1024
 const DEFAULT_CONTEXT_WINDOW = 200_000
@@ -692,10 +694,18 @@ function toCodexUsage(usage: ClaudeTokenUsage): Record<string, number> {
   return { ...usage }
 }
 
+/** The user's answers, or why the question ended without them. */
+type QuestionOutcome =
+  | { kind: 'answered'; answers: Record<string, string> }
+  /** Stop, an error reply, or the end of the turn. */
+  | { kind: 'dismissed' }
+  /** Nobody answered within QUESTION_ANSWER_WAIT_MS. */
+  | { kind: 'away' }
+
 type QuestionRequest = {
   pending: ClaudePendingServerRequest
   questions: Array<{ id: string; text: string }>
-  resolve: (answers: Record<string, string> | null) => void
+  resolve: (outcome: QuestionOutcome) => void
 }
 
 type PermissionRequest = {
@@ -1941,13 +1951,13 @@ export class ClaudeBackend {
     const askQuestion: HookCallback = async (hookInput, toolUseId, { signal }) => {
       const record = asRecord(hookInput)
       const toolInput = asRecord(record?.tool_input) ?? {}
-      const answers = await this.askUser(runner, toolUseId ?? '', toolInput, signal)
-      if (!answers) {
+      const outcome = await this.askUser(runner, toolUseId ?? '', toolInput, signal)
+      if (outcome.kind !== 'answered') {
         return {
           hookSpecificOutput: {
             hookEventName: 'PreToolUse',
             permissionDecision: 'deny',
-            permissionDecisionReason: 'The user did not answer the question.',
+            permissionDecisionReason: outcome.kind === 'away' ? QUESTION_AWAY_REASON : 'The user did not answer the question.',
           },
         }
       }
@@ -1955,7 +1965,7 @@ export class ClaudeBackend {
         hookSpecificOutput: {
           hookEventName: 'PreToolUse',
           permissionDecision: 'allow',
-          updatedInput: { ...toolInput, answers },
+          updatedInput: { ...toolInput, answers: outcome.answers },
         },
       }
     }
@@ -1998,7 +2008,7 @@ export class ClaudeBackend {
       ...(modelInfo?.supportsAdaptiveThinking ? { thinking: { type: 'adaptive' as const, display: 'summarized' as const } } : {}),
       hooks: {
         PreToolUse: [
-          { matcher: 'AskUserQuestion', hooks: [askQuestion], timeout: QUESTION_WAIT_SECONDS },
+          { matcher: 'AskUserQuestion', hooks: [askQuestion], timeout: QUESTION_HOOK_TIMEOUT_SECONDS },
           ...(computerUseApproval ? [{ matcher: 'mcp__cua_repl__js', hooks: [approveComputerUse] }] : []),
         ],
       },
@@ -2518,20 +2528,23 @@ export class ClaudeBackend {
     toolUseId: string,
     input: Record<string, unknown>,
     signal: AbortSignal,
-  ): Promise<Record<string, string> | null> {
+  ): Promise<QuestionOutcome> {
     const turn = runner.activeTurn
     const rawQuestions = Array.isArray(input.questions) ? input.questions.map(asRecord).filter(Boolean) as Array<Record<string, unknown>> : []
-    if (!turn || rawQuestions.length === 0 || signal.aborted) return null
+    if (!turn || rawQuestions.length === 0 || signal.aborted) return { kind: 'dismissed' }
     const questions = rawQuestions.map((question, index) => ({ id: `q${String(index)}`, text: readString(question.question) }))
     const id = ++this.nextRequestId
+    const askedAtMs = Date.now()
     const pending: ClaudePendingServerRequest = {
       id,
       method: 'item/tool/requestUserInput',
-      receivedAtIso: new Date().toISOString(),
+      receivedAtIso: new Date(askedAtMs).toISOString(),
       params: {
         threadId: turn.threadId,
         turnId: turn.turnId,
         itemId: toolUseId,
+        /** When Claude carries on without an answer; the card shows it. */
+        expiresAtIso: new Date(askedAtMs + QUESTION_ANSWER_WAIT_MS).toISOString(),
         questions: rawQuestions.map((question, index) => ({
           id: `q${String(index)}`,
           header: readString(question.header),
@@ -2548,17 +2561,23 @@ export class ClaudeBackend {
         })),
       },
     }
-    const answers = await new Promise<Record<string, string> | null>((resolve) => {
-      this.questions.set(id, { pending, questions, resolve })
-      signal.addEventListener('abort', () => resolve(null), { once: true })
+    const outcome = await new Promise<QuestionOutcome>((resolve) => {
+      const away = setTimeout(() => resolve({ kind: 'away' }), QUESTION_ANSWER_WAIT_MS)
+      away.unref?.()
+      const settle = (value: QuestionOutcome) => {
+        clearTimeout(away)
+        resolve(value)
+      }
+      this.questions.set(id, { pending, questions, resolve: settle })
+      signal.addEventListener('abort', () => settle({ kind: 'dismissed' }), { once: true })
       this.emit('server/request', pending)
     })
     if (this.questions.delete(id)) {
       this.emit('server/request/resolved', {
-        id, method: pending.method, threadId: turn.threadId, mode: answers ? 'manual' : 'cancelled', resolvedAtIso: new Date().toISOString(),
+        id, method: pending.method, threadId: turn.threadId, mode: outcome.kind === 'answered' ? 'manual' : 'cancelled', resolvedAtIso: new Date().toISOString(),
       })
     }
-    return answers
+    return outcome
   }
 
   private async askComputerUsePermission(
@@ -2602,7 +2621,7 @@ export class ClaudeBackend {
   private cancelRequests(turnId: string): void {
     for (const [id, request] of this.questions) {
       if (asRecord(request.pending.params)?.turnId !== turnId) continue
-      request.resolve(null)
+      request.resolve({ kind: 'dismissed' })
       if (this.questions.delete(id)) {
         this.emit('server/request/resolved', {
           id, method: request.pending.method, threadId: readString(asRecord(request.pending.params)?.threadId),
@@ -2655,7 +2674,7 @@ export class ClaudeBackend {
     const request = typeof id === 'number' ? this.questions.get(id) : undefined
     if (!request || typeof id !== 'number') throw new Error('This Claude question is no longer waiting for an answer.')
     if (asRecord(body?.error)) {
-      request.resolve(null)
+      request.resolve({ kind: 'dismissed' })
       return
     }
     const rawAnswers = asRecord(asRecord(body?.result)?.answers) ?? {}
@@ -2665,7 +2684,7 @@ export class ClaudeBackend {
       const text = Array.isArray(values) ? values.filter((value): value is string => typeof value === 'string').join(', ') : ''
       if (question.text) answers[question.text] = text
     }
-    request.resolve(answers)
+    request.resolve({ kind: 'answered', answers })
   }
 
   dispose(): void {

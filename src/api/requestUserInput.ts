@@ -87,6 +87,13 @@ export function readRequestQuestions(params: unknown): RequestQuestion[] {
   })
 }
 
+/** When the agent carries on without an answer, or null when it waits indefinitely. */
+export function readRequestDeadline(params: unknown): Date | null {
+  const value = record(params)?.expiresAtIso
+  const time = typeof value === 'string' ? Date.parse(value) : Number.NaN
+  return Number.isFinite(time) ? new Date(time) : null
+}
+
 export function requestQuestionAnswerValues(question: RequestQuestion, answer?: RequestQuestionAnswer): string[] {
   if (!answer) return []
   const text = answer.text.trim()

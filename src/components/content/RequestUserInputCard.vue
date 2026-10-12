@@ -4,7 +4,7 @@ import { MessageCircleQuestion } from '@lucide/vue'
 import { Button } from '../ui/button'
 import { Input } from '../ui/input'
 import DictationField from './DictationField.vue'
-import { readRequestQuestions, requestQuestionAnswerValues, type RequestQuestionDraft } from '../../api/requestUserInput'
+import { readRequestDeadline, readRequestQuestions, requestQuestionAnswerValues, type RequestQuestionDraft } from '../../api/requestUserInput'
 import { isClaudeThreadId } from '../../utils/chatProvider'
 import type { UiServerRequest, UiServerRequestReply } from '../../types/codex'
 
@@ -25,6 +25,11 @@ const answer = computed(() => {
   return answers.value.get(id)!
 })
 const agentName = computed(() => isClaudeThreadId(props.request.threadId) ? 'Claude' : 'Codex')
+const waitNote = computed(() => {
+  const deadline = readRequestDeadline(props.request.params)
+  if (!deadline) return `${agentName.value} will continue after you answer.`
+  return `No answer by ${deadline.toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' })}? ${agentName.value} carries on with its best guess.`
+})
 const sending = computed(() => props.request.replyState === 'sending')
 const busy = computed(() => sending.value || dictationBusy.value)
 const hasAnswer = computed(() => current.value && requestQuestionAnswerValues(current.value, answer.value).length > 0)
@@ -91,7 +96,7 @@ function continueQuestion(): void {
     <p v-else class="question-card-error" role="alert">This question couldn’t be displayed. Stop the turn and ask {{ agentName }} to try again.</p>
     <p v-if="request.replyError" class="question-card-error" role="alert">{{ request.replyError }} Your answer is still here; try submitting again.</p>
     <div class="question-card-footer">
-      <p>{{ agentName }} will continue after you answer.</p>
+      <p>{{ waitNote }}</p>
       <div class="question-card-actions">
         <Button v-if="questionIndex > 0" type="button" variant="ghost" size="sm" :disabled="busy" @click="questionIndex -= 1">Back</Button>
         <Button type="submit" size="sm" :disabled="busy || !hasAnswer">{{ sending ? 'Sending…' : isLastQuestion ? 'Submit' : 'Continue' }}</Button>

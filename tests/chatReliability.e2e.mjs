@@ -197,12 +197,13 @@ try {
    if(attempts===1) await route.fulfill({status:500,body:'temporary error'});
    else {await new Promise(resolve=>finishTranscript=resolve);await route.fulfill({json:{text:'Please check the mobile layout too.'}})}
  });
- await page.getByRole('button',{name:'Dictate comment',exact:true}).click();
- await page.getByText('Recording… Stop when you’re ready.',{exact:true}).waitFor();
- await page.getByRole('button',{name:'Stop dictation',exact:true}).click();
+ await page.getByRole('button',{name:'Speak',exact:true}).click();
+ await page.getByText('Listening',{exact:false}).waitFor();
+ await page.getByRole('button',{name:'Stop',exact:true}).click();
  await page.getByRole('button',{name:'Retry transcription',exact:true}).click();
  await page.getByText('Transcribing…',{exact:true}).waitFor();
- assert.equal(await page.getByRole('button',{name:'Add',exact:true}).isDisabled(),true);
+ // Add stays available: it would wait for these words before adding.
+ assert.equal(await page.getByRole('button',{name:'Add',exact:true}).isDisabled(),false);
  await page.locator('.conversation-list').click({position:{x:20,y:20}});
  assert.equal(await page.locator('[data-response-annotation-editor]').count(),1);
  finishTranscript();
@@ -215,10 +216,13 @@ try {
  assert.equal(await page.evaluate(()=>fixture.submits),0);
  // A transcription that finishes after changing chat belongs to the original draft.
  await selectLastAnswer();
- await page.getByRole('button',{name:'Dictate comment',exact:true}).click();
- await page.getByRole('button',{name:'Stop dictation',exact:true}).click();
+ const attemptsBeforeStop=attempts;
+ await page.getByRole('button',{name:'Speak',exact:true}).click();
+ await page.getByRole('button',{name:'Stop',exact:true}).click();
  await page.getByText('Transcribing…',{exact:true}).waitFor();
  await page.evaluate(()=>fixture.activeThreadId='chat-2');
+ // "Transcribing…" shows before the upload starts; answer only the request that arrived.
+ while(attempts===attemptsBeforeStop) await new Promise(resolve=>setTimeout(resolve,10));
  finishTranscript();await page.waitForTimeout(150);
  assert.equal(await page.evaluate(()=>drafts.draftFor('chat-1').responseTextAnnotations.length),2);
  assert.equal(await page.evaluate(()=>drafts.draftFor('chat-2').responseTextAnnotations.length),0);
@@ -227,7 +231,7 @@ try {
  await page.getByRole('textbox',{name:'Note',exact:true}).fill('Keep this typed note.');
  const startsBeforePermission=await page.evaluate(()=>window.audioRecordStarts||0);
  await page.evaluate(()=>window.deferMicrophonePermission=true);
- await page.getByRole('button',{name:'Dictate comment',exact:true}).click();
+ await page.getByRole('button',{name:'Speak more',exact:true}).click();
  await page.getByText('Opening microphone…',{exact:true}).waitFor();
  await page.evaluate(()=>fixture.activeThreadId='chat-3');
  await page.evaluate(()=>window.resolveMicrophonePermission());

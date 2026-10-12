@@ -454,6 +454,19 @@
           <span>Add to chat</span>
         </Button>
         <Button
+          v-if="isResponseAnnotationDictationSupported"
+          type="button"
+          variant="ghost"
+          size="sm"
+          class="response-selection-toolbar-button"
+          data-response-selection-speak
+          @pointerdown.prevent.stop="snapshotResponseSelectionForAnnotationEditor"
+          @click="speakResponseAnnotation"
+        >
+          <IconTablerMicrophone aria-hidden="true" />
+          <span>Speak</span>
+        </Button>
+        <Button
           type="button"
           variant="ghost"
           size="icon-sm"
@@ -479,10 +492,23 @@
         aria-label="Selected response text actions"
         @pointerdown.stop
       >
-        <span class="response-selection-dock-label">
+        <span v-if="!isResponseAnnotationDictationSupported" class="response-selection-dock-label">
           <MessageSquarePlus aria-hidden="true" />
           <span>Text selected</span>
         </span>
+        <Button
+          v-else
+          type="button"
+          variant="outline"
+          size="sm"
+          class="response-selection-dock-speak"
+          data-response-selection-speak
+          @pointerdown.prevent.stop="snapshotResponseSelectionForAnnotationEditor"
+          @click="speakResponseAnnotation"
+        >
+          <IconTablerMicrophone aria-hidden="true" />
+          Speak
+        </Button>
         <Button
           type="button"
           size="sm"
@@ -520,6 +546,7 @@
         :side-offset="8"
         :collision-padding="8"
         :update-position-strategy="responseAnnotationPositionUpdateStrategy(useDockedResponseSelectionActions)"
+        @open-auto-focus="onResponseAnnotationOpenAutoFocus"
       >
         <form class="response-annotation-form" @submit.prevent="addResponseAnnotationToComposer">
           <p class="response-annotation-heading">
@@ -530,37 +557,51 @@
             v-model="responseAnnotationDraft"
             aria-label="Note"
             class="response-annotation-input"
-            placeholder="Add an optional comment…"
+            :placeholder="responseAnnotationDictationState === 'recording' ? 'Your words appear here when you stop.' : 'Add an optional comment…'"
             @keydown="onResponseAnnotationInputKeydown"
           />
-          <p v-if="responseAnnotationDictationStatus" class="response-dictation-status" role="status">
+          <div
+            v-if="isStartingResponseAnnotationDictation || responseAnnotationDictationState !== 'idle'"
+            class="response-annotation-voice"
+            :class="{ 'is-recording': responseAnnotationDictationState === 'recording' }"
+            role="status"
+            aria-live="polite"
+          >
+            <template v-if="responseAnnotationDictationState === 'recording'">
+              <span class="response-annotation-voice-dot" aria-hidden="true" />
+              <span class="response-annotation-voice-text">Listening <span class="response-annotation-voice-time">{{ responseAnnotationRecordingTime }}</span></span>
+              <span class="response-annotation-voice-level" aria-hidden="true">
+                <span v-for="(bar, index) in responseAnnotationLevelBars" :key="index" :style="{ transform: `scaleY(${bar})` }" />
+              </span>
+              <Button type="button" variant="outline" size="sm" class="response-annotation-voice-stop" @click="stopResponseAnnotationRecording">
+                <span class="response-annotation-stop-icon" aria-hidden="true" />
+                Stop
+              </Button>
+            </template>
+            <template v-else>
+              <span class="response-annotation-mic-spinner" aria-hidden="true" />
+              <span class="response-annotation-voice-text">
+                {{ isStartingResponseAnnotationDictation ? 'Opening microphone…' : isAddingAfterDictation ? 'Transcribing, then adding…' : 'Transcribing…' }}
+              </span>
+            </template>
+          </div>
+          <p v-else-if="responseAnnotationDictationStatus" class="response-dictation-status" role="status">
             {{ responseAnnotationDictationStatus }}
             <button v-if="canRetryResponseAnnotationDictation" type="button" class="underline" @click="retryResponseAnnotationTranscription">Retry transcription</button>
           </p>
           <div class="response-annotation-actions">
             <div class="response-annotation-actions-leading">
               <Button
-                v-if="isResponseAnnotationDictationSupported"
+                v-if="isResponseAnnotationDictationSupported && responseAnnotationDictationState === 'idle'"
                 type="button"
-                variant="ghost"
-                size="icon-sm"
+                variant="outline"
+                size="sm"
                 class="response-annotation-mic"
-                :class="{
-                  'is-recording': responseAnnotationDictationState === 'recording',
-                  'is-transcribing': responseAnnotationDictationState === 'transcribing',
-                }"
-                :aria-label="responseAnnotationDictationButtonLabel"
-                :aria-pressed="responseAnnotationDictationState === 'recording'"
-                :title="responseAnnotationDictationButtonLabel"
-                :disabled="responseAnnotationDictationState === 'transcribing' || isStartingResponseAnnotationDictation"
+                :disabled="isStartingResponseAnnotationDictation"
                 @click="toggleResponseAnnotationDictation"
               >
-                <span
-                  v-if="responseAnnotationDictationState === 'transcribing'"
-                  class="response-annotation-mic-spinner"
-                  aria-hidden="true"
-                />
-                <IconTablerMicrophone v-else class="response-annotation-mic-icon" />
+                <IconTablerMicrophone class="response-annotation-mic-icon" aria-hidden="true" />
+                {{ responseAnnotationDraft.trim() ? 'Speak more' : 'Speak' }}
               </Button>
               <Button
                 v-if="editingResponseAnnotationId"
@@ -577,8 +618,8 @@
               <Button type="button" variant="ghost" size="sm" @click="closeResponseAnnotationEditor">
                 Cancel
               </Button>
-              <Button type="submit" size="sm" :disabled="responseAnnotationDictationState !== 'idle' || isStartingResponseAnnotationDictation">
-                {{ editingResponseAnnotationId ? 'Save' : 'Add' }}
+              <Button type="submit" size="sm" :disabled="isStartingResponseAnnotationDictation || isAddingAfterDictation">
+                {{ isAddingAfterDictation ? 'Adding…' : editingResponseAnnotationId ? 'Save' : 'Add' }}
               </Button>
             </div>
           </div>
@@ -999,15 +1040,21 @@ const {
   isSupported: isResponseAnnotationDictationSupported,
   startRecording: startResponseAnnotationRecording,
   stopRecording: stopResponseAnnotationRecording,
+  finishRecording: finishResponseAnnotationRecording,
   cancelRecording: cancelResponseAnnotationRecording,
+  level: responseAnnotationDictationLevel,
 } = useDictation({
+  meter: true,
   onTranscript: (text) => {
     const target = responseAnnotationDictationTarget
     if (!target) return
     if (target.threadId === props.activeThreadId && responseAnnotationEditor.value?.messageId === target.selection.messageId) {
       responseAnnotationDraft.value = responseAnnotationDraft.value
         ? `${responseAnnotationDraft.value}\n${text}` : text
-      void nextTick(() => document.querySelector<HTMLTextAreaElement>('.response-annotation-input')?.focus())
+      // On a phone, focusing would raise the keyboard over Add right after speaking.
+      if (!useDockedResponseSelectionActions.value) {
+        void nextTick(() => document.querySelector<HTMLTextAreaElement>('.response-annotation-input')?.focus())
+      }
     } else {
       const annotations = composerDraftStore.draftFor(target.threadId).responseTextAnnotations
       const existing = annotations.find((annotation) => annotation.id === target.annotationId)
@@ -1017,10 +1064,28 @@ const {
     responseAnnotationDictationTarget = null
   },
 })
-const responseAnnotationDictationButtonLabel = computed(() => {
-  if (responseAnnotationDictationState.value === 'recording') return 'Stop dictation'
-  if (responseAnnotationDictationState.value === 'transcribing') return 'Transcribing'
-  return 'Dictate comment'
+/** Add pressed while still speaking: the comment is added once its words arrive. */
+const isAddingAfterDictation = ref(false)
+const responseAnnotationRecordingSeconds = ref(0)
+let responseAnnotationRecordingTimer: ReturnType<typeof setInterval> | null = null
+watch(responseAnnotationDictationState, (state) => {
+  if (responseAnnotationRecordingTimer) clearInterval(responseAnnotationRecordingTimer)
+  responseAnnotationRecordingTimer = null
+  if (state !== 'recording') return
+  const startedAt = Date.now()
+  responseAnnotationRecordingSeconds.value = 0
+  responseAnnotationRecordingTimer = setInterval(() => {
+    responseAnnotationRecordingSeconds.value = Math.floor((Date.now() - startedAt) / 1000)
+  }, 250)
+})
+const responseAnnotationRecordingTime = computed(() => {
+  const seconds = responseAnnotationRecordingSeconds.value
+  return `${Math.floor(seconds / 60)}:${String(seconds % 60).padStart(2, '0')}`
+})
+/** Five bars that follow the microphone level, so the user sees it hears them. */
+const responseAnnotationLevelBars = computed(() => {
+  const level = responseAnnotationDictationLevel.value
+  return [0.45, 0.75, 1, 0.75, 0.45].map((weight) => Math.max(0.18, Math.min(1, level * weight * 1.6)))
 })
 const responseAnnotationMarkerPreview = computed(() => {
   if (!hoveredResponseAnnotationId.value || responseAnnotationEditor.value) return null
@@ -1351,8 +1416,25 @@ function openResponseAnnotationEditor(): void {
   window.getSelection()?.removeAllRanges()
 }
 
+let responseAnnotationOpenedToSpeak = false
+
+/** Opens the comment editor already listening, from the selected text's actions. */
+function speakResponseAnnotation(): void {
+  responseAnnotationOpenedToSpeak = true
+  openResponseAnnotationEditor()
+  if (responseAnnotationEditor.value) toggleResponseAnnotationDictation()
+  else responseAnnotationOpenedToSpeak = false
+}
+
+/** Speaking needs no text field focus, which on a phone would raise the keyboard. */
+function onResponseAnnotationOpenAutoFocus(event: Event): void {
+  if (responseAnnotationOpenedToSpeak) event.preventDefault()
+  responseAnnotationOpenedToSpeak = false
+}
+
 function closeResponseAnnotationEditor(): void {
   responseAnnotationDictationTarget = null
+  isAddingAfterDictation.value = false
   cancelResponseAnnotationRecording()
   responseAnnotationEditor.value = null
   editingResponseAnnotationId.value = null
@@ -1375,8 +1457,15 @@ function createResponseAnnotationId(): string {
   return `response-annotation-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`
 }
 
-function addResponseAnnotationToComposer(): void {
-  if (responseAnnotationDictationState.value !== 'idle' || isStartingResponseAnnotationDictation.value) return
+async function addResponseAnnotationToComposer(): Promise<void> {
+  if (isStartingResponseAnnotationDictation.value || isAddingAfterDictation.value) return
+  if (responseAnnotationDictationState.value !== 'idle') {
+    const editor = responseAnnotationEditor.value
+    isAddingAfterDictation.value = true
+    const transcribed = await finishResponseAnnotationRecording().finally(() => { isAddingAfterDictation.value = false })
+    // A failed transcription keeps the editor open with Retry; a chat switch already saved the words.
+    if (!transcribed || responseAnnotationEditor.value !== editor) return
+  }
   const selection = responseAnnotationEditor.value
   if (!selection) return
   const annotation = responseAnnotationDraft.value.trim()
@@ -1497,7 +1586,7 @@ function scheduleResponseAnnotationMarkerUpdate(): void {
 function onResponseAnnotationInputKeydown(event: KeyboardEvent): void {
   if (event.isComposing || event.key !== 'Enter' || event.shiftKey || event.altKey) return
   event.preventDefault()
-  addResponseAnnotationToComposer()
+  void addResponseAnnotationToComposer()
 }
 
 function toggleResponseAnnotationDictation(): void {
@@ -2145,6 +2234,7 @@ onBeforeUnmount(() => {
   window.removeEventListener('resize', onConversationViewportResize)
   viewportResizeObserver?.disconnect()
   cancelResponseAnnotationRecording()
+  if (responseAnnotationRecordingTimer) clearInterval(responseAnnotationRecordingTimer)
   cancelScheduledResponseSelectionUpdate()
   if (scrollRestoreFrame) {
     cancelAnimationFrame(scrollRestoreFrame)
@@ -2607,6 +2697,7 @@ onBeforeUnmount(() => {
   flex: none;
 }
 
+.response-selection-dock-speak,
 .response-selection-dock-add,
 .response-selection-dock-dismiss {
   min-height: 2.75rem !important;
@@ -2615,6 +2706,21 @@ onBeforeUnmount(() => {
 
 .response-selection-dock-add {
   padding-inline: 0.875rem !important;
+}
+
+/* With voice available the two actions share the dock as large touch targets. */
+.response-selection-dock-speak,
+.response-selection-dock-speak + .response-selection-dock-add {
+  flex: 1;
+}
+
+.response-selection-dock-speak {
+  gap: 0.375rem !important;
+}
+
+.response-selection-dock-speak svg {
+  width: 1rem;
+  height: 1rem;
 }
 
 .response-selection-dock-dismiss {
@@ -2658,8 +2764,8 @@ onBeforeUnmount(() => {
   min-height: 2.75rem;
 }
 
-:global(.response-annotation-popover--compact .response-annotation-mic) {
-  width: 2.75rem;
+:global(.response-annotation-popover--compact .response-annotation-voice) {
+  min-height: 3.25rem;
 }
 
 :global(.response-annotation-form) {
@@ -2727,21 +2833,94 @@ onBeforeUnmount(() => {
 }
 
 :global(.response-annotation-mic) {
-  color: var(--text-secondary) !important;
-}
-
-:global(.response-annotation-mic:hover) {
-  color: var(--text-primary) !important;
-}
-
-:global(.response-annotation-mic.is-recording) {
-  background: color-mix(in srgb, #ef4444 14%, transparent) !important;
-  color: #dc2626 !important;
+  gap: 0.375rem !important;
 }
 
 :global(.response-annotation-mic-icon) {
   width: 1rem;
   height: 1rem;
+}
+
+/* Dictation in progress: what is happening, that the microphone hears, and how to stop. */
+:global(.response-annotation-voice) {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  min-height: 2.5rem;
+  padding: 0.25rem 0.25rem 0.25rem 0.625rem;
+  border-radius: 0.625rem;
+  background: var(--surface-muted);
+  color: var(--text-secondary);
+  font-size: 0.8125rem;
+}
+
+:global(.response-annotation-voice.is-recording) {
+  background: color-mix(in srgb, #ef4444 9%, transparent);
+  color: #b91c1c;
+}
+
+:global(.response-annotation-voice-dot) {
+  width: 0.5rem;
+  height: 0.5rem;
+  flex: none;
+  border-radius: 9999px;
+  background: #dc2626;
+  animation: response-annotation-pulse 1.2s ease-in-out infinite;
+}
+
+:global(.response-annotation-voice-text) {
+  font-weight: 500;
+  white-space: nowrap;
+}
+
+:global(.response-annotation-voice-time) {
+  margin-left: 0.25rem;
+  font-variant-numeric: tabular-nums;
+  font-weight: 400;
+  opacity: 0.8;
+}
+
+:global(.response-annotation-voice-level) {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  height: 1rem;
+}
+
+:global(.response-annotation-voice-level span) {
+  width: 3px;
+  height: 100%;
+  border-radius: 9999px;
+  background: currentColor;
+  transition: transform 90ms linear;
+}
+
+:global(.response-annotation-voice-stop) {
+  margin-left: auto;
+  gap: 0.375rem !important;
+  border-color: color-mix(in srgb, #dc2626 35%, transparent) !important;
+  color: #b91c1c !important;
+}
+
+:global(.response-annotation-popover--compact .response-annotation-voice-stop) {
+  min-height: 2.75rem;
+  padding-inline: 1rem !important;
+}
+
+:global(.response-annotation-stop-icon) {
+  width: 0.625rem;
+  height: 0.625rem;
+  border-radius: 2px;
+  background: currentColor;
+}
+
+@keyframes response-annotation-pulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.35; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  :global(.response-annotation-voice-dot) { animation: none; }
 }
 
 :global(.response-annotation-mic-spinner) {

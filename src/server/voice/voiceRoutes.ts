@@ -11,6 +11,7 @@
  *   POST /codex-api/voice/<code>/cancel      cancels a send still in its undo window (idempotent)
  *   POST /codex-api/voice/<code>/send        {"threadId"} or {"projectId"}: a tap in a chooser sends
  *   GET|POST /codex-api/voice/settings       auto-send on or off, and the undo window
+ *   GET  /codex-api/voice/inbox              the panel's lists, projects and settings; routes nothing
  *
  * Nothing outside /codex-api/voice/shortcut/ looks at the bearer token, and
  * nothing the PWA needs lives under it, so a Cloudflare Access service-token
@@ -612,6 +613,16 @@ export function createVoiceCommandHandler(deps: VoiceRouteDeps) {
     return { data: settings, projects, fallbackProject: fallback }
   }
 
+  /**
+   * What a phone app shows before anyone speaks: the panel's sections (the same lists
+   * a spoken "what's unread" answers from), the projects and the settings. No Jev call.
+   */
+  async function handleInbox(res: ServerResponse): Promise<void> {
+    const [snapshot, settings] = await Promise.all([deps.collectSnapshot(), currentSettings()])
+    const { sections, projects } = buildVoiceContext(snapshot)
+    setJson(res, 200, { data: { sections, projects, settings } })
+  }
+
   async function handleSettings(req: IncomingMessage, res: ServerResponse): Promise<void> {
     if (req.method === 'GET') {
       setJson(res, 200, await settingsPayload(await currentSettings()))
@@ -657,6 +668,7 @@ export function createVoiceCommandHandler(deps: VoiceRouteDeps) {
         }
         if (req.method === 'POST' && url.pathname === '/codex-api/voice/command') return await handleAppCommand(req, res)
         if ((req.method === 'GET' || req.method === 'POST') && url.pathname === '/codex-api/voice/settings') return await handleSettings(req, res)
+        if (req.method === 'GET' && url.pathname === '/codex-api/voice/inbox') return await handleInbox(res)
         const [code, verb, ...extra] = url.pathname.slice('/codex-api/voice/'.length).split('/')
         if (req.method === 'POST' && isVoiceCode(code) && extra.length === 0 && verb === 'cancel') return handleCancel(code, res)
         if (req.method === 'POST' && isVoiceCode(code) && extra.length === 0 && verb === 'send') return await handleTapSend(code, req, res)

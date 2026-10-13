@@ -347,6 +347,20 @@ test('the in-app command route runs the router without the token and without a p
   assert.deepEqual([started.length, sent.length], [0, 0])
 })
 
+test('the inbox lists the panel sections, projects and settings, and routes or sends nothing', async (t) => {
+  const { call, pushes, sent, started, logs } = await startHandler(t, { env: {}, settings: { delaySeconds: 5 } })
+  const response = await call('/codex-api/voice/inbox', { method: 'GET' })
+  assert.equal(response.status, 200)
+  const { sections, projects, settings } = response.json.data
+  const ids = (rows) => rows.map((row) => row.threadId)
+  assert.deepEqual(ids(sections.needs_you), [CHATS.migration.threadId])
+  assert.deepEqual(ids(sections.unread), [CHATS.webhook.threadId, CHATS.bounces.threadId])
+  assert.deepEqual(projects.map((project) => project.label), ['automation', 'hr-ai', 'booking-platform', 'notes-vault', 'slack-ai'])
+  assert.equal(settings.delaySeconds, 5)
+  assert.deepEqual([pushes.length, sent.length, started.length, logs.length], [0, 0, 0, 0], 'no Jev key, no routing, no log line')
+  assert.equal((await call('/codex-api/voice/inbox')).status, 404, 'POST is not an inbox read')
+})
+
 test('the in-app route works even when the shortcut is disabled, and needs no bearer', async (t) => {
   const { call } = await startHandler(t, { env: { CODEXUI_VOICE_TYPESAFE_API_KEY: 'jev-test' } })
   assert.equal((await call('/codex-api/voice/command', { body: { text: 'show me all unread chats' } })).status, 200)

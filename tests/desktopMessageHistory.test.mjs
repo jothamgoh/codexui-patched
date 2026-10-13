@@ -19,7 +19,7 @@ const { outputFiles } = await build({ entryPoints: [entry], bundle: true, write:
     build.onResolve({ filter: /useWebPushNotifications$/ }, () => ({ path: 'notifications', namespace: 'fixture' }))
     build.onLoad({ filter: /.*/, namespace: 'fixture' }, ({ path }) => ({ contents: path === 'gateway'
       ? gatewayNames.map((name) => `export const ${name}=(...args)=>globalThis.__historyGateway.${name}(...args);`).join('\n')
-      : "export const getLocalTurnNotificationMode=()=> 'off'; export const isWebPushLocallyEnabled=()=>false;" }))
+      : "export const getLocalTurnNotificationMode=()=> 'off'; export const isWebPushLocallyEnabled=()=>false; export const pageShowsOwnAlerts=()=>false;" }))
   },
 }] })
 const { useDesktopState } = await import(`data:text/javascript;base64,${Buffer.from(outputFiles[0].contents).toString('base64')}`)

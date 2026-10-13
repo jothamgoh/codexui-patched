@@ -81,6 +81,7 @@ import {
 import {
   getLocalTurnNotificationMode,
   isWebPushLocallyEnabled,
+  pageShowsOwnAlerts,
 } from './useWebPushNotifications'
 import { compactNotificationText } from '../utils/notificationText'
 import type { CodexThreadAudience } from '../utils/codexThreadSource'
@@ -3176,10 +3177,10 @@ export function useDesktopState() {
     const NotificationApi = getBrowserNotificationApi()
     if (!NotificationApi) return
 
-    if (isWebPushLocallyEnabled()) {
+    if (!pageShowsOwnAlerts()) {
       // The server sends subscribed devices one Web Push notification for this turn.
       // Showing the same tag here would replace it immediately and can make the macOS
-      // banner appear to flash or disappear.
+      // banner appear to flash or disappear. A device set to Never gets no alert at all.
       rememberBrowserTurnNotification(turnKey)
       return
     }

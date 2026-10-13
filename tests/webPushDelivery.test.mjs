@@ -1,8 +1,10 @@
 import assert from 'node:assert/strict'
 import { readFile } from 'node:fs/promises'
+import { fileURLToPath } from 'node:url'
 import test from 'node:test'
 import vm from 'node:vm'
 import { build } from 'esbuild'
+import ts from 'typescript'
 
 const notificationSettingsSource = await readFile(
   new URL('../src/composables/useWebPushNotifications.ts', import.meta.url),
@@ -33,9 +35,108 @@ test('the test action delegates notification display to server Web Push', () => 
   assert.doesNotMatch(notificationSettingsSource, /\.showNotification\(/u)
 })
 
-test('subscribed turn completion does not create a duplicate local notification', () => {
-  assert.match(desktopStateSource, /if \(isWebPushLocallyEnabled\(\)\) \{/u)
+test('the page never shows alerts through the service worker registration', () => {
   assert.doesNotMatch(desktopStateSource, /registration\.showNotification\(/u)
+})
+
+// Bundles a composable with every module matching `stubbed` replaced by functions
+// that call globalThis.__pageApi; a name it lacks resolves to null.
+async function importWithStubbedApi(entry, stubbed) {
+  const { outputFiles } = await build({
+    entryPoints: [fileURLToPath(new URL(entry, import.meta.url))], bundle: true, write: false, format: 'esm', platform: 'node', logLevel: 'silent',
+    plugins: [{ name: 'stubbed-api', setup(b) {
+      b.onResolve({ filter: /^vue$/ }, () => ({ path: import.meta.resolve('vue'), external: true }))
+      b.onResolve({ filter: stubbed }, ({ path, importer }) => ({ path: `${importer}?${path}`, namespace: 'stub' }))
+      b.onLoad({ filter: /.*/, namespace: 'stub' }, async ({ path }) => {
+        const [importer, specifier] = path.split('?')
+        const ast = ts.createSourceFile(importer, await readFile(importer, 'utf8'), ts.ScriptTarget.Latest, true)
+        const names = ast.statements
+          .filter((node) => ts.isImportDeclaration(node) && node.moduleSpecifier.text === specifier && node.importClause && !node.importClause.isTypeOnly)
+          .flatMap((node) => node.importClause.namedBindings?.elements ?? [])
+          .filter((element) => !element.isTypeOnly)
+          .map((element) => (element.propertyName ?? element.name).text)
+        return { contents: names.map((name) => `export const ${name} = (...args) => (globalThis.__pageApi.${name} ?? (async () => null))(...args)`).join('\n') }
+      })
+    } }],
+  })
+  return import(`data:text/javascript;base64,${Buffer.from(outputFiles[0].contents).toString('base64')}`)
+}
+
+// A background CodexUI tab with notification permission granted. It records each
+// banner the page creates itself, which bypasses Web Push and the device setting.
+function openBackgroundPage(t, settings) {
+  const banners = []
+  class FakeNotification {
+    static permission = 'granted'
+    constructor(title, options) { banners.push({ title, tag: options.tag }) }
+    close() {}
+  }
+  const storage = new Map(Object.entries(settings))
+  const names = ['window', 'document', 'Notification', '__pageApi']
+  const previous = names.map((name) => Object.getOwnPropertyDescriptor(globalThis, name))
+  const value = {
+    window: {
+      Notification: FakeNotification,
+      localStorage: { getItem: (key) => storage.get(key) ?? null, setItem: (key, item) => storage.set(key, String(item)), removeItem: (key) => storage.delete(key) },
+      matchMedia: () => ({ matches: false }),
+      setTimeout: () => 0,
+      clearTimeout() {},
+      focus() {},
+      location: { hash: '' },
+    },
+    document: { visibilityState: 'hidden', hasFocus: () => false },
+    Notification: FakeNotification,
+    __pageApi: {},
+  }
+  for (const name of names) Object.defineProperty(globalThis, name, { configurable: true, writable: true, value: value[name] })
+  t.after(() => names.forEach((name, index) => previous[index]
+    ? Object.defineProperty(globalThis, name, previous[index])
+    : delete globalThis[name]))
+  return banners
+}
+
+const deviceCases = [
+  ['subscribed to Web Push', { 'codex-web-local.turn-notification-mode.v1': 'unfocused', 'codex-web-local.web-push-enabled.v1': 'true' }, 0],
+  ['set to Never', { 'codex-web-local.turn-notification-mode.v1': 'off' }, 0],
+  ['not subscribed', { 'codex-web-local.turn-notification-mode.v1': 'unfocused' }, 1],
+]
+
+test('a background page alerts for a finished chat only when Web Push does not and the device is not set to Never', async (t) => {
+  const { useDesktopState } = await importWithStubbedApi('../src/composables/useDesktopState.ts', /\/api\/codexGateway$/)
+  for (const [device, settings, expected] of deviceCases) {
+    await t.test(device, async (st) => {
+      const banners = openBackgroundPage(st, settings)
+      let stream
+      Object.assign(globalThis.__pageApi, {
+        subscribeCodexNotifications: (callbacks) => { stream = callbacks; return () => {} },
+        getThreadAudience: async () => 'interactive',
+        getPendingServerRequests: async () => [],
+      })
+      const state = useDesktopState()
+      state.startPolling()
+      stream.onNotification({ method: 'turn/completed', params: { threadId: 'chat-1', turn: { id: 'turn-1', status: 'completed' } } })
+      for (let index = 0; index < 12; index++) await Promise.resolve()
+      state.stopPolling()
+      assert.equal(banners.length, expected)
+    })
+  }
+})
+
+test('a background page alerts for a board event only when Web Push does not and the device is not set to Never', async (t) => {
+  const { useProjectBoards } = await importWithStubbedApi('../src/composables/useProjectBoards.ts', /\/api\/(projectBoards|codexRpcClient)$/)
+  const event = { id: 'board-event-1', kind: 'batch_completed', boardId: 'board', featureId: '', cardId: '', queueId: 'queue-1', occurredAt: '2026-10-14T00:00:00.000Z' }
+  for (const [device, settings, expected] of deviceCases) {
+    await t.test(device, (st) => {
+      const banners = openBackgroundPage(st, settings)
+      let notify
+      globalThis.__pageApi.subscribeInPageRpcNotifications = (listener) => { notify = listener; return () => {} }
+      const boards = useProjectBoards({ showBrowserNotifications: true })
+      boards.startLiveUpdates()
+      notify({ method: 'codexui/projectBoards/notification', params: event })
+      boards.stopLiveUpdates()
+      assert.equal(banners.length, expected)
+    })
+  }
 })
 
 test('the service worker remains the single Web Push display source', () => {

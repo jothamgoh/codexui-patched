@@ -29,7 +29,7 @@ import {
   type ProjectBoardChatMessageInput,
 } from '../api/projectBoards'
 import { subscribeInPageRpcNotifications } from '../api/codexRpcClient'
-import { isWebPushLocallyEnabled } from './useWebPushNotifications'
+import { pageShowsOwnAlerts } from './useWebPushNotifications'
 import type {
   ProjectBoardAgentCreateInput,
   ProjectBoardCardCreateInput,
@@ -144,7 +144,7 @@ export function useProjectBoards(options: UseProjectBoardsOptions = {}) {
     unsubscribe = subscribeInPageRpcNotifications((notification) => {
       if (notification.method === 'codexui/projectBoards/notification') {
         const event = notification.params
-        if (isProjectBoardNotification(event) && options.showBrowserNotifications !== false && !isWebPushLocallyEnabled()) {
+        if (isProjectBoardNotification(event) && options.showBrowserNotifications !== false && pageShowsOwnAlerts()) {
           showProjectBoardNotification(event, options.notifyWhenFocused === true)
         }
         return

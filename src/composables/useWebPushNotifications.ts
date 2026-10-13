@@ -351,6 +351,14 @@ export function isWebPushLocallyEnabled(): boolean {
   return window.localStorage.getItem(ENABLED_STORAGE_KEY) === 'true'
 }
 
+/**
+ * Whether an open page shows chat and board alerts itself. A subscribed device
+ * gets them through Web Push instead, and a device set to Never gets none.
+ */
+export function pageShowsOwnAlerts(): boolean {
+  return !isWebPushLocallyEnabled() && loadMode() !== 'off'
+}
+
 export function useWebPushNotifications() {
   return {
     status: readonly(status),

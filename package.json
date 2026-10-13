@@ -47,7 +47,7 @@
     "build:frontend": "vue-tsc --noEmit && vite build",
     "build:cli": "tsup",
     "build": "npm run build:frontend && npm run build:cli",
-    "test": "npm run test:env && npm run test:runtime-config && npm run test:ui-font-size && npm run test:service-tier && npm run test:claude-backend && npm run test:automations && npm run test:project-boards && npm run test:composer-drafts && npm run test:composer-mobile && npm run test:response-selection && npm run test:thread-references && npm run test:subagent-activity && npm run test:question-preference && npm run test:request-user-input && npm run test:codex-thread-source && npm run test:notification-routing && npm run test:restart-resume && npm run test:pinned-threads && npm run test:thread-pagination && npm run test:thread-scroll && npm run test:web-push && npm run test:skill-uninstall && npm run test:review-diff && npm run test:review-patch && npm run test:review-mutation-gate && npm run test:review-scope && npm run test:git-workspace && npm run test:bridge-endpoint && npm run test:host-folders && npm run test:notification-activity && npm run test:voice",
+    "test": "npm run test:env && npm run test:runtime-config && npm run test:ui-font-size && npm run test:service-tier && npm run test:claude-backend && npm run test:automations && npm run test:project-boards && npm run test:composer-drafts && npm run test:composer-mobile && npm run test:response-selection && npm run test:thread-references && npm run test:subagent-activity && npm run test:question-preference && npm run test:request-user-input && npm run test:codex-thread-source && npm run test:notification-routing && npm run test:restart-resume && npm run test:pinned-threads && npm run test:thread-pagination && npm run test:thread-scroll && npm run test:web-push && npm run test:skill-uninstall && npm run test:review-diff && npm run test:review-patch && npm run test:review-mutation-gate && npm run test:review-scope && npm run test:git-workspace && npm run test:bridge-endpoint && npm run test:host-folders && npm run test:notification-activity && npm run test:voice && npm run test:event-stream",
     "test:env": "node --test tests/envFile.test.mjs",
     "test:runtime-config": "node --test tests/runtimeConfig.test.mjs",
     "test:ui-font-size": "node --test tests/uiFontSize.test.mjs",
@@ -88,6 +88,7 @@
     "test:host-folders": "node --test tests/hostFolders.test.mjs",
     "test:e2e:host-folders": "node tests/hostFolderPicker.e2e.mjs",
     "test:notification-activity": "node --test tests/notificationActivity.test.mjs",
+    "test:event-stream": "node --test tests/eventStreamOptions.test.mjs",
     "test:voice": "node --test tests/voiceAutoSend.test.mjs tests/voiceRouter.test.mjs tests/voiceLlmRouter.test.mjs tests/voiceMessage.test.mjs tests/voiceServer.test.mjs tests/voicePrefill.test.mjs tests/voiceLanding.test.mjs",
     "eval:voice": "node scripts/voice-eval.mjs",
     "test:e2e:voice": "node tests/voicePages.e2e.mjs"

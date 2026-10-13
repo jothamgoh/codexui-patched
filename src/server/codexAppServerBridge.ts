@@ -8,6 +8,7 @@ import { homedir } from 'node:os'
 import { tmpdir } from 'node:os'
 import { basename, isAbsolute, join, resolve } from 'node:path'
 import { writeFile } from 'node:fs/promises'
+import { parseEventStreamOptions } from './eventStreamOptions'
 import { PinnedThreadsStore, type PinnedThreadsOrderResult } from './pinnedThreadsStore'
 import {
   ThreadMetadataStore,
@@ -2848,15 +2849,17 @@ export function createCodexBridgeMiddleware(): CodexBridgeMiddleware {
         res.setHeader('Connection', 'keep-alive')
         res.setHeader('X-Accel-Buffering', 'no')
 
+        const streamOptions = parseEventStreamOptions(url.searchParams)
         const unsubscribe = middleware.subscribeNotifications((notification: { method: string; params: unknown; atIso: string }) => {
           if (res.writableEnded || res.destroyed) return
+          if (!streamOptions.matches(notification.method)) return
           res.write(`data: ${JSON.stringify(notification)}\n\n`)
         })
 
         res.write(`event: ready\ndata: ${JSON.stringify({ ok: true })}\n\n`)
         const keepAlive = setInterval(() => {
           res.write(': ping\n\n')
-        }, 5000)
+        }, streamOptions.pingMs)
 
         const close = () => {
           clearInterval(keepAlive)

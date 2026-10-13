@@ -11,6 +11,7 @@ import type {
   EffortLevel,
   HookCallback,
   ModelInfo,
+  ModelUsage,
   Options,
   Query,
   SDKMessage,
@@ -94,6 +95,7 @@ const QUESTION_AWAY_REASON = 'No answer after 15 minutes; the user is probably a
 const SEARCH_FILE_LIMIT = 300
 const SEARCH_MAX_BYTES = 40 * 1024 * 1024
 const DEFAULT_CONTEXT_WINDOW = 200_000
+const LARGE_CONTEXT_WINDOW = 1_000_000
 const TRANSCRIPT_CACHE_BYTES = 96 * 1024 * 1024
 /** A transcript written this recently by another Claude Code process is busy. */
 const EXTERNAL_ACTIVITY_MS = 30_000
@@ -598,7 +600,12 @@ type SessionRunner = {
   idleTimer: ReturnType<typeof setTimeout> | null
   interruptTimer: ReturnType<typeof setTimeout> | null
   totalUsage: ClaudeTokenUsage
-  contextWindow: number
+  /** The context the latest reply filled. */
+  lastUsage: ClaudeTokenUsage | null
+  /** The window Claude Code reported for the chat's model; null until it does. */
+  contextWindow: number | null
+  /** The model writing the chat's replies, as the API names it. */
+  model: string
   /** Live background work (shell commands, subagents) that outlives a turn. */
   backgroundTasks: ClaudeBackgroundTask[]
   closed: boolean
@@ -692,6 +699,28 @@ function turnError(message: string) {
 
 function toCodexUsage(usage: ClaudeTokenUsage): Record<string, number> {
   return { ...usage }
+}
+
+/**
+ * The window to measure a chat's context against: the one Claude Code
+ * reported for its model, else 200K, or 1M once the chat outgrows 200K.
+ */
+function contextWindowFor(reported: number | null | undefined, usage: ClaudeTokenUsage): number {
+  if (reported) return reported
+  return usage.inputTokens > DEFAULT_CONTEXT_WINDOW ? LARGE_CONTEXT_WINDOW : DEFAULT_CONTEXT_WINDOW
+}
+
+/**
+ * The context window of the model writing the chat's replies. A result also
+ * lists helper models, such as the Haiku model that names chats, often first.
+ */
+function chatModelContextWindow(modelUsage: Record<string, ModelUsage>, model: string): number | null {
+  const entries = Object.entries(modelUsage)
+  const chat = entries.find(([name, usage]) => name === model || usage.canonicalModel === model)
+  const windows = (chat ? [chat[1]] : entries.map(([, usage]) => usage))
+    .map((usage) => usage.contextWindow)
+    .filter((window) => typeof window === 'number' && window > 0)
+  return windows.length > 0 ? Math.max(...windows) : null
 }
 
 /** The user's answers, or why the question ended without them. */
@@ -1654,12 +1683,14 @@ export class ClaudeBackend {
       const last = summary.lastUsage
       const lastTurn = summary.turns.at(-1)
       if (!last || !lastTurn) return
-      const contextWindow = stored?.contextWindow
-        ?? (last.inputTokens > DEFAULT_CONTEXT_WINDOW || /\[1m\]/u.test(summary.model) ? 1_000_000 : DEFAULT_CONTEXT_WINDOW)
       this.emit('thread/tokenUsage/updated', {
         threadId: toThreadId(sessionId),
         turnId: lastTurn.id,
-        tokenUsage: { total: toCodexUsage(summary.totalUsage), last: toCodexUsage(last), modelContextWindow: contextWindow },
+        tokenUsage: {
+          total: toCodexUsage(summary.totalUsage),
+          last: toCodexUsage(last),
+          modelContextWindow: contextWindowFor(stored?.contextWindow, last),
+        },
       })
     } catch {
       // Usage is informational.
@@ -1942,7 +1973,9 @@ export class ClaudeBackend {
       idleTimer: null,
       interruptTimer: null,
       totalUsage: history?.totalUsage ?? emptyUsage(),
-      contextWindow: stored.contextWindow ?? DEFAULT_CONTEXT_WINDOW,
+      lastUsage: history?.lastUsage ?? null,
+      contextWindow: stored.contextWindow ?? null,
+      model: history?.model ?? '',
       backgroundTasks: [],
       closed: false,
       cuaTurnFile: computerUse?.controlsChrome ? join(this.cuaTurnDirectory, sessionId) : null,
@@ -2396,6 +2429,7 @@ export class ClaudeBackend {
       const turn = this.turnFor(runner)
       const itemParams = (item: ThreadItem) => ({ threadId: turn.threadId, turnId: turn.turnId, item })
       const messageId = message.message.id
+      if (message.message.model && message.message.model !== '<synthetic>') runner.model = message.message.model
       const usage = readApiUsage(message.message.usage)
       if (usage) this.publishLiveUsage(runner, turn, usage, messageId)
       for (const block of message.message.content) {
@@ -2453,12 +2487,11 @@ export class ClaudeBackend {
 
     if (message.type === 'result') {
       const turn = runner.activeTurn
-      const contextWindow = Object.values(message.modelUsage ?? {})
-        .map((usage) => usage.contextWindow)
-        .find((value) => typeof value === 'number' && value > 0)
+      const contextWindow = chatModelContextWindow(message.modelUsage ?? {}, runner.model)
       if (contextWindow && contextWindow !== runner.contextWindow) {
         runner.contextWindow = contextWindow
         void this.store.update(runner.sessionId, { contextWindow })
+        if (turn) this.publishUsage(runner, turn)
       }
       if (!turn) return
       if (turn.interrupted) {
@@ -2491,13 +2524,19 @@ export class ClaudeBackend {
     turn.usageMessageIds.add(messageId)
     turn.usage = addUsage(turn.usage, usage)
     runner.totalUsage = addUsage(runner.totalUsage, usage)
+    runner.lastUsage = usage
+    this.publishUsage(runner, turn)
+  }
+
+  private publishUsage(runner: SessionRunner, turn: LiveTurn): void {
+    if (!runner.lastUsage) return
     this.emit('thread/tokenUsage/updated', {
       threadId: turn.threadId,
       turnId: turn.turnId,
       tokenUsage: {
         total: toCodexUsage(runner.totalUsage),
-        last: toCodexUsage(usage),
-        modelContextWindow: runner.contextWindow,
+        last: toCodexUsage(runner.lastUsage),
+        modelContextWindow: contextWindowFor(runner.contextWindow, runner.lastUsage),
       },
     })
   }

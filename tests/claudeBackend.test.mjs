@@ -350,6 +350,90 @@ test('normalizes the Agent SDK usage response and model-scoped windows', () => {
   ])
 })
 
+/** A live runner with no transcript, and the context meters it publishes. */
+async function withMeteredRunner(run) {
+  const directory = await mkdtemp(join(tmpdir(), 'codexui-claude-context-'))
+  const sessionId = '11111111-2222-3333-4444-555555555558'
+  const backend = new ClaudeBackend(join(directory, 'threads.json'), { accountSwitcherPath: null, claudeConfigDir: directory })
+  backend.readRuntime = async () => ({ connected: true, account: {}, models: [] })
+  backend.sdk = async () => ({
+    query: () => {
+      let release
+      const closed = new Promise((resolve) => { release = resolve })
+      return { async *[Symbol.asyncIterator]() { await closed }, close: () => release(), interrupt: async () => {} }
+    },
+  })
+  const meters = []
+  const unsubscribe = backend.onNotification(({ method, params }) => {
+    if (method === 'thread/tokenUsage/updated') meters.push(params.tokenUsage)
+  })
+  try {
+    const runner = await backend.createRunner(
+      `claude-${sessionId}`,
+      sessionId,
+      { cwd: directory, model: 'claude-default', effort: null, createdAtMs: Date.now() },
+      directory,
+      `claude-default||${directory}`,
+    )
+    await run({ backend, runner, sessionId, directory, meters })
+  } finally {
+    unsubscribe()
+    backend.dispose()
+    await rm(directory, { recursive: true, force: true })
+  }
+}
+
+const opusReply = (id, contextTokens) => ({
+  type: 'assistant',
+  parent_tool_use_id: null,
+  message: {
+    id,
+    model: 'claude-opus-5-5',
+    role: 'assistant',
+    content: [],
+    usage: { input_tokens: 2, cache_read_input_tokens: contextTokens - 2, cache_creation_input_tokens: 0, output_tokens: 40 },
+  },
+})
+
+// Shape recorded from Claude Code 2.1.283: the Haiku model it names chats with comes first.
+const recordedModelUsage = {
+  'claude-haiku-4-5-20251001': {
+    inputTokens: 897, outputTokens: 8, cacheReadInputTokens: 0, cacheCreationInputTokens: 0, webSearchRequests: 0,
+    costUSD: 0.000937, contextWindow: 200_000, maxOutputTokens: 32_000, thinkingTokens: 0, canonicalModel: 'claude-haiku-4-5', provider: 'firstParty',
+  },
+  'claude-opus-5-5': {
+    inputTokens: 2, outputTokens: 4, cacheReadInputTokens: 0, cacheCreationInputTokens: 25_055, webSearchRequests: 0,
+    costUSD: 0.200528, contextWindow: 1_000_000, maxOutputTokens: 128_000, thinkingTokens: 0, canonicalModel: 'claude-opus-5-5', provider: 'firstParty',
+  },
+}
+
+test('measures the context meter against the chat model, not the helper model Claude Code lists first', async () => {
+  await withMeteredRunner(async ({ backend, runner, sessionId, directory, meters }) => {
+    backend.beginTurn(runner, 'turn-1', directory, null)
+    backend.handleMessage(runner, opusReply('msg_1', 150_000))
+    backend.handleMessage(runner, { type: 'result', subtype: 'success', is_error: false, result: '', modelUsage: recordedModelUsage })
+    assert.equal(meters.at(-1).last.totalTokens, 150_040)
+    assert.equal(meters.at(-1).modelContextWindow, 1_000_000, 'the meter is corrected as soon as Claude Code reports the window')
+    const saved = async () => JSON.parse(await readFile(join(directory, 'threads.json'), 'utf8').catch(() => '{}')).threads?.[sessionId]?.contextWindow
+    for (let attempt = 0; attempt < 50 && await saved() === undefined; attempt += 1) await new Promise((resolve) => setTimeout(resolve, 10))
+    assert.equal(await saved(), 1_000_000, 'reopened chats keep the window')
+
+    backend.beginTurn(runner, 'turn-2', directory, null)
+    backend.handleMessage(runner, opusReply('msg_2', 160_000))
+    assert.equal(meters.at(-1).modelContextWindow, 1_000_000)
+  })
+})
+
+test('measures a chat past 200K tokens against 1M before Claude Code reports its window', async () => {
+  await withMeteredRunner(async ({ backend, runner, directory, meters }) => {
+    backend.beginTurn(runner, 'turn-1', directory, null)
+    backend.handleMessage(runner, opusReply('msg_1', 150_000))
+    assert.equal(meters.at(-1).modelContextWindow, 200_000)
+    backend.handleMessage(runner, opusReply('msg_2', 300_000))
+    assert.equal(meters.at(-1).modelContextWindow, 1_000_000, 'a 200K window cannot hold this chat')
+  })
+})
+
 test('enables Claude in Chrome only for conversational runners', async () => {
   const directory = await mkdtemp(join(tmpdir(), 'codexui-claude-chrome-'))
   const backend = new ClaudeBackend(join(directory, 'threads.json'), { accountSwitcherPath: null, claudeConfigDir: directory })

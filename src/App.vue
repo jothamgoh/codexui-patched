@@ -214,6 +214,7 @@
               :pinned-thread-ids="pinnedThreadIds"
               @refresh-helpers="refreshHelperActivity"
               @set-thread-pinned="updatePinnedThread"
+              @archive-thread="onArchiveThread"
               @select-thread="onSelectThread"
               @select-board-question="openProjectBoardQuestion"
               @open-voice-result="onNavigateVoiceResult"

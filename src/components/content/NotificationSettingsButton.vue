@@ -395,6 +395,16 @@
                   <X />
                   Dismiss
                 </button>
+                <button
+                  v-if="!item.projectBoard"
+                  class="is-destructive notification-archive-action"
+                  :class="{ 'is-confirming': archiveConfirmItemId === item.id }"
+                  type="button"
+                  @click.stop="void archiveRecentChat(item)"
+                >
+                  <Archive />
+                  {{ archiveConfirmItemId === item.id ? 'Confirm archive' : 'Archive chat' }}
+                </button>
               </div>
             </div>
             <button
@@ -582,6 +592,7 @@
 <script setup lang="ts">
 import { computed, nextTick, onBeforeUnmount, ref, watch } from 'vue'
 import {
+  Archive,
   Bell,
   BellRing,
   CheckCircle2,
@@ -689,6 +700,7 @@ const emit = defineEmits<{
   (event: 'selectThread', threadId: string): void
   (event: 'refreshHelpers'): void
   (event: 'setThreadPinned', intent: SetThreadPinnedIntent): void
+  (event: 'archiveThread', threadId: string): void
   (event: 'selectBoardQuestion', payload: { boardId: string; featureId: string; questionId: string }): void
   /** The in-app link of a voice command said into the panel's mic. */
   (event: 'openVoiceResult', url: string): void
@@ -703,6 +715,11 @@ const recentLimit = ref(DEFAULT_RECENT_LIMIT)
 const swipingRecentItemId = ref('')
 const swipeOffsetX = ref(0)
 const expandedActionItemId = ref('')
+/** The row whose Archive chat button waits for the confirming second tap. */
+const archiveConfirmItemId = ref('')
+watch(expandedActionItemId, () => {
+  archiveConfirmItemId.value = ''
+})
 const manualUnreadByThreadId = ref<Record<string, ManualThreadUnreadOverride>>({})
 /** Pinned chats outside the loaded sidebar pages, fetched when the popover opens. */
 const fetchedPinnedThreadById = ref<Record<string, UiThread>>({})
@@ -1321,6 +1338,21 @@ async function dismissRecentActivity(item: RecentActivityItem): Promise<void> {
   }
 }
 
+/**
+ * Archive the row's chat, as the sidebar does, on the second tap. Its
+ * notifications go too, so an archived chat does not linger as unread.
+ */
+async function archiveRecentChat(item: RecentActivityItem): Promise<void> {
+  if (archiveConfirmItemId.value !== item.id) {
+    archiveConfirmItemId.value = item.id
+    return
+  }
+  emit('archiveThread', item.threadId)
+  // One after the other: each reply carries the whole history and replaces it.
+  await dismissRecentActivity(item)
+  await markThreadHistoryRead(item.threadId)
+}
+
 async function setRecentActivityUnread(
   item: RecentActivityItem,
   unread: boolean,
@@ -1885,7 +1917,7 @@ function onModeChange(event: Event): void {
 }
 
 .notification-row-actions {
-  @apply relative z-20 flex items-center gap-1 border-t px-3 py-2;
+  @apply relative z-20 flex flex-wrap items-center gap-1 border-t px-3 py-2;
   border-color: var(--border-soft);
   background: var(--surface-elevated);
 }
@@ -1902,6 +1934,10 @@ function onModeChange(event: Event): void {
 
 .notification-row-actions button.is-destructive {
   color: var(--destructive);
+}
+
+.notification-row-actions button.is-confirming {
+  background: color-mix(in srgb, var(--destructive) 12%, transparent);
 }
 
 .notification-row-actions button:focus-visible {
@@ -2215,6 +2251,11 @@ function onModeChange(event: Event): void {
 
   .notification-row-actions button {
     @apply min-h-9 flex-1 justify-center;
+  }
+
+  /* A phone row holds three actions; archiving gets its own. */
+  .notification-row-actions button.notification-archive-action {
+    @apply basis-full;
   }
 
   .notification-mode-field {

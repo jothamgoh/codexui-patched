@@ -771,6 +771,10 @@ export async function archiveThread(threadId: string): Promise<void> {
   await callRpc('thread/archive', { threadId })
 }
 
+export async function deleteThread(threadId: string): Promise<void> {
+  await callRpc('thread/delete', { threadId })
+}
+
 export async function setThreadName(threadId: string, name: string): Promise<void> {
   await callRpc('thread/name/set', { threadId, name })
 }

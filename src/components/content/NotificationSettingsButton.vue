@@ -397,13 +397,14 @@
                 </button>
                 <button
                   v-if="!item.projectBoard"
-                  class="is-destructive notification-archive-action"
-                  :class="{ 'is-confirming': archiveConfirmItemId === item.id }"
+                  class="is-destructive notification-delete-action"
+                  :class="{ 'is-confirming': pendingDelete?.itemId === item.id }"
                   type="button"
-                  @click.stop="void archiveRecentChat(item)"
+                  :disabled="pendingDelete?.itemId === item.id && pendingDelete.deleting"
+                  @click.stop="void deleteRecentChat(item)"
                 >
-                  <Archive />
-                  {{ archiveConfirmItemId === item.id ? 'Confirm archive' : 'Archive chat' }}
+                  <Trash2 />
+                  {{ deleteLabel(item) }}
                 </button>
               </div>
             </div>
@@ -592,7 +593,6 @@
 <script setup lang="ts">
 import { computed, nextTick, onBeforeUnmount, ref, watch } from 'vue'
 import {
-  Archive,
   Bell,
   BellRing,
   CheckCircle2,
@@ -607,6 +607,7 @@ import {
   PinOff,
   Settings2,
   SquareKanban,
+  Trash2,
   X,
 } from '@lucide/vue'
 import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover'
@@ -686,6 +687,8 @@ const props = defineProps<{
   helpersError?: string
   pendingRequests?: UiServerRequest[]
   pinnedThreadIds?: string[]
+  /** Erase a chat for good; rejects with the reason it could not. */
+  deleteThread: (threadId: string) => Promise<void>
   boardAttention: Array<{
     questionId: string
     boardId: string
@@ -700,7 +703,6 @@ const emit = defineEmits<{
   (event: 'selectThread', threadId: string): void
   (event: 'refreshHelpers'): void
   (event: 'setThreadPinned', intent: SetThreadPinnedIntent): void
-  (event: 'archiveThread', threadId: string): void
   (event: 'selectBoardQuestion', payload: { boardId: string; featureId: string; questionId: string }): void
   /** The in-app link of a voice command said into the panel's mic. */
   (event: 'openVoiceResult', url: string): void
@@ -715,10 +717,10 @@ const recentLimit = ref(DEFAULT_RECENT_LIMIT)
 const swipingRecentItemId = ref('')
 const swipeOffsetX = ref(0)
 const expandedActionItemId = ref('')
-/** The row whose Archive chat button waits for the confirming second tap. */
-const archiveConfirmItemId = ref('')
+/** The row whose Delete chat button waits for its confirming tap, or is deleting. */
+const pendingDelete = ref<{ itemId: string; deleting: boolean } | null>(null)
 watch(expandedActionItemId, () => {
-  archiveConfirmItemId.value = ''
+  if (!pendingDelete.value?.deleting) pendingDelete.value = null
 })
 const manualUnreadByThreadId = ref<Record<string, ManualThreadUnreadOverride>>({})
 /** Pinned chats outside the loaded sidebar pages, fetched when the popover opens. */
@@ -1339,18 +1341,33 @@ async function dismissRecentActivity(item: RecentActivityItem): Promise<void> {
 }
 
 /**
- * Archive the row's chat, as the sidebar does, on the second tap. Its
- * notifications go too, so an archived chat does not linger as unread.
+ * Delete the row's chat for good on the second tap. Its notifications go
+ * too, so a deleted chat does not linger as unread.
  */
-async function archiveRecentChat(item: RecentActivityItem): Promise<void> {
-  if (archiveConfirmItemId.value !== item.id) {
-    archiveConfirmItemId.value = item.id
+async function deleteRecentChat(item: RecentActivityItem): Promise<void> {
+  if (pendingDelete.value?.itemId !== item.id) {
+    pendingDelete.value = { itemId: item.id, deleting: false }
     return
   }
-  emit('archiveThread', item.threadId)
+  if (pendingDelete.value.deleting) return
+  pendingDelete.value = { itemId: item.id, deleting: true }
+  historyError.value = ''
+  try {
+    await props.deleteThread(item.threadId)
+  } catch (error) {
+    historyError.value = error instanceof Error ? error.message : 'Could not delete this chat'
+    return
+  } finally {
+    pendingDelete.value = null
+  }
   // One after the other: each reply carries the whole history and replaces it.
   await dismissRecentActivity(item)
   await markThreadHistoryRead(item.threadId)
+}
+
+function deleteLabel(item: RecentActivityItem): string {
+  if (pendingDelete.value?.itemId !== item.id) return 'Delete chat'
+  return pendingDelete.value.deleting ? 'Deleting…' : 'Confirm delete'
 }
 
 async function setRecentActivityUnread(
@@ -2253,8 +2270,8 @@ function onModeChange(event: Event): void {
     @apply min-h-9 flex-1 justify-center;
   }
 
-  /* A phone row holds three actions; archiving gets its own. */
-  .notification-row-actions button.notification-archive-action {
+  /* A phone row holds three actions; deleting gets its own. */
+  .notification-row-actions button.notification-delete-action {
     @apply basis-full;
   }
 

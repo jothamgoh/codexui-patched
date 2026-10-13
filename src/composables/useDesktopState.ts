@@ -5,6 +5,7 @@ import {
   clearThreadGoal,
   consumeRateLimitResetCredit,
   createWorktree,
+  deleteThread,
   forkThread,
   getAccountRateLimits,
   getAvailableModelCatalog,
@@ -4352,16 +4353,31 @@ export function useDesktopState() {
   async function archiveThreadById(threadId: string) {
     try {
       await archiveThread(threadId)
-      // Drop it locally first: the list refresh keeps the open, running or
-      // goal-bearing chats it no longer returns, so an archived open chat stayed.
-      sourceGroups.value = sourceGroups.value
-        .map((group) => ({ ...group, threads: group.threads.filter((thread) => thread.id !== threadId) }))
-      if (selectedThreadId.value === threadId) await selectThread('')
-      applyThreadFlags()
-      await loadThreads()
+      await forgetThread(threadId)
     } catch (unknownError) {
       error.value = unknownError instanceof Error ? unknownError.message : 'Unknown application error'
     }
+  }
+
+  /** Erase a chat for good. Rejects with the server's reason, such as a chat still working. */
+  async function deleteThreadById(threadId: string): Promise<void> {
+    await deleteThread(threadId)
+    try {
+      await forgetThread(threadId)
+    } catch (unknownError) {
+      error.value = unknownError instanceof Error ? unknownError.message : 'Failed to refresh chats'
+    }
+  }
+
+  /** Take an archived or deleted chat out of the list. */
+  async function forgetThread(threadId: string): Promise<void> {
+    // Drop it locally first: the list refresh keeps the open, running or
+    // goal-bearing chats it no longer returns, so an archived open chat stayed.
+    sourceGroups.value = sourceGroups.value
+      .map((group) => ({ ...group, threads: group.threads.filter((thread) => thread.id !== threadId) }))
+    if (selectedThreadId.value === threadId) await selectThread('')
+    applyThreadFlags()
+    await loadThreads()
   }
 
   async function renameThread(threadId: string, name: string): Promise<void> {
@@ -5419,6 +5435,7 @@ export function useDesktopState() {
     selectThreadFromSearch,
     setThreadScrollState,
     archiveThreadById,
+    deleteThreadById,
     renameThread,
     createThreadWithGoal,
     sendMessageToSelectedThread,

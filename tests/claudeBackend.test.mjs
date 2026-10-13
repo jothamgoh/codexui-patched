@@ -434,6 +434,95 @@ test('measures a chat past 200K tokens against 1M before Claude Code reports its
   })
 })
 
+/** A saved Claude chat with a subagent folder, and a backend that has, by default, started its process. */
+async function withSavedClaudeChat(run, { startProcess = true } = {}) {
+  const configDir = await mkdtemp(join(tmpdir(), 'codexui-claude-delete-'))
+  const sessionId = '88888888-9999-aaaa-bbbb-cccccccccccc'
+  const threadId = `claude-${sessionId}`
+  const projectDir = join(configDir, 'projects', '-work-project')
+  const transcriptPath = join(projectDir, `${sessionId}.jsonl`)
+  const sessionFolder = join(projectDir, sessionId)
+  await mkdir(join(sessionFolder, 'subagents'), { recursive: true })
+  await writeFile(transcriptPath, fixture.map((row) => JSON.stringify(row)).join('\n') + '\n')
+  await writeFile(join(sessionFolder, 'subagents', 'agent-1.jsonl'), '{}\n')
+  const storePath = join(configDir, 'threads.json')
+  const backend = new ClaudeBackend(storePath, { accountSwitcherPath: null, claudeConfigDir: configDir })
+  backend.readRuntime = async () => ({ connected: true, account: {}, models: [] })
+  let closed = false
+  backend.sdk = async () => ({
+    query: () => {
+      let release
+      const ended = new Promise((resolve) => { release = resolve })
+      return { async *[Symbol.asyncIterator]() { await ended }, close: () => { closed = true; release() }, interrupt: async () => {} }
+    },
+  })
+  const deleted = []
+  const unsubscribe = backend.onNotification(({ method, params }) => {
+    if (method === 'thread/deleted') deleted.push(params.threadId)
+  })
+  try {
+    const stored = await backend.store.update(sessionId, { cwd, model: 'claude-default', effort: null, createdAtMs: Date.now() })
+    const runner = startProcess ? await backend.createRunner(threadId, sessionId, stored, cwd, `claude-default||${cwd}`) : null
+    await run({
+      backend, runner, configDir, sessionId, threadId, transcriptPath, sessionFolder, deleted,
+      processClosed: () => closed,
+      /** The chat's saved settings on disk, read past a write in progress. */
+      saved: async () => {
+        for (let attempt = 0; attempt < 50; attempt += 1) {
+          try {
+            return JSON.parse(await readFile(storePath, 'utf8').catch(() => '{}')).threads?.[sessionId]
+          } catch {
+            await new Promise((resolve) => setTimeout(resolve, 10))
+          }
+        }
+        throw new Error('the saved chats file never became readable')
+      },
+    })
+  } finally {
+    unsubscribe()
+    backend.dispose()
+    await rm(configDir, { recursive: true, force: true })
+  }
+}
+
+const exists = (path) => stat(path).then(() => true, () => false)
+
+test('deleting a Claude chat erases its transcript, subagent folder and saved settings', async () => {
+  await withSavedClaudeChat(async ({ backend, threadId, transcriptPath, sessionFolder, deleted, processClosed, saved }) => {
+    assert.ok(await saved(), 'precondition: CodexUI saved the chat')
+    await backend.rpc('thread/delete', { threadId })
+    assert.equal(processClosed(), true, 'its idle Claude Code process is closed first')
+    assert.equal(await exists(transcriptPath), false)
+    assert.equal(await exists(sessionFolder), false)
+    for (let attempt = 0; attempt < 50 && await saved() !== undefined; attempt += 1) await new Promise((resolve) => setTimeout(resolve, 10))
+    assert.equal(await saved(), undefined, 'the saved settings are gone')
+    assert.deepEqual(deleted, [threadId])
+    await backend.rpc('thread/delete', { threadId })
+    assert.deepEqual(deleted, [threadId, threadId], 'deleting again is harmless')
+  })
+})
+
+test('refuses to delete a Claude chat that is still working', async () => {
+  await withSavedClaudeChat(async ({ backend, runner, threadId, transcriptPath, deleted }) => {
+    backend.beginTurn(runner, 'turn-1', cwd, null)
+    await assert.rejects(backend.rpc('thread/delete', { threadId }), /still working/u)
+    assert.equal(await exists(transcriptPath), true)
+    assert.deepEqual(deleted, [])
+  })
+})
+
+test('refuses to delete a Claude chat another Claude app has open', async () => {
+  await withSavedClaudeChat(async ({ backend, configDir, sessionId, threadId, transcriptPath, deleted }) => {
+    await mkdir(join(configDir, 'sessions'), { recursive: true })
+    await writeFile(join(configDir, 'sessions', `${String(process.pid)}.json`), JSON.stringify({
+      pid: process.pid, sessionId, cwd, kind: 'interactive', entrypoint: 'cli', status: 'idle', startedAt: Date.now(),
+    }))
+    await assert.rejects(backend.rpc('thread/delete', { threadId }), /open in another Claude app/u)
+    assert.equal(await exists(transcriptPath), true)
+    assert.deepEqual(deleted, [])
+  }, { startProcess: false })
+})
+
 test('enables Claude in Chrome only for conversational runners', async () => {
   const directory = await mkdtemp(join(tmpdir(), 'codexui-claude-chrome-'))
   const backend = new ClaudeBackend(join(directory, 'threads.json'), { accountSwitcherPath: null, claudeConfigDir: directory })

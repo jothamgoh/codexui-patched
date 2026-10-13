@@ -212,9 +212,9 @@
               :helpers-error="helperActivity.error.value"
               :pending-requests="pendingServerRequests"
               :pinned-thread-ids="pinnedThreadIds"
+              :delete-thread="deleteThreadById"
               @refresh-helpers="refreshHelperActivity"
               @set-thread-pinned="updatePinnedThread"
-              @archive-thread="onArchiveThread"
               @select-thread="onSelectThread"
               @select-board-question="openProjectBoardQuestion"
               @open-voice-result="onNavigateVoiceResult"
@@ -640,6 +640,7 @@ const {
   selectThreadFromSearch,
   setThreadScrollState,
   archiveThreadById,
+  deleteThreadById,
   renameThread,
   createThreadWithGoal,
   sendMessageToSelectedThread,

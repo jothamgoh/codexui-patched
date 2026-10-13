@@ -96,6 +96,8 @@ const SEARCH_FILE_LIMIT = 300
 const SEARCH_MAX_BYTES = 40 * 1024 * 1024
 const DEFAULT_CONTEXT_WINDOW = 200_000
 const LARGE_CONTEXT_WINDOW = 1_000_000
+/** How long deleting a chat waits for its closed Claude Code process to exit. */
+const DELETE_EXIT_WAIT_MS = 10_000
 const TRANSCRIPT_CACHE_BYTES = 96 * 1024 * 1024
 /** A transcript written this recently by another Claude Code process is busy. */
 const EXTERNAL_ACTIVITY_MS = 30_000
@@ -424,6 +426,18 @@ class ClaudeThreadStore {
       ?? { cwd: '', model: DEFAULT_MODEL_ID, effort: null, createdAtMs: Date.now() }
     const next: StoredThread = { ...base, ...patch }
     state.threads[sessionId] = next
+    this.save(state)
+    return next
+  }
+
+  async remove(sessionId: string): Promise<void> {
+    const state = await this.read()
+    if (!(sessionId in state.threads)) return
+    delete state.threads[sessionId]
+    this.save(state)
+  }
+
+  private save(state: StoreFile): void {
     const snapshot = JSON.stringify(state, null, 2)
     this.writeChain = this.writeChain
       .then(async () => {
@@ -433,7 +447,6 @@ class ClaudeThreadStore {
       .catch((error) => {
         console.warn('[claude-backend] Failed to save chat settings:', error instanceof Error ? error.message : error)
       })
-    return next
   }
 }
 
@@ -1564,6 +1577,8 @@ export class ClaudeBackend {
         this.invalidateList()
         this.emit('thread/unarchived', { threadId })
         return {}
+      case 'thread/delete':
+        return this.deleteThread(threadId)
       case 'thread/fork':
         return this.forkThread(request)
       case 'thread/rollback':
@@ -1724,6 +1739,39 @@ export class ClaudeBackend {
     this.invalidateList()
     this.sessionTitles.set(sessionId, trimmed)
     this.emit('thread/name/updated', { threadId, threadName: trimmed })
+    return {}
+  }
+
+  /**
+   * Erase a chat: its Claude Code transcript, the folder beside it with its
+   * subagent transcripts and saved tool output, and CodexUI's record of it.
+   */
+  private async deleteThread(threadId: string) {
+    const sessionId = toSessionId(threadId)
+    const runner = this.runners.get(sessionId)
+    if (runner && runnerIsBusy(runner)) throw new Error('This chat is still working. Stop it before deleting it.')
+    if (runner) this.closeRunner(sessionId, { expected: runner, immediately: true })
+    // A live Claude Code process could write the transcript again. The one
+    // just closed can stay registered for a moment while it exits.
+    const deadline = Date.now() + (runner ? DELETE_EXIT_WAIT_MS : 0)
+    while ((await this.refreshClaudeSessionStates()).states.has(sessionId)) {
+      if (Date.now() >= deadline) {
+        throw new Error('This chat is open in another Claude app, such as a terminal. Close it there before deleting it.')
+      }
+      await delay(250)
+    }
+    const stored = await this.store.get(sessionId)
+    const path = await this.findTranscriptPath(sessionId, stored?.cwd ?? '')
+    if (path) {
+      await rm(join(dirname(path), sessionId), { recursive: true, force: true })
+      await rm(path, { force: true })
+      this.transcriptCache.delete(path)
+    }
+    this.transcriptPaths.delete(sessionId)
+    this.sessionTitles.delete(sessionId)
+    await this.store.remove(sessionId)
+    this.invalidateList()
+    this.emit('thread/deleted', { threadId })
     return {}
   }
 

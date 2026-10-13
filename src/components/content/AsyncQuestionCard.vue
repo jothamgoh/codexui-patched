@@ -32,7 +32,13 @@ async function send(): Promise<void> {
 </script>
 
 <template>
-  <form class="async-question-card" :aria-busy="draft.sending" @submit.prevent="send">
+  <form
+    class="async-question-card"
+    :aria-busy="draft.sending"
+    @submit.prevent="send"
+    @keydown.meta.enter.prevent="send"
+    @keydown.ctrl.enter.prevent="send"
+  >
     <div class="async-question-status" role="status">
       <Check v-if="sentAnswer !== undefined" aria-hidden="true" /><MessageCircleQuestion v-else aria-hidden="true" />
       <span>{{ sentAnswer !== undefined ? 'Answer sent' : draft.sending ? 'Sending your answer…' : 'Question for you' }}</span>

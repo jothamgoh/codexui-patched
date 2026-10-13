@@ -57,7 +57,13 @@ function continueQuestion(): void {
 </script>
 
 <template>
-  <form class="question-card" :aria-busy="sending" @submit.prevent="continueQuestion">
+  <form
+    class="question-card"
+    :aria-busy="sending"
+    @submit.prevent="continueQuestion"
+    @keydown.meta.enter.prevent="continueQuestion"
+    @keydown.ctrl.enter.prevent="continueQuestion"
+  >
     <div class="question-card-status" role="status">
       <MessageCircleQuestion aria-hidden="true" />
       <span>{{ sending ? 'Sending your answer…' : 'Waiting for your answer' }}</span>

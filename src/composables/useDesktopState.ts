@@ -105,6 +105,9 @@ const TURN_SUMMARY_STORAGE_KEY = 'codex-web-local.thread-turn-summary.v1'
 const THREAD_MODEL_CONFIG_STORAGE_KEY = 'codex-web-local.thread-model-config.v1'
 const NEW_THREAD_MODEL_CONFIG_STORAGE_KEY = 'codex-web-local.new-thread-model-config.v1'
 const EVENT_SYNC_DEBOUNCE_MS = 220
+// While a reply runs, its finished steps re-read the open chat at most this often. The reply's
+// words stream live either way; only the step lines can trail by up to this much.
+const REPLY_STEP_SYNC_SPACING_MS = 2_000
 const FALLBACK_DEFAULT_MODEL_ID = 'gpt-6-astra'
 const DEFAULT_REASONING_EFFORT: ReasoningEffort = 'xhigh'
 const REASONING_EFFORT_OPTIONS: ReasoningEffort[] = ['none', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max', 'ultra']
@@ -1285,6 +1288,10 @@ export function useDesktopState() {
   const hasLoadedThreads = ref(false)
   let stopNotificationStream: (() => void) | null = null
   let eventSyncTimer: number | null = null
+  let eventSyncDueAt = 0
+  // When each chat's newest turn was last re-read (by the event sync or the progress check),
+  // so a running reply's steps re-read it at most every REPLY_STEP_SYNC_SPACING_MS.
+  const lastTailReadAtByThreadId = new Map<string, number>()
   let pendingThreadsRefresh = false
   let threadListNotificationVersion = 0
   let pendingThreadList: { version: number; promise: Promise<void> } | null = null
@@ -2227,23 +2234,39 @@ export function useDesktopState() {
     return true
   }
 
-  async function readThreadTail(threadId: string) {
+  async function readThreadTail(threadId: string, limit = THREAD_TAIL_PAGE_SIZE) {
     const previousEnd = paginationByThreadId.value[threadId]?.endTurnIndex
-    const page = await getThreadMessagesWithStatus(threadId, { limit: THREAD_TAIL_PAGE_SIZE })
+    const page = await getThreadMessagesWithStatus(threadId, { limit })
     // After a longer disconnect, retain the previous 20-turn catch-up window.
     // Ordinary refreshes need only the recent tail, not another large replay.
     if (previousEnd !== undefined && page.startTurnIndex > previousEnd) {
       return getThreadMessagesWithStatus(threadId, { limit: THREAD_MESSAGE_PAGE_SIZE })
     }
+    // A shorter read must fit what's on screen: it shares a message with it, or holds only newer
+    // turns (the screen orders messages by turn). Otherwise read the usual tail instead.
+    if (limit < THREAD_TAIL_PAGE_SIZE && !fitsShownMessages(threadId, page)) {
+      return getThreadMessagesWithStatus(threadId, { limit: THREAD_TAIL_PAGE_SIZE })
+    }
     return page
+  }
+
+  function fitsShownMessages(threadId: string, page: { messages: UiMessage[]; startTurnIndex: number }): boolean {
+    // A message still waiting to be saved says nothing about where the read belongs.
+    const shown = (persistedMessagesByThreadId.value[threadId] ?? []).filter((message) => !message.id.startsWith('optimistic-'))
+    if (shown.length === 0) return true
+    const shownIds = new Set(shown.map((message) => message.id))
+    if (page.messages.some((message) => shownIds.has(message.id))) return true
+    return shown.every((message) => (message.turnIndex ?? -1) < page.startTurnIndex)
   }
 
   async function reconcileThreadProgressState(threadId: string): Promise<void> {
     if (!threadId) return
     try {
+      lastTailReadAtByThreadId.set(threadId, Date.now())
       const readId = ++historyReadSequence
+      // Only the turn in progress: the merge below keeps every turn already on screen.
       const [page, nextGoal] = await Promise.all([
-        readThreadTail(threadId),
+        readThreadTail(threadId, 1),
         getThreadGoal(threadId).catch(() => null),
       ])
       if (!acceptHistoryRead(threadId, readId)) return
@@ -2279,14 +2302,21 @@ export function useDesktopState() {
     }
   }
 
+  function untilTailReadAllowed(threadId: string): number {
+    const last = lastTailReadAtByThreadId.get(threadId) ?? 0
+    return last + REPLY_STEP_SYNC_SPACING_MS - Date.now()
+  }
+
+  /**
+   * A running reply's finished steps re-read just its turn: one re-read at a time per chat, no
+   * sooner than the spacing allows. Steps arriving meanwhile share it rather than putting it off,
+   * so a long burst still shows every REPLY_STEP_SYNC_SPACING_MS.
+   */
   function scheduleInProgressReconcile(threadId: string, delayMs = 900): void {
     if (!threadId || typeof window === 'undefined') return
     if (inProgressById.value[threadId] !== true) return
-
-    const existing = inProgressReconcileTimerByThreadId.get(threadId)
-    if (typeof existing === 'number') {
-      window.clearTimeout(existing)
-    }
+    if (inProgressReconcileTimerByThreadId.has(threadId)) return
+    delayMs = Math.max(delayMs, untilTailReadAllowed(threadId))
 
     const timer = window.setTimeout(() => {
       inProgressReconcileTimerByThreadId.delete(threadId)
@@ -3964,8 +3994,17 @@ export function useDesktopState() {
     const refreshHistory = turnBoundary || method === 'item/completed' || unhandledItemStarted
       || method === 'turn/plan/updated' || method === 'turn/diff/updated' || method === 'error'
       || (method.startsWith('thread/') && method !== 'thread/name/updated')
+    // A running reply's finished steps (and its plan or diff) re-read just its turn, spaced, via
+    // the progress check; a reply starting or ending, an error, or the chat itself changing
+    // goes through the prompt sync below.
+    const replyStep = method === 'item/completed' || unhandledItemStarted
+      || method === 'turn/plan/updated' || method === 'turn/diff/updated'
     if (refreshHistory && threadId && threadId === selectedThreadId.value) {
-      pendingThreadMessageRefresh.add(threadId)
+      if (replyStep && inProgressById.value[threadId] === true) {
+        scheduleInProgressReconcile(threadId, EVENT_SYNC_DEBOUNCE_MS)
+      } else {
+        pendingThreadMessageRefresh.add(threadId)
+      }
     }
 
     if (refreshThreads) {
@@ -3974,11 +4013,22 @@ export function useDesktopState() {
     }
 
     if (!pendingThreadsRefresh && pendingThreadMessageRefresh.size === 0) return
-    if (eventSyncTimer !== null || typeof window === 'undefined') return
+    scheduleEventSync(EVENT_SYNC_DEBOUNCE_MS)
+  }
+
+  /** Runs the event sync after [delay], unless one is already due sooner. */
+  function scheduleEventSync(delay: number): void {
+    if (typeof window === 'undefined') return
+    const dueAt = Date.now() + delay
+    if (eventSyncTimer !== null) {
+      if (eventSyncDueAt <= dueAt) return
+      window.clearTimeout(eventSyncTimer)
+    }
+    eventSyncDueAt = dueAt
     eventSyncTimer = window.setTimeout(() => {
       eventSyncTimer = null
       void syncFromNotifications()
-    }, EVENT_SYNC_DEBOUNCE_MS)
+    }, delay)
   }
 
   async function hydrateWorkspaceRootsStateIfNeeded(groups: UiProjectGroup[]): Promise<void> {
@@ -4138,7 +4188,7 @@ export function useDesktopState() {
     }
   }
 
-  async function loadMessages(threadId: string, options: { silent?: boolean } = {}) {
+  async function loadMessages(threadId: string, options: { silent?: boolean; tailTurns?: number } = {}) {
     if (!threadId) {
       return
     }
@@ -4171,7 +4221,7 @@ export function useDesktopState() {
 
       const readId = ++historyReadSequence
       const [page, nextGoal] = await Promise.all([
-        readThreadTail(threadId),
+        readThreadTail(threadId, options.tailTurns),
         getThreadGoal(threadId).catch(() => null),
       ])
       if (!acceptHistoryRead(threadId, readId)) return
@@ -5118,12 +5168,7 @@ export function useDesktopState() {
 
   async function syncFromNotifications(): Promise<void> {
     if (isPolling.value) {
-      if (typeof window !== 'undefined' && eventSyncTimer === null) {
-        eventSyncTimer = window.setTimeout(() => {
-          eventSyncTimer = null
-          void syncFromNotifications()
-        }, EVENT_SYNC_DEBOUNCE_MS)
-      }
+      scheduleEventSync(EVENT_SYNC_DEBOUNCE_MS)
       return
     }
 
@@ -5148,22 +5193,19 @@ export function useDesktopState() {
       const hasVersionChange = currentVersion.length > 0 && currentVersion !== loadedVersion
 
       if (isActiveDirty || hasVersionChange) {
-        await loadMessages(activeThreadId, { silent: true })
+        lastTailReadAtByThreadId.set(activeThreadId, Date.now())
+        // What the events say changed: the newest turn, with the one before it to place it in
+        // order. A change the events didn't explain reads the usual tail.
+        const tailTurns = isActiveDirty ? 2 : THREAD_TAIL_PAGE_SIZE
+        await loadMessages(activeThreadId, { silent: true, tailTurns })
       }
     } catch {
       // Keep UI stable on transient event sync failures.
     } finally {
       isPolling.value = false
 
-      if (
-        (pendingThreadsRefresh || pendingThreadMessageRefresh.size > 0) &&
-        typeof window !== 'undefined' &&
-        eventSyncTimer === null
-      ) {
-        eventSyncTimer = window.setTimeout(() => {
-          eventSyncTimer = null
-          void syncFromNotifications()
-        }, EVENT_SYNC_DEBOUNCE_MS)
+      if (pendingThreadsRefresh || pendingThreadMessageRefresh.size > 0) {
+        scheduleEventSync(EVENT_SYNC_DEBOUNCE_MS)
       }
     }
   }

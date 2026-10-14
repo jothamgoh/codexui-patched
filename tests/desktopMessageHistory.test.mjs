@@ -26,6 +26,7 @@ const { useDesktopState } = await import(`data:text/javascript;base64,${Buffer.f
 const flush = async () => { for (let index = 0; index < 12; index++) await Promise.resolve() }
 const message = (text, overrides = {}) => ({ id: 'answer', role: 'assistant', text, messageType: 'agentMessage', turnId: 'turn-1', turnIndex: 50, orderKey: '000050:000002:000000', ...overrides })
 const page = (messages, isInProgress = true) => ({ messages, isInProgress, activeTurnId: isInProgress ? 'turn-1' : '', turnSummaries: [], backgroundTasks: [], startTurnIndex: 50, endTurnIndex: 51, totalTurns: 51, hasEarlier: true })
+const tail = (messages, startTurnIndex, endTurnIndex, isInProgress = true) => ({ ...page(messages, isInProgress), startTurnIndex, endTurnIndex, totalTurns: endTurnIndex, hasEarlier: startTurnIndex > 0 })
 
 function fixture(t, gateway = {}) {
   const storage = new Map()
@@ -56,6 +57,8 @@ function fixture(t, gateway = {}) {
     async read() { const pending = state.selectThread('chat-1'); await flush(); assert.ok(reads.length); return { pending, response: reads.at(-1) } },
     emit(method, params) { stream.onNotification({ method, params: { threadId: 'chat-1', turnId: 'turn-1', ...params } }) },
     async runTimers(delay) { for (const [id, timer] of [...timers]) if (timer.delay === delay) { timers.delete(id); timer.callback() } await flush() },
+    delays() { return [...timers.values()].map((timer) => timer.delay) },
+    async runAllTimers() { for (const [id, timer] of [...timers]) { timers.delete(id); timer.callback() } await flush() },
     setRollback(messages) { rollbackResult = messages },
     answers() { return state.messages.value.filter((item) => item.id === 'answer') },
   }
@@ -505,4 +508,84 @@ test('archiving the open chat removes it from the sidebar and leaves it', async 
   const ids = f.state.projectGroups.value.flatMap((group) => group.threads).map((thread) => thread.id)
   assert.deepEqual(ids, [], 'the archived chat is gone from the sidebar')
   assert.equal(f.state.selectedThreadId.value, '', 'the archived chat is no longer open')
+})
+
+test('a running reply re-reads only its own turn, spaced, and its end reads the turn before too', async (t) => {
+  const f = fixture(t)
+  const earlier = message('Earlier answer', { id: 'earlier', turnId: 'turn-0', turnIndex: 49, orderKey: '000049:000002:000000' })
+  const question = message('Check it', { id: 'question', role: 'user', messageType: 'userMessage', orderKey: '000050:000001:000000' })
+  const step = (id) => ({ item: { id, type: 'commandExecution', command: 'ls', status: 'completed', aggregatedOutput: '', exitCode: 0 } })
+  const shown = (ids) => f.state.messages.value.map((item) => item.id).filter((id) => ids.includes(id))
+  const opening = await f.read()
+  assert.equal(opening.response.options.limit, 5, 'opening a chat reads the usual tail')
+  opening.response.resolve(tail([earlier, question], 46, 51))
+  await opening.pending
+
+  f.emit('item/completed', step('step-1'))
+  assert.equal(f.delays().length, 1, 'one re-read is scheduled for the step')
+  await f.runAllTimers()
+  assert.equal(f.reads.at(-1).options.limit, 1, 'a finished step re-reads only the turn in progress')
+  f.reads.at(-1).resolve(tail([question], 50, 51))
+  await flush()
+  assert.deepEqual(shown(['earlier', 'question']), ['earlier', 'question'], 'the earlier turn stays on screen, before the turn in progress')
+
+  f.emit('item/completed', step('step-2'))
+  const [spaced] = f.delays()
+  assert.ok(spaced > 1_000, `the next step waits for the spacing (${spaced} ms)`)
+  const readsBefore = f.reads.length
+  f.emit('item/completed', step('step-3'))
+  assert.equal(f.delays().length, 1, 'steps inside the spacing share one re-read')
+  await f.runAllTimers()
+  assert.equal(f.reads.length, readsBefore + 1)
+  assert.equal(f.reads.at(-1).options.limit, 1)
+  f.reads.at(-1).resolve(tail([question], 50, 51))
+  await flush()
+
+  const readsAtEnd = f.reads.length
+  f.emit('turn/completed', { turn: { id: 'turn-1', status: 'completed' } })
+  assert.ok(f.delays().includes(220), 'the reply ending shows promptly')
+  await f.runAllTimers()
+  const endReads = f.reads.slice(readsAtEnd)
+  assert.deepEqual(endReads.map((read) => read.options.limit), [2], 'the end re-reads two turns, once')
+  endReads[0].resolve(tail([earlier, question, message('Done.', { phase: 'final_answer' })], 49, 51, false))
+  await flush()
+  assert.deepEqual(shown(['earlier', 'question', 'answer']), ['earlier', 'question', 'answer'])
+})
+
+test('a new turn\'s first short re-read follows the screen without a larger read', async (t) => {
+  const f = fixture(t)
+  const earlier = message('Earlier answer', { id: 'earlier', turnId: 'turn-0', turnIndex: 49, orderKey: '000049:000002:000000' })
+  const opening = await f.read()
+  opening.response.resolve(tail([earlier], 46, 50))
+  await opening.pending
+  // The reply started before its first message was saved: nothing of turn 50 is on screen yet.
+  f.emit('item/completed', { item: { id: 'step', type: 'commandExecution', command: 'ls', status: 'completed', aggregatedOutput: '', exitCode: 0 } })
+  await f.runAllTimers()
+  const reads = f.reads.length
+  assert.equal(f.reads.at(-1).options.limit, 1)
+  const question = message('Check it', { id: 'question', role: 'user', messageType: 'userMessage', orderKey: '000050:000001:000000' })
+  f.reads.at(-1).resolve(tail([question], 50, 51))
+  await flush()
+  assert.equal(f.reads.length, reads, 'a read of only newer turns needs no larger one')
+  assert.deepEqual(f.state.messages.value.map((item) => item.id).filter((id) => id === 'earlier' || id === 'question'), ['earlier', 'question'])
+})
+
+test('a short re-read that fits nothing on screen reads the usual tail instead', async (t) => {
+  const f = fixture(t)
+  const earlier = message('Earlier answer', { id: 'earlier', turnId: 'turn-0', turnIndex: 49, orderKey: '000049:000002:000000' })
+  const question = message('Check it', { id: 'question', role: 'user', messageType: 'userMessage', orderKey: '000050:000001:000000' })
+  const opening = await f.read()
+  opening.response.resolve(tail([earlier, question], 46, 51))
+  await opening.pending
+  f.emit('item/completed', { item: { id: 'step', type: 'commandExecution', command: 'ls', status: 'completed', aggregatedOutput: '', exitCode: 0 } })
+  await f.runAllTimers()
+  assert.equal(f.reads.at(-1).options.limit, 1)
+  // Turn 50 again, but none of what's on screen: it can't be placed, so the usual tail is read.
+  const stranger = message('Rewritten', { id: 'stranger' })
+  f.reads.at(-1).resolve(tail([stranger], 50, 51))
+  await flush()
+  assert.equal(f.reads.at(-1).options.limit, 5)
+  f.reads.at(-1).resolve(tail([earlier, stranger], 46, 51))
+  await flush()
+  assert.deepEqual(f.state.messages.value.map((item) => item.id).filter((id) => id === 'earlier' || id === 'stranger'), ['earlier', 'stranger'])
 })

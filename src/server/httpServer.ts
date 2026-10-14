@@ -8,6 +8,7 @@ import { createTelegramTurnNotifier } from './telegramTurnNotifier.js'
 import { createTurnNotificationRouter } from './turnNotificationRouter.js'
 import { createWebPushTurnNotifier } from './webPushTurnNotifier.js'
 import { createServerVoiceHandler } from './voice/voiceRoutes.js'
+import { createResponseCompression } from './responseCompression.js'
 import { WebSocketServer, type WebSocket } from 'ws'
 
 const __dirname = dirname(fileURLToPath(import.meta.url))
@@ -65,6 +66,9 @@ export function createServer(options: ServerOptions = {}): ServerInstance {
   if (webPushTurnNotifier.statusMessage) {
     console.log(`[web-push] ${webPushTurnNotifier.statusMessage}`)
   }
+
+  // 0. Gzip for clients that accept it (never the live event stream)
+  app.use(createResponseCompression())
 
   // 1. Auth middleware (if password is set)
   if (authSession) {

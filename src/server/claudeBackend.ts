@@ -82,7 +82,12 @@ const RUNTIME_CACHE_MS = 10 * 60_000
 const CLAUDE_SDK_USAGE_POLL_MS = 15 * 60_000
 const LIST_CACHE_MS = 2_500
 const COMMANDS_CACHE_MS = 10 * 60_000
-const RUNNER_IDLE_MS = 15 * 60_000
+// Each idle Claude Code process holds about 300 MB with its computer-use helpers.
+// A chat resumed in a new process starts in under a second and still reads
+// Claude's prompt cache, so close idle ones soon.
+const RUNNER_IDLE_MS = 5 * 60_000
+/** How long past a scheduled wakeup an idle process stays, in case it fires late. */
+const WAKEUP_GRACE_MS = 60_000
 const INTERRUPT_SETTLE_MS = 8_000
 /** How long a Claude question waits for an answer before Claude carries on (the user's choice). */
 const QUESTION_ANSWER_WAIT_MS = 15 * 60_000
@@ -621,10 +626,19 @@ type SessionRunner = {
   model: string
   /** Live background work (shell commands, subagents) that outlives a turn. */
   backgroundTasks: ClaudeBackgroundTask[]
+  /** When a ScheduleWakeup call resumes the chat; the process must outlive it. */
+  wakeAtMs: number | null
   closed: boolean
 }
 
 export type ClaudeBackgroundTask = { id: string; type: string; description: string }
+
+/** When a successful ScheduleWakeup call fires, or null when it ends the loop. */
+function wakeupAtMs(input: Record<string, unknown>, now: number): number | null {
+  if (input.stop === true || typeof input.delaySeconds !== 'number') return null
+  // Claude Code clamps the delay to this range.
+  return now + Math.min(3600, Math.max(60, input.delaySeconds)) * 1000
+}
 
 /** The non-ambient tasks of a `background_tasks_changed` message. */
 function readBackgroundTasks(value: unknown): ClaudeBackgroundTask[] {
@@ -2025,6 +2039,7 @@ export class ClaudeBackend {
       contextWindow: stored.contextWindow ?? null,
       model: history?.model ?? '',
       backgroundTasks: [],
+      wakeAtMs: null,
       closed: false,
       cuaTurnFile: computerUse?.controlsChrome ? join(this.cuaTurnDirectory, sessionId) : null,
     } as unknown as SessionRunner
@@ -2313,10 +2328,11 @@ export class ClaudeBackend {
     }
   }
 
-  /** Closing the process would kill background work, so wait until none is left. */
+  /** Closing the process would kill background work or a pending wakeup, so wait until none is left. */
   private scheduleIdleClose(runner: SessionRunner): void {
     if (runner.closed || runner.activeTurn || runner.idleTimer || runner.backgroundTasks.length > 0) return
-    runner.idleTimer = setTimeout(() => this.closeRunner(runner.sessionId, { expected: runner }), RUNNER_IDLE_MS)
+    const untilWakeup = runner.wakeAtMs === null ? 0 : runner.wakeAtMs + WAKEUP_GRACE_MS - Date.now()
+    runner.idleTimer = setTimeout(() => this.closeRunner(runner.sessionId, { expected: runner }), Math.max(RUNNER_IDLE_MS, untilWakeup))
     runner.idleTimer.unref?.()
   }
 
@@ -2514,6 +2530,7 @@ export class ClaudeBackend {
           isError: result.is_error === true,
           structured: (message as { tool_use_result?: unknown }).tool_use_result,
         }
+        if (tool.name === 'ScheduleWakeup' && !outcome.isError) runner.wakeAtMs = wakeupAtMs(tool.input, Date.now())
         this.emit('item/completed', { threadId: turn.threadId, turnId: turn.turnId, item: toolUseItem(tool, turn.cwd, outcome) })
       }
       return

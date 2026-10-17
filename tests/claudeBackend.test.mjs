@@ -461,6 +461,35 @@ test('measures a chat past 200K tokens against 1M before Claude Code reports its
   })
 })
 
+const finishedReply = { type: 'result', subtype: 'success', is_error: false, result: '', modelUsage: recordedModelUsage }
+
+test('closes an idle Claude process after 5 minutes', async (t) => {
+  await withMeteredRunner(async ({ backend, runner, sessionId, directory }) => {
+    t.mock.timers.enable({ apis: ['setTimeout', 'Date'] })
+    backend.beginTurn(runner, 'turn-1', directory, null)
+    backend.handleMessage(runner, finishedReply)
+    t.mock.timers.tick(5 * 60_000 - 1)
+    assert.equal(backend.runners.has(sessionId), true)
+    t.mock.timers.tick(1)
+    assert.equal(backend.runners.has(sessionId), false)
+  })
+})
+
+test('keeps an idle Claude process until a wakeup it scheduled has fired', async (t) => {
+  await withMeteredRunner(async ({ backend, runner, sessionId, directory }) => {
+    t.mock.timers.enable({ apis: ['setTimeout', 'Date'] })
+    backend.beginTurn(runner, 'turn-1', directory, null)
+    const wakeup = { type: 'tool_use', id: 'toolu_wake', name: 'ScheduleWakeup', input: { delaySeconds: 20 * 60, prompt: '/loop check', reason: 'waiting' } }
+    backend.handleMessage(runner, { ...opusReply('msg_1', 1000), message: { ...opusReply('msg_1', 1000).message, content: [wakeup] } })
+    backend.handleMessage(runner, { type: 'user', parent_tool_use_id: null, message: { role: 'user', content: [{ type: 'tool_result', tool_use_id: 'toolu_wake', content: 'Scheduled' }] } })
+    backend.handleMessage(runner, finishedReply)
+    t.mock.timers.tick(20 * 60_000)
+    assert.equal(backend.runners.has(sessionId), true, 'the process outlives the idle timeout while its wakeup is pending')
+    t.mock.timers.tick(60_000)
+    assert.equal(backend.runners.has(sessionId), false, 'it closes once the wakeup should have fired')
+  })
+})
+
 /** A saved Claude chat with a subagent folder, and a backend that has, by default, started its process. */
 async function withSavedClaudeChat(run, { startProcess = true } = {}) {
   const configDir = await mkdtemp(join(tmpdir(), 'codexui-claude-delete-'))

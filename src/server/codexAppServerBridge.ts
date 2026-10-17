@@ -50,6 +50,7 @@ import { ClaudeBackend, isClaudeModelId, isClaudeThreadId } from './claudeBacken
 import { createClaudeAutomationTool } from './claudeAutomationTool'
 import { readReviewClientScope, reviewScopeMatches } from './reviewScope'
 import { ActiveTurnTracker, continueInterruptedTurns, recordInterruptedTurns, takeInterruptedTurns } from './restartResume'
+import { ChatGptAppCloser } from './chatGptAppCloser'
 import {
   GitWorkspaceRequestError,
   readGitWorkspaceReview,
@@ -1639,6 +1640,7 @@ type CodexBridgeMiddleware = ((req: IncomingMessage, res: ServerResponse, next: 
 type SharedBridgeState = {
   appServer: AppServerProcess
   claude: ClaudeBackend
+  chatGptApp: ChatGptAppCloser
   threadTitleGenerator: ThreadTitleGenerator
   methodCatalog: MethodCatalog
   automationService: AutomationService
@@ -1665,10 +1667,16 @@ function getSharedBridgeState(): SharedBridgeState {
 
   const appServer = new AppServerProcess()
   let automationService: AutomationService | null = null
+  const chatGptApp = new ChatGptAppCloser({
+    settingsPath: join(getCodexHomeDir(), 'codexui-chatgpt-app.json'),
+    // Codex chats' computer use is not visible here, so any Codex reply may need the app.
+    isBusy: () => activeTurns.replyThreadIds().some((threadId) => !isClaudeThreadId(threadId)) || claude.hasComputerUseRunner(),
+  })
   const claude = new ClaudeBackend(join(getCodexHomeDir(), 'codexui-claude-threads.json'), {
     // A LaunchDaemon cannot read the login keychain where Claude keeps its
     // sign-in; a host in the login session starts Claude Code instead.
     hostSocketPath: process.env.CODEXUI_CLAUDE_HOST_SOCKET,
+    onComputerUse: () => { void chatGptApp.noteComputerUse() },
     tools: [createClaudeAutomationTool(() => (params) => {
       if (!automationService) throw new Error('Scheduled tasks are still starting.')
       return automationService.handleDynamicToolCall(params)
@@ -1764,6 +1772,7 @@ function getSharedBridgeState(): SharedBridgeState {
   const created: SharedBridgeState = {
     appServer,
     claude,
+    chatGptApp,
     threadTitleGenerator: new ThreadTitleGenerator(),
     methodCatalog: new MethodCatalog(),
     automationService: scheduledTasks,
@@ -2679,6 +2688,20 @@ export function createCodexBridgeMiddleware(): CodexBridgeMiddleware {
         return
       }
 
+      if (url.pathname === '/codex-api/chatgpt-app-auto-quit' && (req.method === 'GET' || req.method === 'PUT')) {
+        if (req.method === 'PUT') {
+          const enabled = asRecord(await readJsonBody(req))?.enabled
+          if (typeof enabled !== 'boolean') {
+            setJson(res, 400, { error: 'Invalid body: expected { enabled: boolean }' })
+            return
+          }
+          setJson(res, 200, { data: await shared.chatGptApp.writeSettings(enabled) })
+          return
+        }
+        setJson(res, 200, { data: await shared.chatGptApp.readSettings() })
+        return
+      }
+
       if (req.method === 'GET' && url.pathname === '/codex-api/pinned-threads') {
         const threadIds = await readPinnedThreadIds()
         setJson(res, 200, { data: { threadIds } })
@@ -2930,6 +2953,7 @@ export function createCodexBridgeMiddleware(): CodexBridgeMiddleware {
     }
     appServer.dispose()
     threadTitleGenerator.dispose()
+    shared.chatGptApp.dispose()
   }
   middleware.listThreads = (params: Record<string, unknown>) => appServer.rpc('thread/list', params)
   middleware.readThread = (threadId: string) => appServer.rpc('thread/read', {

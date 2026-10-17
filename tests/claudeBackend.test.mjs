@@ -39,7 +39,6 @@ const { withTurnMetadata, parseTurnFile, turnEndedRequest, isRelayResponse } = a
 const cuaRelayBundle = join(bundleDir, `${'../src/server/cuaRelay.ts'.replace(/[^a-z0-9]/giu, '_')}.mjs`)
 const { buildReviewChanges } = await loadModule('../src/utils/reviewDiff.ts')
 const { createClaudeAutomationTool } = await loadModule('../src/server/claudeAutomationTool.ts')
-const chatGptApp = await loadModule('../src/server/chatGptAppCloser.ts')
 
 function createBackends(rpc, claudeOverrides = {}) {
   const codex = {
@@ -561,103 +560,6 @@ test('keeps an idle Claude process until a wakeup it scheduled has fired', async
     assert.equal(backend.runners.has(sessionId), true, 'the process outlives the idle timeout while its wakeup is pending')
     t.mock.timers.tick(60_000)
     assert.equal(backend.runners.has(sessionId), false, 'it closes once the wakeup should have fired')
-  })
-})
-
-test('reports computer use from a Claude chat and remembers which live processes used it', async () => {
-  await withMeteredRunner(async ({ backend, runner, sessionId, directory }) => {
-    let reported = 0
-    backend.onComputerUse = () => { reported += 1 }
-    backend.beginTurn(runner, 'turn-1', directory, null)
-    const read = { type: 'tool_use', id: 'toolu_read', name: 'Read', input: { file_path: '/tmp/a' } }
-    backend.handleMessage(runner, { ...opusReply('msg_1', 1000), message: { ...opusReply('msg_1', 1000).message, content: [read] } })
-    assert.equal(backend.hasComputerUseRunner(), false)
-    const js = { type: 'tool_use', id: 'toolu_js', name: 'mcp__cua_repl__js', input: { code: 'await cua.getState()' } }
-    backend.handleMessage(runner, { ...opusReply('msg_2', 1000), message: { ...opusReply('msg_2', 1000).message, content: [js] } })
-    assert.equal(reported, 1)
-    assert.equal(backend.hasComputerUseRunner(), true)
-    backend.closeRunner(sessionId)
-    assert.equal(backend.hasComputerUseRunner(), false, 'a closed process no longer holds the app')
-  })
-})
-
-test('reads when the ChatGPT app started from ps output', () => {
-  assert.equal(chatGptApp.parseElapsed('05:07'), 307_000)
-  assert.equal(chatGptApp.parseElapsed('01:17:32'), 4_652_000)
-  assert.equal(chatGptApp.parseElapsed('2-03:04:05'), ((2 * 24 + 3) * 3600 + 4 * 60 + 5) * 1000)
-  assert.equal(chatGptApp.parseElapsed('soon'), null)
-  const now = 10_000_000
-  const output = [
-    '  901 23-08:57:19 /Applications/ChatGPT.app/Contents/Frameworks/Codex Framework.framework/Helpers/browser',
-    '78191   34:06 /Applications/ChatGPT.app/Contents/Frameworks/Codex Framework.framework/Helpers/Codex (Renderer)',
-    '78180   34:15 /Applications/ChatGPT.app/Contents/MacOS/ChatGPT',
-  ].join('\n')
-  assert.deepEqual(chatGptApp.findAppInProcessList(output, now), { pid: 78180, startedAtMs: now - (34 * 60 + 15) * 1000 })
-  assert.equal(chatGptApp.findAppInProcessList(output.split('\n').slice(0, 2).join('\n'), now), null)
-})
-
-/** A ChatGPT app closer with a fake clock, process list, and quit. */
-async function withAppCloser(t, run) {
-  const directory = await mkdtemp(join(tmpdir(), 'codexui-chatgpt-app-'))
-  t.mock.timers.enable({ apis: ['setTimeout'] })
-  const state = { clock: 50_000_000, app: null, busy: false, quits: [] }
-  const closer = new chatGptApp.ChatGptAppCloser({
-    settingsPath: join(directory, 'codexui-chatgpt-app.json'),
-    isBusy: () => state.busy,
-    findApp: async () => state.app,
-    quit: (pid) => { state.quits.push(pid) },
-    now: () => state.clock,
-  })
-  const settle = async () => { for (let turn = 0; turn < 30; turn += 1) await new Promise((resolve) => setImmediate(resolve)) }
-  const wait = async (ms) => { state.clock += ms; t.mock.timers.tick(ms); await settle() }
-  try {
-    await run({ closer, state, wait })
-  } finally {
-    closer.dispose()
-    await rm(directory, { recursive: true, force: true })
-  }
-}
-
-test('quits the ChatGPT app 10 idle minutes after the computer use that opened it', async (t) => {
-  await withAppCloser(t, async ({ closer, state, wait }) => {
-    await closer.noteComputerUse()
-    await wait(60_000)
-    state.app = { pid: 4242, startedAtMs: state.clock }
-    await wait(8 * 60_000)
-    await closer.noteComputerUse()
-    await wait(10 * 60_000 - 1)
-    assert.deepEqual(state.quits, [], 'each use restarts the ten minutes')
-    state.busy = true
-    await wait(1)
-    assert.deepEqual(state.quits, [], 'not while a chat may still need it')
-    state.busy = false
-    await wait(60_000)
-    assert.deepEqual(state.quits, [4242])
-  })
-})
-
-test('leaves the ChatGPT app open when the user opened it or turned auto-quit off', async (t) => {
-  await withAppCloser(t, async ({ closer, state, wait }) => {
-    state.app = { pid: 7, startedAtMs: state.clock - 3_600_000 }
-    await closer.noteComputerUse()
-    await wait(11 * 60_000)
-    assert.deepEqual(state.quits, [], 'it was open before computer use started')
-
-    state.app = null
-    await closer.noteComputerUse()
-    await wait(5 * 60_000)
-    state.app = { pid: 8, startedAtMs: state.clock }
-    await wait(6 * 60_000)
-    assert.deepEqual(state.quits, [], 'it opened long after computer use, so the user opened it')
-
-    state.app = null
-    assert.deepEqual(await closer.readSettings(), { enabled: true }, 'on by default')
-    assert.deepEqual(await closer.writeSettings(false), { enabled: false })
-    await closer.noteComputerUse()
-    state.app = { pid: 9, startedAtMs: state.clock }
-    await wait(11 * 60_000)
-    assert.deepEqual(state.quits, [], 'auto-quit is off')
-    assert.deepEqual(await closer.readSettings(), { enabled: false })
   })
 })
 

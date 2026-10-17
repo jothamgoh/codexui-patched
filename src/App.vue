@@ -136,7 +136,6 @@
                   @update:model-value="setFastModeEnabled"
                 />
                 <QuestionSettingControl />
-                <ChatGptAppSettingControl />
               </div>
             </div>
           </section>
@@ -550,7 +549,6 @@ import UiFontSizeControl from './components/content/UiFontSizeControl.vue'
 import SpeedSettingControl from './components/content/SpeedSettingControl.vue'
 import NotificationSettingsButton from './components/content/NotificationSettingsButton.vue'
 import QuestionSettingControl from './components/content/QuestionSettingControl.vue'
-import ChatGptAppSettingControl from './components/content/ChatGptAppSettingControl.vue'
 import WorkspaceSummaryButton from './components/content/WorkspaceSummaryButton.vue'
 import SidebarThreadControls from './components/sidebar/SidebarThreadControls.vue'
 import IconTablerChevronDown from './components/icons/IconTablerChevronDown.vue'

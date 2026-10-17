@@ -706,8 +706,6 @@ type SessionRunner = {
   backgroundTasks: ClaudeBackgroundTask[]
   /** When a ScheduleWakeup call resumes the chat; the process must outlive it. */
   wakeAtMs: number | null
-  /** Its computer-use helpers may still hold the ChatGPT app. */
-  usedComputerUse: boolean
   closed: boolean
 }
 
@@ -869,8 +867,6 @@ export type ClaudeBackendOptions = {
   tools?: ClaudeHostTool[]
   accountSwitcherPath?: string | null
   claudeConfigDir?: string
-  /** Called as a chat starts a computer-use call. */
-  onComputerUse?: () => void
 }
 
 export class ClaudeBackend {
@@ -884,7 +880,6 @@ export class ClaudeBackend {
   private readonly store: ClaudeThreadStore
   private readonly hostSocketPath: string
   private readonly tools: ClaudeHostTool[]
-  private readonly onComputerUse: () => void
   private readonly claudeConfigDirectory: string
   readonly accounts: ClaudeAccountSwitcher
   private readonly metadataQueries = new Set<Query>()
@@ -924,7 +919,6 @@ export class ClaudeBackend {
     this.cuaTurnDirectory = join(dirname(storeFilePath), 'codexui-cua-turns')
     this.hostSocketPath = options.hostSocketPath?.trim() ?? ''
     this.tools = options.tools ?? []
-    this.onComputerUse = options.onComputerUse ?? (() => {})
     this.claudeConfigDirectory = options.claudeConfigDir?.trim() || claudeConfigDir()
     this.accounts = new ClaudeAccountSwitcher({
       stateFilePath: join(dirname(storeFilePath), 'codexui-claude-accounts.json'),
@@ -2104,7 +2098,6 @@ export class ClaudeBackend {
       model: history?.model ?? '',
       backgroundTasks: [],
       wakeAtMs: null,
-      usedComputerUse: false,
       closed: false,
       cuaTurnFile: computerUse?.controlsChrome ? join(this.cuaTurnDirectory, sessionId) : null,
     } as unknown as SessionRunner
@@ -2574,10 +2567,6 @@ export class ClaudeBackend {
         } else if (block.type === 'tool_use') {
           const tool: ClaudeToolUse = { id: block.id, name: block.name, input: asRecord(block.input) ?? {} }
           turn.tools.set(tool.id, tool)
-          if (tool.name.startsWith('mcp__cua_repl__')) {
-            runner.usedComputerUse = true
-            this.onComputerUse()
-          }
           this.emit('item/started', itemParams(toolUseItem(tool, turn.cwd, null)))
         }
       }
@@ -2823,11 +2812,6 @@ export class ClaudeBackend {
     return [...this.runners.values()]
       .filter((runner) => !runner.closed && (runnerIsBusy(runner) || isClaudeSessionActive(this.claudeSessionStates.get(runner.sessionId))))
       .map((runner) => runner.threadId)
-  }
-
-  /** Whether a live Claude process has used computer use, so its helpers may still need the ChatGPT app. */
-  hasComputerUseRunner(): boolean {
-    return [...this.runners.values()].some((runner) => !runner.closed && runner.usedComputerUse)
   }
 
   listPendingServerRequests(): ClaudePendingServerRequest[] {

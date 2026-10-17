@@ -9,8 +9,6 @@ settings. The `Accounts` region shows provider sign-in state.
 - `settings-font` sets the UI font size for this device (`14 px`, `15 px`, `16 px`).
 - `settings-speed` sets the default speed for all devices (`Standard`, `Fast`).
 - `settings-questions` toggles optional questions in new chats for this browser.
-- `settings-chatgpt-app` toggles quitting the ChatGPT app 10 idle minutes after Claude's computer
-  use opened it, for all devices.
 - `settings-accounts` shows Claude and Codex sign-in state with `Refresh accounts`.
 - `settings-claude-accounts` saves Claude logins, selects the active account, and
   configures automatic switching and per-account rotation eligibility with usage
@@ -35,9 +33,6 @@ Preconditions:
   Reload the page. The value is still `fast`. It is written to
   `$VERIFY_DIR/codex-home/config.toml`, so it applies to all devices.
 - **Questions.** Toggle `getByRole('switch', { name: 'Questions in new chats' })`.
-- **ChatGPT app.** Wait until `getByRole('switch', { name: 'Close ChatGPT after computer use' })`
-  is enabled (it loads from the server), then toggle it. It is on by default. The choice is
-  written to `$VERIFY_DIR/codex-home/codexui-chatgpt-app.json` as `quitAfterComputerUse`.
 - **Accounts.** Region `AI provider accounts` shows `Not signed in` for both providers in
   UI-only mode, and the Codex email in `--live-auth` mode.
 

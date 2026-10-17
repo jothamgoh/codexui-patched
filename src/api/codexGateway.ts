@@ -1319,25 +1319,6 @@ export async function consumeRateLimitResetCredit(): Promise<string> {
   return typeof payload.code === 'string' ? payload.code : 'unknown'
 }
 
-/** Whether CodexUI quits the ChatGPT app once computer use it opened has been idle for 10 minutes. */
-export async function getChatGptAppAutoQuit(): Promise<boolean> {
-  const response = await fetch('/codex-api/chatgpt-app-auto-quit')
-  if (!response.ok) throw new Error(`Failed to load the ChatGPT app setting (${String(response.status)})`)
-  const payload = (await response.json()) as { data?: { enabled?: unknown } }
-  return payload.data?.enabled !== false
-}
-
-export async function setChatGptAppAutoQuit(enabled: boolean): Promise<boolean> {
-  const response = await fetch('/codex-api/chatgpt-app-auto-quit', {
-    method: 'PUT',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ enabled }),
-  })
-  if (!response.ok) throw new Error(`Failed to save the ChatGPT app setting (${String(response.status)})`)
-  const payload = (await response.json()) as { data?: { enabled?: unknown } }
-  return payload.data?.enabled !== false
-}
-
 export async function getPinnedThreadIds(): Promise<string[]> {
   const response = await fetch('/codex-api/pinned-threads')
   if (!response.ok) throw new Error(`Failed to load pinned threads (${String(response.status)})`)

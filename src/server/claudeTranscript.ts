@@ -208,7 +208,6 @@ const TOOL_LABELS: Record<string, string> = {
   TaskUpdate: 'Update plan',
   TaskList: 'Check plan',
   TaskGet: 'Check plan',
-  AskUserQuestion: 'Ask question',
   Skill: 'Use skill',
   SlashCommand: 'Run command',
   EnterPlanMode: 'Plan',
@@ -243,10 +242,6 @@ function toolDetail(tool: ClaudeToolUse, cwd: string): string {
       const todos = Array.isArray(input.todos) ? input.todos.map(asRecord) : []
       const done = todos.filter((todo) => todo?.status === 'completed').length
       return todos.length > 0 ? `${String(done)} of ${String(todos.length)} done` : ''
-    }
-    case 'AskUserQuestion': {
-      const questions = Array.isArray(input.questions) ? input.questions.map(asRecord) : []
-      return firstLine(questions[0]?.question)
     }
     case 'Skill':
       return firstLine(input.skill ?? input.command ?? input.name)
@@ -303,6 +298,21 @@ export function toolUseItem(
     const name = readString(tool.input.subagent_type) || 'Agent'
     const task = readString(tool.input.description) || firstLine(tool.input.prompt, 600)
     return { type: 'subAgentActivity', id: tool.id, kind, name, prompt: task, agentThreadId: null }
+  }
+
+  if (tool.name === 'AskUserQuestion') {
+    const answers = asRecord(asRecord(outcome?.structured)?.answers) ?? {}
+    const questions = Array.isArray(tool.input.questions) ? tool.input.questions.map(asRecord) : []
+    return {
+      type: 'askedQuestions',
+      id: tool.id,
+      status,
+      questions: questions.filter((question) => question !== null).map((question) => ({
+        header: readString(question.header),
+        question: readString(question.question),
+        answer: readString(answers[readString(question.question)]),
+      })),
+    }
   }
 
   if (tool.name === 'ExitPlanMode') {
@@ -431,7 +441,7 @@ function pruneEntry(entry: TranscriptEntry): TranscriptEntry {
   const result = asRecord(entry.toolUseResult)
   if (result) {
     const kept: Record<string, unknown> = {}
-    for (const key of ['type', 'filePath', 'structuredPatch', 'stdout', 'stderr', 'interrupted', 'staged']) {
+    for (const key of ['type', 'filePath', 'structuredPatch', 'stdout', 'stderr', 'interrupted', 'staged', 'answers']) {
       if (key in result) kept[key] = result[key]
     }
     if (result.type === 'create' && typeof result.content === 'string') kept.content = result.content

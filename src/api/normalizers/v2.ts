@@ -1,4 +1,4 @@
-import { normalizeAsyncQuestions } from '../requestUserInput'
+import { normalizeAskedQuestions, normalizeAsyncQuestions } from '../requestUserInput'
 import type {
   Thread,
   ThreadItem,
@@ -366,6 +366,8 @@ function toUiMessages(item: ThreadItem): UiMessage[] {
   const rawItem = item as Record<string, unknown>
   const subAgentActivity = normalizeSubAgentActivity(rawItem)
   if (subAgentActivity) return [subAgentActivity]
+  const askedQuestions = normalizeAskedQuestions(rawItem)
+  if (askedQuestions) return [askedQuestions]
 
   // Completed file-change items are represented once by the aggregated turnDiff card.
   // Keeping the raw fallback message as well duplicates the same change in reconciliation.

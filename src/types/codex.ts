@@ -106,6 +106,12 @@ export type SubAgentActivityData = {
   task: string | null
 }
 
+/** Questions Claude asked in a chat and what the user answered, kept in the transcript. */
+export type AskedQuestionsData = {
+  status: 'waiting' | 'answered' | 'unanswered'
+  questions: Array<{ header: string; question: string; answer: string }>
+}
+
 export type McpAppResultData = {
   server: string
   tool: string
@@ -294,6 +300,7 @@ export type UiMessage = {
   commandExecution?: CommandExecutionData
   toolCall?: ToolCallData
   subAgentActivity?: SubAgentActivityData
+  askedQuestions?: AskedQuestionsData
   mcpApp?: McpAppResultData
   reviewChanges?: ReviewChangesData
   turnId?: string

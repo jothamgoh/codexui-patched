@@ -118,6 +118,7 @@
                   :activity="message.subAgentActivity"
                   :parent-thread-id="activeThreadId"
                 />
+                <AskedQuestionsCard v-else-if="message.askedQuestions" :data="message.askedQuestions" />
                 <ReviewChangesCard
                   v-else-if="message.messageType === 'turnDiff' && message.reviewChanges && message.turnId"
                   :changes="message.reviewChanges"
@@ -695,6 +696,7 @@ import ConversationItem from './ConversationItem.vue'
 import SubAgentActivityCard from './SubAgentActivityCard.vue'
 import RequestUserInputCard from './RequestUserInputCard.vue'
 import BackgroundWorkMark from './BackgroundWorkMark.vue'
+import AskedQuestionsCard from './AskedQuestionsCard.vue'
 import AsyncQuestionCard from './AsyncQuestionCard.vue'
 import { readAsyncQuestionReplies, type AsyncQuestion, type AsyncQuestionDraft } from '../../api/requestUserInput'
 import type { RequestQuestionDraft } from '../../api/requestUserInput'
@@ -824,7 +826,7 @@ function compactReasoningPreview(text: string): string {
 
 function shouldRenderMessageCard(message: UiMessage): boolean {
   if (message.messageType === 'commandExecution' && message.commandExecution) return true
-  return Boolean(message.asyncQuestions?.length) || Boolean(message.subAgentActivity) || Boolean(message.reviewChanges) || Boolean(message.mcpApp) || Boolean(message.toolCall) || message.text.length > 0 || shouldRenderDetailsPayload(message)
+  return Boolean(message.asyncQuestions?.length) || Boolean(message.subAgentActivity) || Boolean(message.askedQuestions) || Boolean(message.reviewChanges) || Boolean(message.mcpApp) || Boolean(message.toolCall) || message.text.length > 0 || shouldRenderDetailsPayload(message)
 }
 
 function messageDeliveryState(message: UiMessage): 'pending' | 'sent' | 'failed' | '' {
@@ -843,6 +845,8 @@ function messageDeliveryLabel(message: UiMessage): string {
 }
 
 function shouldDisplayMessage(message: UiMessage): boolean {
+  // A waiting question shows as the answer card below the conversation.
+  if (message.askedQuestions) return message.askedQuestions.status !== 'waiting'
   if (!isToolSummaryMessage(message)) return true
   if (!message.toolCall) return message.text.trim().length > 0
   if (message.mcpApp) return true

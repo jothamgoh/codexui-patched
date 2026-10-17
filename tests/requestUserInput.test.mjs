@@ -6,7 +6,7 @@ import ts from 'typescript'
 const source = await readFile(new URL('../src/api/requestUserInput.ts', import.meta.url), 'utf8')
 const compiled = ts.transpileModule(source, { compilerOptions: { module: ts.ModuleKind.ES2022, target: ts.ScriptTarget.ES2022 } }).outputText
 const moduleUnderTest = await import(`data:text/javascript;base64,${Buffer.from(compiled).toString('base64')}`)
-const { readRequestQuestions, requestQuestionAnswerValues, normalizeAsyncQuestions, encodeAsyncQuestionReply, readAsyncQuestionReplies } = moduleUnderTest
+const { readRequestQuestions, requestQuestionAnswerValues, normalizeAsyncQuestions, encodeAsyncQuestionReply, readAsyncQuestionReplies, normalizeAskedQuestions } = moduleUnderTest
 
 test('native async questions preserve source indices and support legacy free-text messages', () => {
   const item = { id: 'question-call', delivery: 'async', text: 'Fallback', questions: [null, { title: 'Choose an approach', options: ['Small', null, 'Large'] }] }
@@ -72,4 +72,27 @@ test('reads when an agent carries on without an answer, and nothing when it wait
   assert.equal(readRequestDeadline({ expiresAtIso: '2026-10-12T12:52:00.000Z' })?.toISOString(), '2026-10-12T12:52:00.000Z')
   assert.equal(readRequestDeadline({ questions: [] }), null)
   assert.equal(readRequestDeadline({ expiresAtIso: 'soon' }), null)
+})
+
+test('shows a Claude question with the answer it got, and drops malformed rows', () => {
+  const item = { type: 'askedQuestions', id: 'toolu_ask', status: 'completed', questions: [
+    { header: 'Budget', question: 'Which budget?', answer: 'High' },
+    null,
+    { header: 'Empty', question: '  ', answer: 'ignored' },
+    { question: 'Anything else?', answer: 7 },
+  ] }
+  assert.deepEqual(normalizeAskedQuestions(item), {
+    id: 'toolu_ask',
+    role: 'system',
+    text: 'Which budget?\nHigh\n\nAnything else?',
+    messageType: 'askedQuestions',
+    askedQuestions: { status: 'answered', questions: [
+      { header: 'Budget', question: 'Which budget?', answer: 'High' },
+      { header: '', question: 'Anything else?', answer: '' },
+    ] },
+  })
+  assert.equal(normalizeAskedQuestions({ ...item, status: 'failed' }).askedQuestions.status, 'unanswered')
+  assert.equal(normalizeAskedQuestions({ ...item, status: 'inProgress' }).askedQuestions.status, 'waiting')
+  assert.equal(normalizeAskedQuestions({ ...item, type: 'mcpToolCall' }), null)
+  assert.equal(normalizeAskedQuestions({ ...item, id: '' }), null)
 })

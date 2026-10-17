@@ -1,4 +1,4 @@
-import { normalizeAsyncQuestions } from '../api/requestUserInput'
+import { normalizeAskedQuestions, normalizeAsyncQuestions } from '../api/requestUserInput'
 import { computed, ref } from 'vue'
 import {
   archiveThread,
@@ -679,6 +679,7 @@ function areMessageFieldsEqual(first: UiMessage, second: UiMessage): boolean {
     first.subAgentActivity?.status === second.subAgentActivity?.status &&
     first.subAgentActivity?.statusLabel === second.subAgentActivity?.statusLabel &&
     first.subAgentActivity?.task === second.subAgentActivity?.task &&
+    JSON.stringify(first.askedQuestions) === JSON.stringify(second.askedQuestions) &&
     areMcpAppResultsEqual(first.mcpApp, second.mcpApp) &&
     areReviewChangesEqual(first.reviewChanges, second.reviewChanges) &&
     first.turnId === second.turnId &&
@@ -3451,6 +3452,8 @@ export function useDesktopState() {
   ): UiMessage | null {
     const subAgentActivity = normalizeSubAgentActivity(item)
     if (subAgentActivity) return subAgentActivity
+    const askedQuestions = normalizeAskedQuestions(item)
+    if (askedQuestions) return askedQuestions
     const itemId = readString(item.id)
     if (!itemId) return null
 

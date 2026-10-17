@@ -202,6 +202,33 @@ test('maps Claude tools onto the closest Codex item', () => {
   assert.equal(mcp.tool, 'browser_navigate')
   assert.deepEqual(mcp.error, { message: 'boom' })
   assert.equal(item('ExitPlanMode', { plan: '1. Do it' }).type, 'plan')
+  const waiting = item('AskUserQuestion', { questions: [{ question: 'Ship it?', header: 'Ship', options: [] }] })
+  assert.deepEqual(waiting, { type: 'askedQuestions', id: 't', status: 'inProgress', questions: [{ header: 'Ship', question: 'Ship it?', answer: '' }] })
+})
+
+test('keeps Claude questions and the answers given in the chat after a reload', () => {
+  const questions = [
+    { question: 'Which budget?', header: 'Budget', multiSelect: false, options: [{ label: 'Low', description: '' }, { label: 'High', description: '' }] },
+    { question: 'What matters?', header: 'Priorities', multiSelect: true, options: [{ label: 'Pool', description: '' }, { label: 'Quiet', description: '' }] },
+  ]
+  const lines = [
+    entry('u1', null, { type: 'user', timestamp: at(0), message: { role: 'user', content: 'Find a hotel' } }),
+    assistant('a1', 'u1', 1, 'msg_1', { type: 'tool_use', id: 'toolu_ask', name: 'AskUserQuestion', input: { questions } }),
+    toolResult('r1', 'a1', 2, 'toolu_ask', 'The user answered: "Which budget?"="High", "What matters?"="Pool, and a gym"', {
+      questions, answers: { 'Which budget?': 'High', 'What matters?': 'Pool, and a gym' },
+    }),
+    assistant('a2', 'r1', 3, 'msg_2', { type: 'tool_use', id: 'toolu_away', name: 'AskUserQuestion', input: { questions: [questions[0]] } }),
+    toolResult('r2', 'a2', 4, 'toolu_away', 'PreToolUse:AskUserQuestion hook error: No answer after 15 minutes', 'Error: No answer after 15 minutes', true),
+  ]
+  const chain = transcript.resolveMainChain(transcript.parseTranscript(lines.map((line) => JSON.stringify(line)).join('\n')))
+  const [turn] = transcript.buildTurnsFromChain(chain, cwd).turns
+  assert.deepEqual(turn.items.filter((item) => item.type === 'askedQuestions'), [
+    { type: 'askedQuestions', id: 'toolu_ask', status: 'completed', questions: [
+      { header: 'Budget', question: 'Which budget?', answer: 'High' },
+      { header: 'Priorities', question: 'What matters?', answer: 'Pool, and a gym' },
+    ] },
+    { type: 'askedQuestions', id: 'toolu_away', status: 'failed', questions: [{ header: 'Budget', question: 'Which budget?', answer: '' }] },
+  ])
 })
 
 test('reads a growing transcript incrementally and waits for half-written lines', async () => {

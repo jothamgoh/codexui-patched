@@ -1,3 +1,5 @@
+import type { AskedQuestionsData, UiMessage } from '../types/codex'
+
 export type RequestQuestion = {
   id: string
   header: string
@@ -53,6 +55,31 @@ export function readAsyncQuestionReplies(text: string): AsyncQuestionReply[] {
         ? [{ questionItemId: row.questionItemId, question: row.question, answer: row.answer }] : []
     })
   } catch { return [] }
+}
+
+/**
+ * Claude's questions with the answers it got, from an `askedQuestions` item.
+ * Shared by persisted items and item/started + item/completed notifications.
+ */
+export function normalizeAskedQuestions(item: Record<string, unknown>): UiMessage | null {
+  if (item.type !== 'askedQuestions' || typeof item.id !== 'string' || !item.id) return null
+  const questions = (Array.isArray(item.questions) ? item.questions : []).flatMap((value) => {
+    const row = record(value)
+    if (typeof row?.question !== 'string' || !row.question.trim()) return []
+    return [{
+      header: typeof row.header === 'string' ? row.header : '',
+      question: row.question,
+      answer: typeof row.answer === 'string' ? row.answer : '',
+    }]
+  })
+  const status: AskedQuestionsData['status'] = item.status === 'completed' ? 'answered' : item.status === 'failed' ? 'unanswered' : 'waiting'
+  return {
+    id: item.id,
+    role: 'system',
+    text: questions.map(({ question, answer }) => (answer ? `${question}\n${answer}` : question)).join('\n\n'),
+    messageType: 'askedQuestions',
+    askedQuestions: { status, questions },
+  }
 }
 
 function record(value: unknown): Record<string, unknown> | null {

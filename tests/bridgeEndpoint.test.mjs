@@ -1,6 +1,9 @@
 import assert from 'node:assert/strict'
-import { readFile } from 'node:fs/promises'
+import { mkdir, mkdtemp, readFile, rm } from 'node:fs/promises'
+import { join } from 'node:path'
+import { pathToFileURL } from 'node:url'
 import test from 'node:test'
+import { build } from 'esbuild'
 import ts from 'typescript'
 
 async function compileTypeScriptModule(sourcePath, replacements = []) {
@@ -190,4 +193,40 @@ test('a feature Lead can save a separate board draft using its verified project 
     saveError = error
     await assert.rejects(route(request, {}), (caught) => caught.message === error)
   }
+})
+
+test('stops the chat-title Codex engine two minutes after the last title, and starts it again on demand', async (t) => {
+  // Inside the checkout, so external packages resolve from its node_modules.
+  const cacheDir = new URL('../node_modules/.cache/', import.meta.url).pathname
+  await mkdir(cacheDir, { recursive: true })
+  const bundleDir = await mkdtemp(join(cacheDir, 'codexui-bridge-test-'))
+  t.after(() => rm(bundleDir, { recursive: true, force: true }))
+  const outfile = join(bundleDir, 'bridge.mjs')
+  await build({
+    entryPoints: [new URL('../src/server/codexAppServerBridge.ts', import.meta.url).pathname],
+    outfile, bundle: true, platform: 'node', format: 'esm', target: 'node18', packages: 'external', logLevel: 'silent',
+  })
+  const { ThreadTitleGenerator } = await import(pathToFileURL(outfile).href)
+
+  let stops = 0
+  let starts = 0
+  const engine = {
+    rpc: async () => { starts += 1; throw new Error('no model in this test') },
+    onNotification: () => () => {},
+    dispose: () => { stops += 1 },
+  }
+  const generator = new ThreadTitleGenerator(engine)
+  t.mock.timers.enable({ apis: ['setTimeout'] })
+  await generator.generate('Plan a trip', null).catch(() => null)
+  t.mock.timers.tick(119_000)
+  await generator.generate('Book a hotel', null).catch(() => null)
+  t.mock.timers.tick(119_000)
+  assert.equal(stops, 0, 'a title within two minutes keeps the engine running')
+  t.mock.timers.tick(1_000)
+  assert.equal(stops, 1, 'two idle minutes stop it')
+  await generator.generate('Pack', null).catch(() => null)
+  assert.equal(starts, 3, 'the next title asks the engine again')
+  generator.dispose()
+  t.mock.timers.tick(120_000)
+  assert.equal(stops, 2, 'dispose stops it once and cancels the idle timer')
 })

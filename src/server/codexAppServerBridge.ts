@@ -1450,13 +1450,36 @@ function parseGeneratedThreadTitle(value: string): GeneratedThreadTitle | null {
   }
 }
 
-class ThreadTitleGenerator {
-  private readonly appServer = new AppServerProcess()
+/** The title engine works for seconds per new chat; between chats it would idle at about 26 MB. */
+const THREAD_TITLE_IDLE_MS = 2 * 60_000
+
+export class ThreadTitleGenerator {
+  private running = 0
+  private idleTimer: ReturnType<typeof setTimeout> | null = null
+
+  constructor(private readonly appServer: Pick<AppServerProcess, 'rpc' | 'onNotification' | 'dispose'> = new AppServerProcess()) {}
 
   async generate(prompt: string, cwd: string | null): Promise<GeneratedThreadTitle | null> {
     const trimmedPrompt = prompt.trim()
     if (!trimmedPrompt) return null
+    if (this.idleTimer) clearTimeout(this.idleTimer)
+    this.idleTimer = null
+    this.running += 1
+    try {
+      return await this.generateTitle(trimmedPrompt, cwd)
+    } finally {
+      this.running -= 1
+      if (this.running === 0) {
+        this.idleTimer = setTimeout(() => {
+          this.idleTimer = null
+          this.appServer.dispose()
+        }, THREAD_TITLE_IDLE_MS)
+        this.idleTimer.unref?.()
+      }
+    }
+  }
 
+  private async generateTitle(trimmedPrompt: string, cwd: string | null): Promise<GeneratedThreadTitle | null> {
     const startResult = await this.appServer.rpc('thread/start', {
       model: THREAD_TITLE_MODEL,
       modelProvider: null,
@@ -1500,6 +1523,8 @@ class ThreadTitleGenerator {
   }
 
   dispose(): void {
+    if (this.idleTimer) clearTimeout(this.idleTimer)
+    this.idleTimer = null
     this.appServer.dispose()
   }
 

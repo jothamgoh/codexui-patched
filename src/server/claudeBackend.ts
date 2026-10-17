@@ -40,7 +40,6 @@ import {
   emptyUsage,
   GOAL_CONTINUATION_TAG,
   MY_REQUEST_MARKER,
-  parseTranscript,
   parseTranscriptLine,
   readApiUsage,
   readString,
@@ -502,21 +501,22 @@ function readTitle(entries: TranscriptEntry[]): { title: string; firstPrompt: st
 const TRANSCRIPT_CHUNK_BYTES = 4 * 1024 * 1024
 
 /**
- * Entries on the complete lines between two byte offsets, and the bytes they
- * span. Reads a chunk at a time: a long chat as one string can briefly take
- * several hundred megabytes.
+ * Calls `visit` with each complete line between two byte offsets until it
+ * returns true, reading a chunk at a time: a long chat as one string can
+ * briefly take several hundred megabytes. Resolves to the bytes the visited
+ * lines span, or null when the file cannot be opened.
  */
-export async function readTranscriptRange(
+async function forEachLine(
   path: string,
   from: number,
   to: number,
+  visit: (line: string) => boolean | void,
   chunkBytes = TRANSCRIPT_CHUNK_BYTES,
-): Promise<{ entries: TranscriptEntry[]; bytes: number } | null> {
-  if (to <= from) return { entries: [], bytes: 0 }
+): Promise<number | null> {
+  if (to <= from) return 0
   const handle = await open(path, 'r').catch(() => null)
   if (!handle) return null
   try {
-    const entries: TranscriptEntry[] = []
     const buffer = Buffer.alloc(Math.min(chunkBytes, to - from))
     let partial: Buffer[] = []
     let position = from
@@ -529,19 +529,65 @@ export async function readTranscriptRange(
       for (let newline = chunk.indexOf(0x0a); newline !== -1; newline = chunk.indexOf(0x0a, start)) {
         const line = partial.length > 0 ? Buffer.concat([...partial, chunk.subarray(start, newline)]) : chunk.subarray(start, newline)
         partial = []
-        const entry = parseTranscriptLine(line.toString('utf8'))
-        if (entry) entries.push(entry)
         start = newline + 1
         bytes = position + start - from
+        if (visit(line.toString('utf8')) === true) return bytes
       }
       // The buffer is reused, so keep a copy of a line that continues in the next chunk.
       if (start < bytesRead) partial.push(Buffer.from(chunk.subarray(start)))
       position += bytesRead
     }
-    return { entries, bytes }
+    return bytes
   } finally {
     await handle.close()
   }
+}
+
+/** Entries on the complete lines between two byte offsets, and the bytes they span. */
+export async function readTranscriptRange(
+  path: string,
+  from: number,
+  to: number,
+  chunkBytes = TRANSCRIPT_CHUNK_BYTES,
+): Promise<{ entries: TranscriptEntry[]; bytes: number } | null> {
+  const entries: TranscriptEntry[] = []
+  const bytes = await forEachLine(path, from, to, (line) => {
+    const entry = parseTranscriptLine(line)
+    if (entry) entries.push(entry)
+  }, chunkBytes)
+  return bytes === null ? null : { entries, bytes }
+}
+
+/** Text around `term` (lowercase) in a message a person or Claude wrote, or '' if it has none. */
+function searchSnippet(entry: TranscriptEntry | null, term: string): string {
+  if (!entry || (entry.type !== 'user' && entry.type !== 'assistant') || entry.isMeta === true) return ''
+  const content = asRecord(entry.message)?.content
+  const text = typeof content === 'string'
+    ? content
+    : Array.isArray(content)
+      ? content.map((block) => {
+        const record = asRecord(block)
+        return record?.type === 'text' ? readString(record.text) : ''
+      }).join('\n')
+      : ''
+  const index = text.toLowerCase().indexOf(term)
+  if (index < 0) return ''
+  const start = Math.max(0, index - 100)
+  return `${start > 0 ? '…' : ''}${text.slice(start, index + term.length + 160).replace(/\s+/gu, ' ').trim()}`
+}
+
+/**
+ * The first message in a transcript that mentions `term` (lowercase). Only
+ * lines containing the term are parsed, and the file is read a chunk at a time.
+ */
+export async function findTranscriptSnippet(path: string, term: string, chunkBytes = TRANSCRIPT_CHUNK_BYTES): Promise<string> {
+  let snippet = ''
+  await forEachLine(path, 0, Number.POSITIVE_INFINITY, (line) => {
+    if (!line.toLowerCase().includes(term)) return false
+    snippet = searchSnippet(parseTranscriptLine(line), term)
+    return snippet !== ''
+  }, chunkBytes)
+  return snippet
 }
 
 // ── Live turns ──────────────────────────────────────────────────────────
@@ -1567,26 +1613,7 @@ export class ClaudeBackend {
   private async searchTranscriptText(info: SDKSessionInfo, term: string): Promise<string> {
     if ((info.fileSize ?? 0) > SEARCH_MAX_BYTES) return ''
     const path = await this.findTranscriptPath(info.sessionId, info.cwd ?? '')
-    if (!path) return ''
-    const raw = await readFile(path, 'utf8').catch(() => '')
-    if (!raw.toLowerCase().includes(term)) return ''
-    for (const entry of parseTranscript(raw)) {
-      if ((entry.type !== 'user' && entry.type !== 'assistant') || entry.isMeta === true) continue
-      const content = asRecord(entry.message)?.content
-      const text = typeof content === 'string'
-        ? content
-        : Array.isArray(content)
-          ? content.map((block) => {
-            const record = asRecord(block)
-            return record?.type === 'text' ? readString(record.text) : ''
-          }).join('\n')
-          : ''
-      const index = text.toLowerCase().indexOf(term)
-      if (index < 0) continue
-      const start = Math.max(0, index - 100)
-      return `${start > 0 ? '…' : ''}${text.slice(start, index + term.length + 160).replace(/\s+/gu, ' ').trim()}`
-    }
-    return ''
+    return path ? findTranscriptSnippet(path, term) : ''
   }
 
   // ── RPC ──

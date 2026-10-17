@@ -483,15 +483,6 @@ export function parseTranscriptLine(line: string): TranscriptEntry | null {
   }
 }
 
-export function parseTranscript(raw: string): TranscriptEntry[] {
-  const entries: TranscriptEntry[] = []
-  for (const line of raw.split('\n')) {
-    const entry = parseTranscriptLine(line)
-    if (entry) entries.push(entry)
-  }
-  return entries
-}
-
 const CHAIN_TYPES = new Set(['user', 'assistant', 'attachment', 'system'])
 
 /**

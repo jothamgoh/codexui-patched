@@ -30,7 +30,7 @@ async function loadModule(relativePath) {
   return import(pathToFileURL(outfile).href)
 }
 
-const { ClaudeBackend, isClaudeModelId, normalizeClaudeUsage, readTranscriptRange, runtimeModel } = await loadModule('../src/server/claudeBackend.ts')
+const { ClaudeBackend, findTranscriptSnippet, isClaudeModelId, normalizeClaudeUsage, readTranscriptRange, runtimeModel } = await loadModule('../src/server/claudeBackend.ts')
 const { BackendRouter } = await loadModule('../src/server/backendRouter.ts')
 const transcript = await loadModule('../src/server/claudeTranscript.ts')
 const { startClaudeProcessHost, spawnThroughHost } = await loadModule('../src/server/claudeProcessHost.ts')
@@ -220,7 +220,7 @@ test('keeps Claude questions and the answers given in the chat after a reload', 
     assistant('a2', 'r1', 3, 'msg_2', { type: 'tool_use', id: 'toolu_away', name: 'AskUserQuestion', input: { questions: [questions[0]] } }),
     toolResult('r2', 'a2', 4, 'toolu_away', 'PreToolUse:AskUserQuestion hook error: No answer after 15 minutes', 'Error: No answer after 15 minutes', true),
   ]
-  const chain = transcript.resolveMainChain(transcript.parseTranscript(lines.map((line) => JSON.stringify(line)).join('\n')))
+  const chain = transcript.resolveMainChain(lines.map((line) => transcript.parseTranscriptLine(JSON.stringify(line))))
   const [turn] = transcript.buildTurnsFromChain(chain, cwd).turns
   assert.deepEqual(turn.items.filter((item) => item.type === 'askedQuestions'), [
     { type: 'askedQuestions', id: 'toolu_ask', status: 'completed', questions: [
@@ -243,7 +243,7 @@ test('reads transcript lines a chunk at a time, across chunk boundaries and mult
     const complete = `${lines.join('\n')}\n`
     await writeFile(file, `${complete}{"type":"assistant","uuid":"half`)
     const size = (await stat(file)).size
-    const expected = transcript.parseTranscript(complete)
+    const expected = lines.map((line) => transcript.parseTranscriptLine(line))
     for (const chunkBytes of [1, 2, 3, 7, 64, 1 << 20]) {
       const whole = await readTranscriptRange(file, 0, size, chunkBytes)
       assert.deepEqual(whole.entries, expected, `${String(chunkBytes)}-byte chunks parse every complete line`)
@@ -256,6 +256,51 @@ test('reads transcript lines a chunk at a time, across chunk boundaries and mult
     assert.equal(await readTranscriptRange(join(directory, 'missing.jsonl'), 0, 10), null)
   } finally {
     await rm(directory, { recursive: true, force: true })
+  }
+})
+
+test('finds the first message that mentions a search term, ignoring tool output and meta entries', async () => {
+  const directory = await mkdtemp(join(tmpdir(), 'codexui-transcript-search-'))
+  try {
+    const file = join(directory, 'chat.jsonl')
+    const filler = 'x'.repeat(150)
+    await writeFile(file, [
+      { type: 'user', isMeta: true, message: { content: 'Caveat: the HOTEL list is internal' } },
+      { type: 'user', message: { content: [{ type: 'tool_result', tool_use_id: 't', content: 'hotel.txt' }] } },
+      { type: 'assistant', message: { content: [{ type: 'tool_use', id: 't', name: 'Read', input: { file_path: 'hotel.txt' } }] } },
+      { type: 'assistant', message: { content: [{ type: 'text', text: `${filler} Three Hotels near the beach 🌴 ${filler}` }] } },
+      { type: 'user', message: { content: 'Book the second hotel' } },
+    ].map((line) => JSON.stringify(line)).join('\n') + '\n')
+    const expected = `…${'x'.repeat(93)} Three Hotels near the beach 🌴 ${'x'.repeat(140)}`
+    for (const chunkBytes of [3, 64, 1 << 20]) {
+      assert.equal(await findTranscriptSnippet(file, 'hotel', chunkBytes), expected, `${String(chunkBytes)}-byte chunks`)
+    }
+    assert.equal(await findTranscriptSnippet(file, 'second hotel'), 'Book the second hotel')
+    assert.equal(await findTranscriptSnippet(file, 'internal'), '', 'meta entries are not chat')
+    assert.equal(await findTranscriptSnippet(file, 'zebra'), '')
+    assert.equal(await findTranscriptSnippet(join(directory, 'missing.jsonl'), 'hotel'), '')
+  } finally {
+    await rm(directory, { recursive: true, force: true })
+  }
+})
+
+test('searches the text of saved Claude chats', async () => {
+  const configDir = await mkdtemp(join(tmpdir(), 'codexui-claude-search-'))
+  try {
+    const sessionId = '12121212-3434-5656-7878-909090909090'
+    const projectDir = join(configDir, 'projects', '-work-project')
+    await mkdir(projectDir, { recursive: true })
+    await writeFile(join(projectDir, `${sessionId}.jsonl`), fixture.map((line) => JSON.stringify(line)).join('\n') + '\n')
+    const backend = new ClaudeBackend(join(configDir, 'threads.json'), { accountSwitcherPath: null, claudeConfigDir: configDir })
+    backend.listAllSessions = async () => [{ sessionId, summary: 'Notes work', firstPrompt: 'Create notes.txt then edit it', cwd, lastModified: Date.now() }]
+    backend.refreshClaudeSessionStates = async () => ({ states: new Map() })
+    const [result] = await backend.searchThreads({ searchTerm: 'KIWI' })
+    assert.equal(result.thread.id, `claude-${sessionId}`)
+    assert.equal(result.snippet, 'Done. Kiwi.')
+    assert.deepEqual(await backend.searchThreads({ searchTerm: 'zebra' }), [])
+    backend.dispose()
+  } finally {
+    await rm(configDir, { recursive: true, force: true })
   }
 })
 

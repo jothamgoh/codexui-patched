@@ -41,6 +41,7 @@ import {
   GOAL_CONTINUATION_TAG,
   MY_REQUEST_MARKER,
   parseTranscript,
+  parseTranscriptLine,
   readApiUsage,
   readString,
   reasoningItemId,
@@ -498,15 +499,46 @@ function readTitle(entries: TranscriptEntry[]): { title: string; firstPrompt: st
 }
 
 /** Complete lines between two byte offsets; a partly written last line waits. */
-async function readAppendedLines(path: string, from: number, to: number): Promise<{ text: string; bytes: number } | null> {
-  if (to <= from) return { text: '', bytes: 0 }
+const TRANSCRIPT_CHUNK_BYTES = 4 * 1024 * 1024
+
+/**
+ * Entries on the complete lines between two byte offsets, and the bytes they
+ * span. Reads a chunk at a time: a long chat as one string can briefly take
+ * several hundred megabytes.
+ */
+export async function readTranscriptRange(
+  path: string,
+  from: number,
+  to: number,
+  chunkBytes = TRANSCRIPT_CHUNK_BYTES,
+): Promise<{ entries: TranscriptEntry[]; bytes: number } | null> {
+  if (to <= from) return { entries: [], bytes: 0 }
   const handle = await open(path, 'r').catch(() => null)
   if (!handle) return null
   try {
-    const buffer = Buffer.alloc(to - from)
-    const { bytesRead } = await handle.read(buffer, 0, buffer.length, from)
-    const end = buffer.subarray(0, bytesRead).lastIndexOf(0x0a) + 1
-    return { text: buffer.subarray(0, end).toString('utf8'), bytes: end }
+    const entries: TranscriptEntry[] = []
+    const buffer = Buffer.alloc(Math.min(chunkBytes, to - from))
+    let partial: Buffer[] = []
+    let position = from
+    let bytes = 0
+    while (position < to) {
+      const { bytesRead } = await handle.read(buffer, 0, Math.min(buffer.length, to - position), position)
+      if (bytesRead === 0) break
+      const chunk = buffer.subarray(0, bytesRead)
+      let start = 0
+      for (let newline = chunk.indexOf(0x0a); newline !== -1; newline = chunk.indexOf(0x0a, start)) {
+        const line = partial.length > 0 ? Buffer.concat([...partial, chunk.subarray(start, newline)]) : chunk.subarray(start, newline)
+        partial = []
+        const entry = parseTranscriptLine(line.toString('utf8'))
+        if (entry) entries.push(entry)
+        start = newline + 1
+        bytes = position + start - from
+      }
+      // The buffer is reused, so keep a copy of a line that continues in the next chunk.
+      if (start < bytesRead) partial.push(Buffer.from(chunk.subarray(start)))
+      position += bytesRead
+    }
+    return { entries, bytes }
   } finally {
     await handle.close()
   }
@@ -1420,12 +1452,11 @@ export class ClaudeBackend {
     }
     // Transcripts only grow: while Claude replies, parse just the new lines.
     const appended = cached && info.size >= cached.consumed
-      ? await readAppendedLines(path, cached.consumed, info.size)
+      ? await readTranscriptRange(path, cached.consumed, info.size)
       : null
-    const full = appended ? null : await readAppendedLines(path, 0, info.size)
-    const delta = appended ?? full
+    const delta = appended ?? await readTranscriptRange(path, 0, info.size)
     if (!delta) return cached ?? null
-    const entries = appended && cached ? [...cached.entries, ...parseTranscript(delta.text)] : parseTranscript(delta.text)
+    const entries = appended && cached ? [...cached.entries, ...delta.entries] : delta.entries
     const consumed = (appended && cached ? cached.consumed : 0) + delta.bytes
     const { title, firstPrompt, createdAtMs } = readTitle(entries)
     const parsed: ParsedTranscript = {

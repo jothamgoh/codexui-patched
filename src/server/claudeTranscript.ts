@@ -471,16 +471,23 @@ function pruneEntry(entry: TranscriptEntry): TranscriptEntry {
 
 const EDIT_TOOLS = new Set(['Edit', 'MultiEdit', 'Write', 'NotebookEdit'])
 
+/** One transcript line as a pruned entry, or null for a blank or half-written line. */
+export function parseTranscriptLine(line: string): TranscriptEntry | null {
+  if (!line.trim()) return null
+  try {
+    const entry = asRecord(JSON.parse(line))
+    return entry ? pruneEntry(entry) : null
+  } catch {
+    // A partially written last line is normal while Claude is replying.
+    return null
+  }
+}
+
 export function parseTranscript(raw: string): TranscriptEntry[] {
   const entries: TranscriptEntry[] = []
   for (const line of raw.split('\n')) {
-    if (!line.trim()) continue
-    try {
-      const entry = asRecord(JSON.parse(line))
-      if (entry) entries.push(pruneEntry(entry))
-    } catch {
-      // A partially written last line is normal while Claude is replying.
-    }
+    const entry = parseTranscriptLine(line)
+    if (entry) entries.push(entry)
   }
   return entries
 }

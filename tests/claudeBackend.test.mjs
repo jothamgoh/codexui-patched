@@ -30,7 +30,7 @@ async function loadModule(relativePath) {
   return import(pathToFileURL(outfile).href)
 }
 
-const { ClaudeBackend, isClaudeModelId, normalizeClaudeUsage, runtimeModel } = await loadModule('../src/server/claudeBackend.ts')
+const { ClaudeBackend, isClaudeModelId, normalizeClaudeUsage, readTranscriptRange, runtimeModel } = await loadModule('../src/server/claudeBackend.ts')
 const { BackendRouter } = await loadModule('../src/server/backendRouter.ts')
 const transcript = await loadModule('../src/server/claudeTranscript.ts')
 const { startClaudeProcessHost, spawnThroughHost } = await loadModule('../src/server/claudeProcessHost.ts')
@@ -229,6 +229,34 @@ test('keeps Claude questions and the answers given in the chat after a reload', 
     ] },
     { type: 'askedQuestions', id: 'toolu_away', status: 'failed', questions: [{ header: 'Budget', question: 'Which budget?', answer: '' }] },
   ])
+})
+
+test('reads transcript lines a chunk at a time, across chunk boundaries and multi-byte characters', async () => {
+  const directory = await mkdtemp(join(tmpdir(), 'codexui-transcript-range-'))
+  try {
+    const file = join(directory, 'chat.jsonl')
+    const lines = [
+      { type: 'user', uuid: 'a', message: { content: 'Plan a trip to Bali 🌴 with café stops' } },
+      { type: 'assistant', uuid: 'b', message: { content: [{ type: 'text', text: 'Sure — 好的. '.repeat(20) }] } },
+      { type: 'user', uuid: 'c', message: { content: 'Thanks' } },
+    ].map((line) => JSON.stringify(line))
+    const complete = `${lines.join('\n')}\n`
+    await writeFile(file, `${complete}{"type":"assistant","uuid":"half`)
+    const size = (await stat(file)).size
+    const expected = transcript.parseTranscript(complete)
+    for (const chunkBytes of [1, 2, 3, 7, 64, 1 << 20]) {
+      const whole = await readTranscriptRange(file, 0, size, chunkBytes)
+      assert.deepEqual(whole.entries, expected, `${String(chunkBytes)}-byte chunks parse every complete line`)
+      assert.equal(whole.bytes, Buffer.byteLength(complete), 'the half-written last line is left for the next read')
+    }
+    const from = Buffer.byteLength(`${lines[0]}\n`)
+    const appended = await readTranscriptRange(file, from, size, 5)
+    assert.deepEqual(appended.entries.map((entry) => entry.uuid), ['b', 'c'])
+    assert.equal(from + appended.bytes, Buffer.byteLength(complete))
+    assert.equal(await readTranscriptRange(join(directory, 'missing.jsonl'), 0, 10), null)
+  } finally {
+    await rm(directory, { recursive: true, force: true })
+  }
 })
 
 test('reads a growing transcript incrementally and waits for half-written lines', async () => {

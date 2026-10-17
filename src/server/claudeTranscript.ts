@@ -432,12 +432,21 @@ export function capToolOutput(text: string): string {
     : text
 }
 
+/** Entry and message fields nothing here reads, such as a second copy of every tool input. */
+const UNUSED_ENTRY_KEYS = ['wireToolInputs', 'rendered', 'requestId', 'promptId', 'sourceToolAssistantUUID', 'advisorModel',
+  'perTurnEffort', 'effort', 'apiBlockIndex', 'userType', 'entrypoint', 'version', 'gitBranch', 'permissionMode', 'promptSource', 'turnOrigin']
+const UNUSED_MESSAGE_KEYS = ['input_transformations', 'context_management', 'diagnostics', 'container', 'stop_details', 'stop_sequence']
+/** What readApiUsage reads. */
+const USAGE_KEYS = ['input_tokens', 'cache_read_input_tokens', 'cache_creation_input_tokens', 'output_tokens', 'output_tokens_details']
+
 /**
  * Drop what the conversation never renders: whole original files kept for
- * Claude's own undo, file contents returned by Read, and system-prompt
- * snapshots. Large chats otherwise hold hundreds of megabytes in memory.
+ * Claude's own undo, file contents returned by Read, system-prompt snapshots,
+ * and thinking, which the chat shows only live. Large chats otherwise hold
+ * hundreds of megabytes in memory and send it with every page.
  */
 function pruneEntry(entry: TranscriptEntry): TranscriptEntry {
+  for (const key of UNUSED_ENTRY_KEYS) delete entry[key]
   const result = asRecord(entry.toolUseResult)
   if (result) {
     const kept: Record<string, unknown> = {}
@@ -452,9 +461,16 @@ function pruneEntry(entry: TranscriptEntry): TranscriptEntry {
   const attachment = asRecord(entry.attachment)
   if (attachment && attachment.type !== 'queued_command') entry.attachment = { type: attachment.type }
   const message = asRecord(entry.message)
+  if (message) {
+    for (const key of UNUSED_MESSAGE_KEYS) delete message[key]
+    const usage = asRecord(message.usage)
+    if (usage) message.usage = Object.fromEntries(USAGE_KEYS.filter((key) => key in usage).map((key) => [key, usage[key]]))
+  }
   if (message && Array.isArray(message.content)) {
     message.content = message.content.map((raw) => {
       const block = asRecord(raw)
+      // Keep the block so reasoning item ids stay the same; its text and signature are never shown.
+      if (block?.type === 'thinking' || block?.type === 'redacted_thinking') return { type: block.type }
       if (block?.type === 'tool_result') {
         return { ...block, content: capToolOutput(stringifyToolResult(block.content)) }
       }

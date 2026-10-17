@@ -206,6 +206,29 @@ test('maps Claude tools onto the closest Codex item', () => {
   assert.deepEqual(waiting, { type: 'askedQuestions', id: 't', status: 'inProgress', questions: [{ header: 'Ship', question: 'Ship it?', answer: '' }] })
 })
 
+test('drops thinking and unused copies when reading a transcript, keeping what the chat shows and counts', () => {
+  const entry = transcript.parseTranscriptLine(JSON.stringify({
+    type: 'assistant', uuid: 'a1', parentUuid: null, timestamp: at(1), cwd, requestId: 'req_1',
+    wireToolInputs: { toolu_1: { command: 'x'.repeat(1000) } },
+    message: {
+      id: 'msg_1', model: 'claude-opus-5-5', role: 'assistant', diagnostics: { detail: 'x'.repeat(1000) },
+      usage: {
+        input_tokens: 2, cache_read_input_tokens: 100, cache_creation_input_tokens: 10, output_tokens: 20,
+        output_tokens_details: { thinking_tokens: 5 }, iterations: [{ input_tokens: 2 }], server_tool_use: { web_search_requests: 0 },
+      },
+      content: [{ type: 'thinking', thinking: 'Plan the reply', signature: 'sig'.repeat(500) }, { type: 'text', text: 'Hello' }],
+    },
+  }))
+  assert.equal(entry.wireToolInputs, undefined)
+  assert.equal(entry.requestId, undefined)
+  assert.equal(entry.message.diagnostics, undefined)
+  assert.deepEqual(entry.message.content, [{ type: 'thinking' }, { type: 'text', text: 'Hello' }])
+  assert.deepEqual(transcript.readApiUsage(entry.message.usage), { inputTokens: 112, cachedInputTokens: 100, outputTokens: 20, reasoningOutputTokens: 5, totalTokens: 132 })
+  assert.equal(entry.message.usage.iterations, undefined)
+  const [turn] = transcript.buildTurnsFromChain([entry], cwd).turns
+  assert.deepEqual(turn.items.map((item) => [item.type, item.id]), [['reasoning', 'msg_1:reasoning:0'], ['agentMessage', 'msg_1:text:0']])
+})
+
 test('keeps Claude questions and the answers given in the chat after a reload', () => {
   const questions = [
     { question: 'Which budget?', header: 'Budget', multiSelect: false, options: [{ label: 'Low', description: '' }, { label: 'High', description: '' }] },

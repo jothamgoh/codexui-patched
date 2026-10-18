@@ -756,7 +756,9 @@ test('a limit continuation is dropped when the user resumes the chat during the 
 
 test('with nobody logged in to the desktop, Claude status and accounts say so instead of "signed out"', async () => {
   const scratch = await mkdtemp(join(directory, 'host-down-'))
-  const socketPath = join(scratch, 'host.sock')
+  // Linux limits socket paths to 108 bytes, which a repo-relative path can exceed.
+  const socketDirectory = await mkdtemp('/tmp/codexui-host-down-')
+  const socketPath = join(socketDirectory, 'host.sock')
   const backend = new ClaudeBackend(join(scratch, 'threads.json'), { accountSwitcherPath: '/fixture/cswap', claudeConfigDir: join(scratch, 'claude'), hostSocketPath: socketPath })
   backend.readRuntime = async () => ({ connected: true, account: { email: 'me@example.test', apiProvider: 'firstParty' }, models: [] })
   try {
@@ -766,5 +768,5 @@ test('with nobody logged in to the desktop, Claude status and accounts say so in
     try {
       assert.equal((await backend.readProviderStatus(true)).connected, true)
     } finally { await new Promise((resolve) => server.close(resolve)) }
-  } finally { backend.dispose() }
+  } finally { backend.dispose(); await rm(socketDirectory, { recursive: true, force: true }) }
 })

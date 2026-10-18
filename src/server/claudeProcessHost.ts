@@ -216,7 +216,13 @@ export async function startClaudeProcessHost(socketPath: string): Promise<Server
       resolve()
     })
   })
-  chmodSync(socketPath, 0o600)
+  try {
+    chmodSync(socketPath, 0o600)
+  } catch (error) {
+    // Never leave a socket listening that other local users might reach.
+    server.close()
+    throw error
+  }
   return server
 }
 

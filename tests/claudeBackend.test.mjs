@@ -1143,7 +1143,7 @@ exit 7
 test('reports a missing host instead of hanging', async () => {
   const child = spawnThroughHost(join(tmpdir(), `missing-${Date.now()}.sock`), { command: '/usr/bin/claude', args: [], env: {} })
   const failure = await new Promise((resolve) => child.once('error', resolve))
-  assert.match(failure.message, /session host is not running/u)
+  assert.match(failure.message, /nobody is logged in to this Mac/u)
 })
 
 test('gives Claude chats the scheduled-task tool with their own model for new chats', async () => {

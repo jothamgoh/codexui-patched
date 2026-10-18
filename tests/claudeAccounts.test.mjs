@@ -753,3 +753,18 @@ test('a limit continuation is dropped when the user resumes the chat during the 
   assert.deepEqual(f.notices, [])
   await f.done()
 })
+
+test('with nobody logged in to the desktop, Claude status and accounts say so instead of "signed out"', async () => {
+  const scratch = await mkdtemp(join(directory, 'host-down-'))
+  const socketPath = join(scratch, 'host.sock')
+  const backend = new ClaudeBackend(join(scratch, 'threads.json'), { accountSwitcherPath: '/fixture/cswap', claudeConfigDir: join(scratch, 'claude'), hostSocketPath: socketPath })
+  backend.readRuntime = async () => ({ connected: true, account: { email: 'me@example.test', apiProvider: 'firstParty' }, models: [] })
+  try {
+    await assert.rejects(backend.readProviderStatus(true), /nobody is logged in to this Mac's desktop/u)
+    assert.match((await backend.accounts.snapshot(true)).notice, /nobody is logged in to this Mac's desktop/u)
+    const server = await startClaudeProcessHost(socketPath)
+    try {
+      assert.equal((await backend.readProviderStatus(true)).connected, true)
+    } finally { await new Promise((resolve) => server.close(resolve)) }
+  } finally { backend.dispose() }
+})

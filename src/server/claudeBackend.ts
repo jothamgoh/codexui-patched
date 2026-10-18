@@ -23,7 +23,7 @@ import type {
 } from '@anthropic-ai/claude-agent-sdk'
 import { getCodexUiChildEnv } from './envFile'
 import { claudeComputerUseNeedsApproval, loadClaudeComputerUseMcpConfig } from './claudeComputerUse'
-import { spawnThroughHost } from './claudeProcessHost'
+import { CLAUDE_HOST_DOWN_MESSAGE, isClaudeHostReachable, spawnThroughHost } from './claudeProcessHost'
 import { ClaudeAccountSwitcher, resolveCSwapExecutable, type CSwapResult } from './claudeAccountSwitcher'
 import {
   claudeConfigDir,
@@ -959,6 +959,10 @@ export class ClaudeBackend {
     })
   }
 
+  private async hostIsDown(): Promise<boolean> {
+    return Boolean(this.hostSocketPath) && !(await isClaudeHostReachable(this.hostSocketPath))
+  }
+
   private baseOptions(cwd?: string): Options {
     const options: Options = {
       cwd: cwd || homedir(),
@@ -1018,7 +1022,7 @@ export class ClaudeBackend {
       })
       // Never return or log raw CLI errors: account tools handle credentials.
       child.stderr.on('data', () => undefined)
-      child.once('error', () => finish(new Error('Could not start claude-swap in the Claude host.')))
+      child.once('error', (error) => finish(new Error(error.message === CLAUDE_HOST_DOWN_MESSAGE ? error.message : 'Could not start claude-swap in the Claude host.')))
       child.once('close', (code) => finish(undefined, code))
       child.stdin.on('error', () => undefined)
       child.stdin.end(args[0] === 'remove' ? 'y\n' : '')
@@ -1100,6 +1104,7 @@ export class ClaudeBackend {
   }
 
   async readProviderStatus(force = false): Promise<ClaudeProviderStatus> {
+    if (await this.hostIsDown()) throw new Error(CLAUDE_HOST_DOWN_MESSAGE)
     const runtime = await this.readRuntime(force)
     return {
       id: 'claude',
@@ -1672,6 +1677,7 @@ export class ClaudeBackend {
     model: string
     effort: EffortLevel | null
   }> {
+    if (await this.hostIsDown()) throw new Error(CLAUDE_HOST_DOWN_MESSAGE)
     const runtime = await this.readRuntime()
     if (!runtime.connected) throw new Error('Claude is signed out. Sign in to Claude before starting a Claude turn.')
     const requestedModelId = isClaudeModelId(requestedModel) ? requestedModel : ''
@@ -2467,6 +2473,8 @@ export class ClaudeBackend {
       for await (const message of runner.query) this.handleMessage(runner, message)
     } catch (error) {
       failure = error instanceof Error ? error.message : String(error)
+      // The SDK reports only the exit code; a vanished host is the usual cause.
+      if (/exited with code/u.test(failure) && await this.hostIsDown()) failure = CLAUDE_HOST_DOWN_MESSAGE
     } finally {
       runner.closed = true
       if (this.runners.get(runner.sessionId) === runner) this.runners.delete(runner.sessionId)

@@ -54,6 +54,25 @@ function parseJson(payload: Buffer): Record<string, unknown> {
   return value !== null && typeof value === 'object' && !Array.isArray(value) ? value as Record<string, unknown> : {}
 }
 
+/** The host lives in the desktop login, so it is gone whenever nobody is logged in there. */
+export const CLAUDE_HOST_DOWN_MESSAGE = "Claude can't run because nobody is logged in to this Mac's desktop. Log in to the Mac, in person or with Screen Sharing, and Claude comes back within a minute. Your Claude accounts are still signed in."
+
+function isHostDownError(error: unknown): boolean {
+  const code = (error as NodeJS.ErrnoException | null)?.code
+  return code === 'ENOENT' || code === 'ECONNREFUSED'
+}
+
+/** False only when nothing is listening; a slow or busy host still counts as running. */
+export function isClaudeHostReachable(socketPath: string, timeoutMs = 2_000): Promise<boolean> {
+  return new Promise((resolve) => {
+    const socket = connect(socketPath)
+    const done = (reachable: boolean): void => { clearTimeout(timer); socket.destroy(); resolve(reachable) }
+    const timer = setTimeout(() => done(true), timeoutMs)
+    socket.once('connect', () => done(true))
+    socket.once('error', (error) => done(!isHostDownError(error)))
+  })
+}
+
 export type HostSpawnRequest = {
   command: string
   args: string[]
@@ -255,10 +274,7 @@ export class HostedProcess extends EventEmitter {
       }
     })
     socket.on('error', (error) => {
-      const code = (error as NodeJS.ErrnoException).code
-      this.fail(code === 'ENOENT' || code === 'ECONNREFUSED'
-        ? new Error('The Claude session host is not running. Start it in your login session to use Claude.')
-        : error)
+      this.fail(isHostDownError(error) ? new Error(CLAUDE_HOST_DOWN_MESSAGE) : error)
     })
     socket.on('close', () => {
       if (!this.settled) this.finish(1, null)

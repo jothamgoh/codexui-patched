@@ -309,6 +309,26 @@ test('refresh clicks and many tabs share a one-minute cswap snapshot', async () 
   f.manager.dispose()
 })
 
+test('a recovered Claude host clears the read error on refresh instead of waiting out the backoff', async () => {
+  let f
+  let hostUp = false
+  f = await fixture({ run: async (command, args) => {
+    if (!hostUp) { f.calls.push(args); throw new Error('Could not start claude-swap in the Claude host.') }
+    return f.run(command, args)
+  } })
+  for (let minute = 0; minute < 8; minute += 1) { await f.manager.tick(); f.advance(CLAUDE_CSWAP_CHECK_MS + 1) }
+  const down = await f.manager.snapshot()
+  assert.equal(down.accounts.length, 0)
+  assert.match(down.notice, /Could not start claude-swap/u)
+  hostUp = true
+  const polled = await f.manager.snapshot()
+  assert.match(polled.notice, /Could not start claude-swap/u, 'background polls keep the failure backoff')
+  const refreshed = await f.manager.snapshot(true)
+  assert.equal(refreshed.accounts.length, 3)
+  assert.equal(refreshed.notice, null)
+  f.manager.dispose()
+})
+
 test('429 preserves cached bars while cswap remains responsible for its retry deadline', async () => {
   let f
   f = await fixture({ run: async (_command, args) => {

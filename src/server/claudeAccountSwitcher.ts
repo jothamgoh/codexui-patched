@@ -101,6 +101,7 @@ export class ClaudeAccountSwitcher {
   private nextReadAt = 0
   private nextAutoAt = 0
   private failures = 0
+  private readFailure: Error | null = null
   private readonly limitRecoveries: LimitRecoveryRequest[] = []
 
   constructor(private readonly options: Options) {}
@@ -133,12 +134,13 @@ export class ClaudeAccountSwitcher {
     return this.options.run(this.options.executable, args)
   }
 
-  private async refresh(inventoryChanged = false): Promise<void> {
+  private async refresh(inventoryChanged = false, force = false): Promise<void> {
     if (!this.options.executable) return
     // Refresh buttons and multiple browser tabs share the same polling budget.
     // Account mutations may refresh inventory; cswap's persistent per-account
     // collector still enforces its own cache and Retry-After backoff then.
-    if (!inventoryChanged && this.now() < this.nextReadAt) return
+    // A forced refresh skips the failure backoff, so a recovered host shows up at once.
+    if (!inventoryChanged && !(force && this.readFailure) && this.now() < this.nextReadAt) return
     if (this.reading) return this.reading
     const pending = (async () => {
       this.nextReadAt = this.now() + CLAUDE_CSWAP_CHECK_MS
@@ -148,6 +150,7 @@ export class ClaudeAccountSwitcher {
       const previous = this.cached
       this.cached = { at: this.now(), ...data }
       this.failures = 0
+      this.readFailure = null
       for (const account of this.cached.accounts) {
         if (!account.limits.length) {
           const last = previous?.accounts.find((old) => old.number === account.number && old.email === account.email)
@@ -160,23 +163,24 @@ export class ClaudeAccountSwitcher {
     })()
     this.reading = pending
     try { await pending } catch (error) {
+      this.readFailure = error instanceof Error ? error : new Error('Could not read Claude accounts.')
       this.failures += 1
       for (const account of this.cached?.accounts ?? []) account.usageIsStale = true
       this.nextReadAt = Math.max(this.nextReadAt, this.now() + Math.min(60 * 60_000, CLAUDE_CSWAP_CHECK_MS * 2 ** Math.min(this.failures - 1, 6)))
-      throw error
+      throw this.readFailure
     } finally { if (this.reading === pending) this.reading = null }
   }
 
-  async snapshot(_force = false): Promise<ClaudeAccountPool> {
+  async snapshot(force = false): Promise<ClaudeAccountPool> {
     await this.initialize()
     // Don't start a credential-refreshing usage reader during a credential change.
     if (!this.switching && !this.options.isAuthenticating?.()) {
-      try { await this.refresh() } catch (error) { this.notice = error instanceof Error ? error.message : 'Could not read Claude accounts.' }
+      await this.refresh(false, force).catch(() => undefined)
     }
     return {
       installed: Boolean(this.options.executable), enabled: this.enabled, threshold: this.threshold,
       activeAccountNumber: this.cached?.active ?? null, pendingAccountNumber: this.pending,
-      switching: this.switching || Boolean(this.options.isAuthenticating?.()), accounts: this.cached?.accounts ?? [], notice: this.notice,
+      switching: this.switching || Boolean(this.options.isAuthenticating?.()), accounts: this.cached?.accounts ?? [], notice: this.readFailure?.message ?? this.notice,
       checkedAt: this.cached ? new Date(this.cached.at).toISOString() : null,
       nextCheckAt: this.nextReadAt ? new Date(this.nextReadAt).toISOString() : null,
     }
@@ -519,6 +523,7 @@ export class ClaudeAccountSwitcher {
       }
       else if (result.code === 3) this.notice = 'No saved account is ready. Add an account or wait for its usage to reset.'
     }).catch((error: unknown) => {
+      if (error === this.readFailure) return
       this.notice = error instanceof Error ? error.message : 'Could not switch Claude accounts.'
     })
     this.ticking = pending

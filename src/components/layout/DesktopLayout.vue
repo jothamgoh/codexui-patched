@@ -67,6 +67,7 @@ function loadSidebarWidth(): number {
 
 const sidebarWidth = ref(loadSidebarWidth())
 const viewportHeightPx = ref<number | null>(null)
+const viewportOffsetTopPx = ref(0)
 const keyboardOpen = ref(false)
 let viewportHeightRafId = 0
 let viewportStabilizeTimer: ReturnType<typeof setTimeout> | null = null
@@ -82,7 +83,7 @@ function isEditableTarget(target: Element | null): boolean {
   return tagName === 'INPUT' || tagName === 'TEXTAREA' || tagName === 'SELECT'
 }
 
-function commitViewportMetrics(height: number): void {
+function commitViewportMetrics({ height, offsetTop }: ViewportMetrics): void {
   if (height > 0) {
     viewportHeightPx.value = height
     document.documentElement.style.setProperty('--visual-viewport-height', `${height}px`)
@@ -93,19 +94,24 @@ function commitViewportMetrics(height: number): void {
     isEditableTarget(active) &&
     typeof window !== 'undefined' &&
     window.innerHeight - height > 120
+  // iOS pans the visible area down to reveal the focused field when the keyboard opens.
+  // Follow that pan, or the shrunken layout stays at the page top and only its bottom shows.
+  viewportOffsetTopPx.value = keyboardOpen.value ? offsetTop : 0
 }
 
-function readViewportHeight(): number {
-  if (typeof window === 'undefined') {
-    return 0
-  }
+type ViewportMetrics = { height: number; offsetTop: number }
+
+function readViewportMetrics(): ViewportMetrics {
   const viewport = window.visualViewport
-  return Math.round(viewport?.height ?? window.innerHeight)
+  return {
+    height: Math.round(viewport?.height ?? window.innerHeight),
+    offsetTop: Math.max(0, Math.round(viewport?.offsetTop ?? 0)),
+  }
 }
 
 function updateViewportHeight(): void {
   if (typeof window === 'undefined') return
-  const height = readViewportHeight()
+  const metrics = readViewportMetrics()
   const active = document.activeElement
   const shouldStabilize = isIOS && isEditableTarget(active)
 
@@ -115,13 +121,13 @@ function updateViewportHeight(): void {
   }
 
   if (!shouldStabilize) {
-    commitViewportMetrics(height)
+    commitViewportMetrics(metrics)
     return
   }
 
   viewportStabilizeTimer = setTimeout(() => {
     viewportStabilizeTimer = null
-    commitViewportMetrics(readViewportHeight())
+    commitViewportMetrics(readViewportMetrics())
   }, 90)
 }
 
@@ -140,11 +146,13 @@ onMounted(() => {
   updateViewportHeight()
   window.addEventListener('resize', requestViewportHeightUpdate)
   window.visualViewport?.addEventListener('resize', requestViewportHeightUpdate)
+  window.visualViewport?.addEventListener('scroll', requestViewportHeightUpdate)
 })
 
 onUnmounted(() => {
   window.removeEventListener('resize', requestViewportHeightUpdate)
   window.visualViewport?.removeEventListener('resize', requestViewportHeightUpdate)
+  window.visualViewport?.removeEventListener('scroll', requestViewportHeightUpdate)
   if (viewportStabilizeTimer) {
     clearTimeout(viewportStabilizeTimer)
     viewportStabilizeTimer = null
@@ -160,6 +168,9 @@ const layoutStyle = computed(() => {
   const style: Record<string, string> = {}
   if (viewportHeightPx.value && viewportHeightPx.value > 0) {
     style['--layout-viewport-height'] = `${viewportHeightPx.value}px`
+  }
+  if (viewportOffsetTopPx.value > 0) {
+    style['--layout-viewport-top'] = `${viewportOffsetTopPx.value}px`
   }
   if (isMobile.value || props.isSidebarCollapsed) {
     style['--sidebar-width'] = '0px'
@@ -206,6 +217,7 @@ function onResizeHandleMouseDown(event: MouseEvent): void {
   @apply grid bg-slate-100 text-slate-900 overflow-hidden;
   position: fixed;
   inset: 0;
+  top: var(--layout-viewport-top, 0px);
   width: 100%;
   height: 100vh;
   height: 100dvh;

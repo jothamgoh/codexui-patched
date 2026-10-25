@@ -33,9 +33,20 @@ Preconditions:
   `getByRole('button', { name: 'Send message' })`. The URL changes to `#/thread/<id>`.
 - **Reply.** Wait for `.conversation-item` with the text `VERIFYOK` (allow 120 seconds).
 - **Proof.** Take a screenshot of the thread. Confirm that `$VERIFY_DIR/codex-home/sessions/**/rollout-*<id>.jsonl` exists.
+- **Phone keyboard.** Run this check after any change to the composer, the layout, or focus
+  handling. It works UI-only. Open the session with `{ mobile: true }` and call
+  `installPhoneKeyboard(page)` from `scripts/phoneKeyboard.mjs` before `s.go('/')`. Tap the
+  composer, call `raiseKeyboard(page)`, and fill the composer. Call `tap()` on `Send message`
+  once, wait 100 ms, and call `lowerKeyboard(page)`. That one tap must send a `thread/start`
+  or `turn/start` request to `/codex-api/rpc`, and focus must leave the composer. Repeat with
+  `engine: 'webkit'`.
 
 ## Gotchas
 
+- A headless browser has no on-screen keyboard, so the layout never shrinks unless you fake
+  the keyboard. If anything moves the layout while focus leaves the composer, the tapped
+  button slides out from under the tap. The click then lands on `div.content-grid`, and the
+  tap only closes the keyboard (fixed in f4d3579).
 - The reply text can appear before the turn finishes. The screenshot may still show
   `Writing response` and a `RUNNING` badge. Wait for `Running 0` in `Filter chats` when the
   final state matters.

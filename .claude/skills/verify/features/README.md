@@ -20,6 +20,8 @@ This folder is the maintained source for verifying CodexUI's user-facing behavio
 - Routes are hash routes: `s.go('/boards')` opens `http://127.0.0.1:5181/#/boards`.
 - Drive desktop first. Repeat with `{ mobile: true }` when the change affects layout, the
   composer, or touch.
+- For the phone keyboard, fake it with `scripts/phoneKeyboard.mjs` and run the one-tap Send
+  check in [new-chat.md](./new-chat.md).
 
 ## Proof and skip reporting
 

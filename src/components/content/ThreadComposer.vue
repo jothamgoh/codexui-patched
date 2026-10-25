@@ -324,7 +324,6 @@
           :placeholder="placeholderText"
           :disabled="isInteractionDisabled"
           @input="onInputChange"
-          @focus="onInputFocus"
           @keydown="onInputKeydown"
           @paste="onInputPaste"
         />
@@ -704,10 +703,6 @@ const fileMentionHighlightedIndex = ref(0)
 let fileMentionSearchToken = 0
 let fileMentionDebounceTimer: ReturnType<typeof setTimeout> | null = null
 let pluginLoadToken = 0
-const isIOS =
-  typeof navigator !== 'undefined' &&
-  (/iP(ad|hone|od)/.test(navigator.userAgent) ||
-    (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1))
 const COMPOSER_INPUT_FALLBACK_MAX_HEIGHT = 180
 
 const allReasoningOptions: Array<{ value: ReasoningEffort; label: string }> = [
@@ -1312,26 +1307,6 @@ function onInputChange(event: Event): void {
     isSlashMenuOpen.value = false
   }
   updateFileMentionState()
-}
-
-function stabilizeMobileComposerFocus(): void {
-  if (!isIOS || typeof window === 'undefined') return
-
-  const resetPageScroll = () => {
-    window.scrollTo(0, 0)
-    document.documentElement.scrollTop = 0
-    document.body.scrollTop = 0
-  }
-
-  resetPageScroll()
-  window.requestAnimationFrame(() => {
-    resetPageScroll()
-    window.requestAnimationFrame(resetPageScroll)
-  })
-}
-
-function onInputFocus(): void {
-  stabilizeMobileComposerFocus()
 }
 
 function onInputKeydown(event: KeyboardEvent): void {

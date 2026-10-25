@@ -1,5 +1,5 @@
 <template>
-  <div class="desktop-layout" :class="{ 'is-mobile': isMobile, 'is-keyboard-open': isKeyboardOpen }" :style="layoutStyle">
+  <div ref="layoutRef" class="desktop-layout" :class="{ 'is-mobile': isMobile, 'is-keyboard-open': isKeyboardOpen }" :style="layoutStyle">
     <Teleport v-if="isMobile" to="body">
       <Transition name="drawer">
         <div v-if="!isSidebarCollapsed" class="mobile-drawer-backdrop" @click="$emit('close-sidebar')">
@@ -30,8 +30,9 @@
 </template>
 
 <script setup lang="ts">
-import { computed, onMounted, onUnmounted, ref } from 'vue'
+import { computed, nextTick, onMounted, onUnmounted, ref } from 'vue'
 import { useMobile } from '../../composables/useMobile'
+import { keepFieldAboveKeyboard, measureKeyboardLayout, raisesKeyboard } from '../../utils/keyboardViewport'
 
 const props = withDefaults(
   defineProps<{
@@ -66,101 +67,63 @@ function loadSidebarWidth(): number {
 }
 
 const sidebarWidth = ref(loadSidebarWidth())
+const layoutRef = ref<HTMLElement | null>(null)
 const viewportHeightPx = ref<number | null>(null)
 const viewportOffsetTopPx = ref(0)
-const keyboardOpen = ref(false)
-let viewportHeightRafId = 0
-let viewportStabilizeTimer: ReturnType<typeof setTimeout> | null = null
-const isIOS =
-  typeof navigator !== 'undefined' &&
-  (/iP(ad|hone|od)/.test(navigator.userAgent) ||
-    (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1))
 
-function isEditableTarget(target: Element | null): boolean {
-  if (!(target instanceof HTMLElement)) return false
-  if (target.isContentEditable) return true
-  const tagName = target.tagName
-  return tagName === 'INPUT' || tagName === 'TEXTAREA' || tagName === 'SELECT'
-}
+/**
+ * Fits the layout to the part of the window above the keyboard, undoing iOS's pan to a field in
+ * the layout (see keyboardViewport.ts). With `reveal`, the focused field is also kept in view.
+ */
+function syncViewport(focused: Element | null = document.activeElement, reveal = false): void {
+  const field = raisesKeyboard(focused) ? focused : null
+  const inLayout = field !== null && layoutRef.value?.contains(field) === true
+  const before = viewportHeightPx.value
+  const layout = measureKeyboardLayout(window, focused, field === null || inLayout)
+  viewportHeightPx.value = layout.height
+  viewportOffsetTopPx.value = layout.top
+  if (layout.height === null) document.documentElement.style.removeProperty('--visual-viewport-height')
+  else document.documentElement.style.setProperty('--visual-viewport-height', `${layout.height}px`)
 
-function commitViewportMetrics({ height, offsetTop }: ViewportMetrics): void {
-  if (height > 0) {
-    viewportHeightPx.value = height
-    document.documentElement.style.setProperty('--visual-viewport-height', `${height}px`)
-  }
-  const active = document.activeElement
-  keyboardOpen.value =
-    isMobile.value &&
-    isEditableTarget(active) &&
-    typeof window !== 'undefined' &&
-    window.innerHeight - height > 120
-  // iOS pans the visible area down to reveal the focused field when the keyboard opens.
-  // Follow that pan, or the shrunken layout stays at the page top and only its bottom shows.
-  viewportOffsetTopPx.value = keyboardOpen.value ? offsetTop : 0
-}
-
-type ViewportMetrics = { height: number; offsetTop: number }
-
-function readViewportMetrics(): ViewportMetrics {
-  const viewport = window.visualViewport
-  return {
-    height: Math.round(viewport?.height ?? window.innerHeight),
-    offsetTop: Math.max(0, Math.round(viewport?.offsetTop ?? 0)),
+  if (field === null || !inLayout || layout.height === null) return
+  // The keyboard rose or grew over the field, or the field took focus under it.
+  if (reveal || before === null || layout.height < before) {
+    const keyboardTop = layout.top + layout.height
+    void nextTick(() => keepFieldAboveKeyboard(field, keyboardTop, window))
   }
 }
 
-function updateViewportHeight(): void {
-  if (typeof window === 'undefined') return
-  const metrics = readViewportMetrics()
-  const active = document.activeElement
-  const shouldStabilize = isIOS && isEditableTarget(active)
-
-  if (viewportStabilizeTimer) {
-    clearTimeout(viewportStabilizeTimer)
-    viewportStabilizeTimer = null
-  }
-
-  if (!shouldStabilize) {
-    commitViewportMetrics(metrics)
-    return
-  }
-
-  viewportStabilizeTimer = setTimeout(() => {
-    viewportStabilizeTimer = null
-    commitViewportMetrics(readViewportMetrics())
-  }, 90)
+function onViewportChange(): void {
+  syncViewport()
 }
 
-function requestViewportHeightUpdate(): void {
-  if (typeof window === 'undefined') return
-  if (viewportHeightRafId !== 0) {
-    window.cancelAnimationFrame(viewportHeightRafId)
-  }
-  viewportHeightRafId = window.requestAnimationFrame(() => {
-    viewportHeightRafId = 0
-    updateViewportHeight()
-  })
+function onFocusIn(): void {
+  syncViewport(document.activeElement, true)
+}
+
+// Focus leaving every field lets the layout down at once: WebKit reports the keyboard gone only
+// after it has slid away, and a layout held short until then leaves blank space under it.
+function onFocusOut(event: FocusEvent): void {
+  syncViewport(event.relatedTarget instanceof Element ? event.relatedTarget : null)
 }
 
 onMounted(() => {
-  updateViewportHeight()
-  window.addEventListener('resize', requestViewportHeightUpdate)
-  window.visualViewport?.addEventListener('resize', requestViewportHeightUpdate)
-  window.visualViewport?.addEventListener('scroll', requestViewportHeightUpdate)
+  syncViewport()
+  window.addEventListener('resize', onViewportChange)
+  window.addEventListener('scroll', onViewportChange)
+  window.visualViewport?.addEventListener('resize', onViewportChange)
+  window.visualViewport?.addEventListener('scroll', onViewportChange)
+  document.addEventListener('focusin', onFocusIn)
+  document.addEventListener('focusout', onFocusOut)
 })
 
 onUnmounted(() => {
-  window.removeEventListener('resize', requestViewportHeightUpdate)
-  window.visualViewport?.removeEventListener('resize', requestViewportHeightUpdate)
-  window.visualViewport?.removeEventListener('scroll', requestViewportHeightUpdate)
-  if (viewportStabilizeTimer) {
-    clearTimeout(viewportStabilizeTimer)
-    viewportStabilizeTimer = null
-  }
-  if (viewportHeightRafId !== 0) {
-    window.cancelAnimationFrame(viewportHeightRafId)
-    viewportHeightRafId = 0
-  }
+  window.removeEventListener('resize', onViewportChange)
+  window.removeEventListener('scroll', onViewportChange)
+  window.visualViewport?.removeEventListener('resize', onViewportChange)
+  window.visualViewport?.removeEventListener('scroll', onViewportChange)
+  document.removeEventListener('focusin', onFocusIn)
+  document.removeEventListener('focusout', onFocusOut)
   document.documentElement.style.removeProperty('--visual-viewport-height')
 })
 
@@ -182,7 +145,7 @@ const layoutStyle = computed(() => {
   return style
 })
 
-const isKeyboardOpen = computed(() => keyboardOpen.value)
+const isKeyboardOpen = computed(() => isMobile.value && viewportHeightPx.value !== null)
 
 function saveSidebarWidth(value: number): void {
   if (typeof window === 'undefined') return

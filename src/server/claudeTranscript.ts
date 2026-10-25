@@ -408,7 +408,7 @@ export function normalizeCommandText(text: string): string | null {
   return `${command} ${args}`
 }
 
-function userMessageItem(id: string, content: UserContent): ThreadItem {
+export function userMessageItem(id: string, content: UserContent): ThreadItem {
   return {
     type: 'userMessage',
     id,

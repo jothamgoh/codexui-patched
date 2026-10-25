@@ -736,7 +736,8 @@ function haveSameUserMessagePayload(first: UiMessage, second: UiMessage): boolea
     first.role === 'user' &&
     second.role === 'user' &&
     normalizeMessageText(first.text) === normalizeMessageText(second.text) &&
-    areStringArraysEqual(first.images, second.images) &&
+    // Count photos rather than compare them: Claude saves a large photo downsized.
+    (first.images?.length ?? 0) === (second.images?.length ?? 0) &&
     areFileAttachmentsEqual(first.fileAttachments, second.fileAttachments) &&
     areThreadReferencesEqual(first.threadReferences, second.threadReferences) &&
     areResponseAnnotationsEqual(first.responseAnnotations, second.responseAnnotations)

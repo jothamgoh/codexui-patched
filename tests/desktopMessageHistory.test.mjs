@@ -589,3 +589,22 @@ test('a short re-read that fits nothing on screen reads the usual tail instead',
   await flush()
   assert.deepEqual(f.state.messages.value.map((item) => item.id).filter((id) => id === 'earlier' || id === 'stranger'), ['earlier', 'stranger'])
 })
+
+test('a sent photo that the server saved downsized shows once, as saved', async (t) => {
+  const f = fixture(t)
+  const opening = await f.read()
+  opening.response.resolve(tail([], 49, 50, false))
+  await opening.pending
+  const sent = 'data:image/png;base64,FULL-SIZE'
+  const send = f.state.sendMessageToSelectedThread('What is this?', [sent])
+  await flush()
+  const userRows = () => f.state.messages.value.filter((item) => item.role === 'user')
+  assert.deepEqual(userRows().map((item) => item.images), [[sent]], 'the photo shows as soon as it is sent')
+  // Claude saves a large photo downsized, so the saved copy is not the image that was sent.
+  const saved = message('What is this?', { id: 'question', role: 'user', messageType: 'userMessage', images: ['data:image/png;base64,DOWNSIZED'], orderKey: '000050:000001:000000' })
+  f.reads.at(-1).resolve(tail([saved], 50, 51))
+  await send
+  await flush()
+  assert.deepEqual(userRows().map((item) => item.id), ['question'], 'the message is not shown twice')
+  assert.deepEqual(userRows()[0].images, ['data:image/png;base64,DOWNSIZED'])
+})

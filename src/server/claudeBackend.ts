@@ -43,6 +43,7 @@ import {
   parseTranscriptLine,
   readApiUsage,
   readString,
+  readUserContent,
   reasoningItemId,
   resolveMainChain,
   rewindPointForRollback,
@@ -50,6 +51,7 @@ import {
   textItemId,
   toolUseItem,
   truncateChain,
+  userMessageItem,
   type ClaudeTokenUsage,
   type ClaudeToolUse,
   type ClaudeTurn,
@@ -1742,14 +1744,12 @@ export class ClaudeBackend {
     if (!includeTurns) return this.threadPayload(sessionId, meta)
     const turns: ClaudeTurn[] = [...summary.turns]
     if (live && !turns.some((turn) => turn.id === live.turnId)) {
-      // Claude has not written the new prompt yet; keep the turn visible as running.
-      const content = live.userMessage?.message.content
-      const text = typeof content === 'string'
-        ? content
-        : Array.isArray(content) ? content.map((block) => readString(asRecord(block)?.text)).join('\n') : ''
+      // Claude has not written the new prompt yet; keep the turn visible as running, with the
+      // message as sent, photos included, so the chat can match it to the copy it shows.
+      const content = live.userMessage ? readUserContent(live.userMessage.message.content) : null
       turns.push({
         id: live.turnId,
-        items: text ? [{ type: 'userMessage', id: live.turnId, content: [{ type: 'text', text }] }] : [],
+        items: content?.text || content?.images.length ? [userMessageItem(live.turnId, content)] : [],
         status: 'inProgress',
         error: null,
         startedAtMs: live.startedAtMs,

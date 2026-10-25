@@ -557,6 +557,22 @@ test('measures a chat past 200K tokens against 1M before Claude Code reports its
   })
 })
 
+test('a reply Claude has not saved yet shows the message as sent, photos included', async () => {
+  await withMeteredRunner(async ({ backend, runner, sessionId, directory }) => {
+    await backend.store.update(sessionId, { cwd: directory, model: 'claude-default', effort: null, createdAtMs: Date.now() })
+    const photo = { type: 'image', source: { type: 'base64', media_type: 'image/png', data: 'FULLSIZE' } }
+    const sent = { role: 'user', content: [{ type: 'text', text: 'What is this?' }, photo] }
+    backend.beginTurn(runner, 'turn-1', directory, { type: 'user', uuid: 'turn-1', session_id: sessionId, parent_tool_use_id: null, message: sent })
+    const { thread } = await backend.rpc('thread/read', { threadId: `claude-${sessionId}`, includeTurns: true })
+    assert.equal(thread.turns.at(-1).status, 'inProgress')
+    assert.deepEqual(thread.turns.at(-1).items, [{
+      type: 'userMessage',
+      id: 'turn-1',
+      content: [{ type: 'text', text: 'What is this?' }, { type: 'image', url: 'data:image/png;base64,FULLSIZE' }],
+    }])
+  })
+})
+
 const finishedReply = { type: 'result', subtype: 'success', is_error: false, result: '', modelUsage: recordedModelUsage }
 
 test('closes an idle Claude process after 5 minutes', async (t) => {

@@ -10,21 +10,17 @@
  * pan that shows it, and where a browser keeps its pan anyway the layout follows it.
  */
 
-/** Less of the window covered than this is browser chrome, not a keyboard. */
-const MIN_KEYBOARD_HEIGHT = 120
-
 /** How far above the keyboard a focused field's column keeps it, in CSS pixels. */
 const FIELD_MARGIN = 24
 
 export type KeyboardLayout = {
-  /** The layout's height, down to the keyboard's top; null while no keyboard covers the window. */
+  /** The layout's height: the visible area while a field has focus, null (the full window) otherwise. */
   height: number | null
   /** How far down the window the layout starts, where the browser keeps its pan. */
   top: number
 }
 
 export type KeyboardWindow = {
-  readonly innerHeight: number
   readonly scrollY: number
   readonly visualViewport: Pick<VisualViewport, 'height' | 'offsetTop' | 'scale'> | null
   scrollTo(x: number, y: number): void
@@ -39,16 +35,19 @@ export function raisesKeyboard(element: Element | null): element is HTMLElement 
 
 /**
  * The layout for the keyboard now over `view`, measured after the page's pan is scrolled back
- * when `undoPan` is set. A pinch-zoom shrinks and pans the visual viewport too, but covers
- * nothing, so a zoomed page is left as the person zoomed it.
+ * when `undoPan` is set. While a field has focus the layout takes the visible height as it
+ * stands, without judging whether a keyboard covers the rest: phones disagree on what
+ * `innerHeight` reports with the keyboard up. A pinch-zoom shrinks and pans the visual viewport
+ * too, but covers nothing, so its pan is never undone and the height is read unzoomed.
  */
 export function measureKeyboardLayout(view: KeyboardWindow, focused: Element | null, undoPan: boolean): KeyboardLayout {
   const viewport = view.visualViewport
-  if (!viewport || Math.abs(viewport.scale - 1) > 0.01) return { height: null, top: 0 }
-  if (undoPan && (viewport.offsetTop >= 1 || view.scrollY >= 1)) view.scrollTo(0, 0)
-  const height = Math.round(viewport.height)
-  if (!raisesKeyboard(focused) || view.innerHeight - height <= MIN_KEYBOARD_HEIGHT) return { height: null, top: 0 }
-  return { height, top: Math.max(0, Math.round(viewport.offsetTop)) }
+  if (!viewport) return { height: null, top: 0 }
+  const zoomed = Math.abs(viewport.scale - 1) > 0.01
+  if (undoPan && !zoomed && (viewport.offsetTop >= 1 || view.scrollY >= 1)) view.scrollTo(0, 0)
+  if (!raisesKeyboard(focused)) return { height: null, top: 0 }
+  if (zoomed) return { height: Math.round(viewport.height * viewport.scale), top: 0 }
+  return { height: Math.round(viewport.height), top: Math.max(0, Math.round(viewport.offsetTop)) }
 }
 
 /** The nearest ancestor of `element` that scrolls its content up and down. */

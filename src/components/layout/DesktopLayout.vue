@@ -70,6 +70,9 @@ const sidebarWidth = ref(loadSidebarWidth())
 const layoutRef = ref<HTMLElement | null>(null)
 const viewportHeightPx = ref<number | null>(null)
 const viewportOffsetTopPx = ref(0)
+/** The visible height while no field has focus, for telling a keyboard from a focused field. */
+const restingHeightPx = ref(0)
+let settleTimer: ReturnType<typeof setTimeout> | null = null
 
 /**
  * Fits the layout to the part of the window above the keyboard, undoing iOS's pan to a field in
@@ -82,8 +85,12 @@ function syncViewport(focused: Element | null = document.activeElement, reveal =
   const layout = measureKeyboardLayout(window, focused, field === null || inLayout)
   viewportHeightPx.value = layout.height
   viewportOffsetTopPx.value = layout.top
-  if (layout.height === null) document.documentElement.style.removeProperty('--visual-viewport-height')
-  else document.documentElement.style.setProperty('--visual-viewport-height', `${layout.height}px`)
+  if (layout.height === null) {
+    restingHeightPx.value = Math.round(window.visualViewport?.height ?? window.innerHeight)
+    document.documentElement.style.removeProperty('--visual-viewport-height')
+  } else {
+    document.documentElement.style.setProperty('--visual-viewport-height', `${layout.height}px`)
+  }
 
   if (field === null || !inLayout || layout.height === null) return
   // The keyboard rose or grew over the field, or the field took focus under it.
@@ -93,18 +100,31 @@ function syncViewport(focused: Element | null = document.activeElement, reveal =
   }
 }
 
+// Measure again once a burst of viewport events settles: a phone can report the keyboard's
+// final size after its last event.
+function settleViewport(): void {
+  if (settleTimer) clearTimeout(settleTimer)
+  settleTimer = setTimeout(() => {
+    settleTimer = null
+    syncViewport()
+  }, 150)
+}
+
 function onViewportChange(): void {
   syncViewport()
+  settleViewport()
 }
 
 function onFocusIn(): void {
   syncViewport(document.activeElement, true)
+  settleViewport()
 }
 
 // Focus leaving every field lets the layout down at once: WebKit reports the keyboard gone only
 // after it has slid away, and a layout held short until then leaves blank space under it.
 function onFocusOut(event: FocusEvent): void {
   syncViewport(event.relatedTarget instanceof Element ? event.relatedTarget : null)
+  settleViewport()
 }
 
 onMounted(() => {
@@ -124,6 +144,7 @@ onUnmounted(() => {
   window.visualViewport?.removeEventListener('scroll', onViewportChange)
   document.removeEventListener('focusin', onFocusIn)
   document.removeEventListener('focusout', onFocusOut)
+  if (settleTimer) clearTimeout(settleTimer)
   document.documentElement.style.removeProperty('--visual-viewport-height')
 })
 
@@ -145,7 +166,8 @@ const layoutStyle = computed(() => {
   return style
 })
 
-const isKeyboardOpen = computed(() => isMobile.value && viewportHeightPx.value !== null)
+const isKeyboardOpen = computed(() =>
+  isMobile.value && viewportHeightPx.value !== null && restingHeightPx.value - viewportHeightPx.value > 120)
 
 function saveSidebarWidth(value: number): void {
   if (typeof window === 'undefined') return

@@ -14,12 +14,12 @@ const { keepFieldAboveKeyboard, measureKeyboardLayout } = await import(
 /**
  * A phone window as iOS Safari measures it, 812 px tall. The keyboard shrinks the visual viewport
  * and pans it down by `offsetTop`; scrolling the window to the top undoes the pan, unless the
- * browser `keepsPan`.
+ * browser `keepsPan`. Some phones also shrink `innerHeight` with the keyboard, some do not.
  */
-function phoneWindow({ height = 812, offsetTop = 0, scale = 1, keepsPan = false } = {}) {
+function phoneWindow({ height = 812, innerHeight = 812, offsetTop = 0, scale = 1, keepsPan = false } = {}) {
   const visualViewport = { height, offsetTop, scale }
   const view = {
-    innerHeight: 812,
+    innerHeight,
     visualViewport,
     scrolls: 0,
     get scrollY() { return visualViewport.offsetTop },
@@ -40,6 +40,11 @@ test('the keyboard pan to the composer is undone, so the layout stays at the top
   assert.equal(view.visualViewport.offsetTop, 0, 'the page is no longer panned')
 })
 
+test('the layout ends at the keyboard on a phone whose window shrinks with it too', () => {
+  const view = phoneWindow({ height: 425, innerHeight: 425 })
+  assert.deepEqual(measureKeyboardLayout(view, composer, true), { height: 425, top: 0 })
+})
+
 test('where the browser keeps its pan, the layout follows it to the visible area', () => {
   const view = phoneWindow({ height: 425, offsetTop: 317, keepsPan: true })
   assert.deepEqual(measureKeyboardLayout(view, composer, true), { height: 425, top: 317 })
@@ -57,14 +62,10 @@ test('once focus leaves the field the layout fills the window, before the keyboa
   assert.equal(view.visualViewport.offsetTop, 0, 'a pan left over from the keyboard is undone too')
 })
 
-test('a pinch-zoom is left as the person zoomed it', () => {
+test('a pinch-zoom is left as the person zoomed it, and the layout keeps its unzoomed height', () => {
   const view = phoneWindow({ height: 406, offsetTop: 200, scale: 2 })
-  assert.deepEqual(measureKeyboardLayout(view, composer, true), { height: null, top: 0 })
+  assert.deepEqual(measureKeyboardLayout(view, composer, true), { height: 812, top: 0 })
   assert.equal(view.scrolls, 0)
-})
-
-test('browser chrome covering a little of the window is not a keyboard', () => {
-  assert.deepEqual(measureKeyboardLayout(phoneWindow({ height: 760 }), composer, true), { height: null, top: 0 })
 })
 
 /** An element at `top`..`bottom` in the window, inside `parent`. */

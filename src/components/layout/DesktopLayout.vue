@@ -73,6 +73,7 @@ const viewportOffsetTopPx = ref(0)
 /** The visible height while no field has focus, for telling a keyboard from a focused field. */
 const restingHeightPx = ref(0)
 let settleTimer: ReturnType<typeof setTimeout> | null = null
+let focusFrame = 0
 
 /**
  * Fits the layout to the part of the window above the keyboard, undoing iOS's pan to a field in
@@ -116,15 +117,23 @@ function onViewportChange(): void {
 }
 
 function onFocusIn(): void {
-  syncViewport(document.activeElement, true)
+  if (raisesKeyboard(document.activeElement)) syncViewport(document.activeElement, true)
+  else syncViewportNextFrame()
   settleViewport()
 }
 
-// Focus leaving every field lets the layout down at once: WebKit reports the keyboard gone only
-// after it has slid away, and a layout held short until then leaves blank space under it.
-function onFocusOut(event: FocusEvent): void {
-  syncViewport(event.relatedTarget instanceof Element ? event.relatedTarget : null)
+function onFocusOut(): void {
+  syncViewportNextFrame()
   settleViewport()
+}
+
+// Focus leaving every field lets the layout down in the next frame: WebKit reports the keyboard
+// gone only after it has slid away, and a layout held short until then leaves blank space under
+// it. Not sooner: a tap moves focus on its mousedown and aims its click after, so a layout
+// dropped in between would slide the tapped button out from under the finger.
+function syncViewportNextFrame(): void {
+  cancelAnimationFrame(focusFrame)
+  focusFrame = requestAnimationFrame(() => syncViewport())
 }
 
 onMounted(() => {
@@ -145,6 +154,7 @@ onUnmounted(() => {
   document.removeEventListener('focusin', onFocusIn)
   document.removeEventListener('focusout', onFocusOut)
   if (settleTimer) clearTimeout(settleTimer)
+  cancelAnimationFrame(focusFrame)
   document.documentElement.style.removeProperty('--visual-viewport-height')
 })
 

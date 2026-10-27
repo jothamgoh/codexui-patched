@@ -171,6 +171,7 @@
               <template #meta>
                 <span class="notification-board-label"><SquareKanban />{{ boardNameFor(item.boardId) }}</span>
                 <span aria-hidden="true">·</span><span>{{ formatRelative(item.createdAtIso) }}</span>
+                <kbd v-if="shortcutNumber(boardQuestionShortcutKey(item.questionId))" class="notification-shortcut">⌘{{ shortcutNumber(boardQuestionShortcutKey(item.questionId)) }}</kbd>
               </template>
             </NotificationRow>
             <ThreadHelpers :helpers="threadHelpers.helpersByOwnerId[boardActivity?.find((work) => work.boardId === item.boardId && work.featureId === item.featureId)?.threadId || ''] || []" :waiting-thread-ids="waitingThreadIds" @select-thread="openThread" />
@@ -187,6 +188,7 @@
               <template #meta>
                 <span v-if="item.board" class="notification-board-label"><SquareKanban />{{ item.board.boardName }}</span>
                 <span v-else>Chat</span><span aria-hidden="true">·</span><span>{{ formatRelative(item.receivedAtIso) }}</span>
+                <kbd v-if="shortcutNumber(item.threadId)" class="notification-shortcut">⌘{{ shortcutNumber(item.threadId) }}</kbd>
               </template>
             </NotificationRow>
             <ThreadHelpers :helpers="threadHelpers.helpersByOwnerId[item.threadId] || []" :waiting-thread-ids="waitingThreadIds" @select-thread="openThread" />
@@ -833,16 +835,20 @@ const recentHistory = computed(() => allRecentHistory.value.slice(0, recentLimit
 const visibleRecentHistory = computed(() =>
   activityFilter.value === 'unread' ? unreadActivity.value : recentHistory.value,
 )
-const shortcutThreadIds = computed(() => [...new Set(
-  activityFilter.value === 'unread'
+const boardQuestionShortcutKey = (questionId: string) => `board-question:${questionId}`
+/** ⌘1–9 targets in display order; "Needs you" rows lead under either filter. */
+const shortcutThreadIds = computed(() => [...new Set([
+  ...props.boardAttention.map((item) => boardQuestionShortcutKey(item.questionId)),
+  ...requestAttention.value.map((item) => item.threadId),
+  ...(activityFilter.value === 'unread'
     ? unreadActivity.value.map((item) => item.threadId)
     : [
       ...pinnedRows.value.map((row) => row.threadId),
       ...runningActivity.value.map((item) => item.id),
       ...unreadThreads.value.map((thread) => thread.id),
       ...recentHistory.value.map((item) => item.threadId),
-    ],
-)].slice(0, 9))
+    ]),
+])].slice(0, 9))
 const hiddenRecentCount = computed(() =>
   Math.max(0, allRecentHistory.value.length - DEFAULT_RECENT_LIMIT),
 )
@@ -1302,6 +1308,11 @@ function selectActivityShortcut(index: number): boolean {
   if (!isOpen.value) return false
   const threadId = shortcutThreadIds.value[index]
   if (!threadId) return false
+  const boardQuestion = props.boardAttention.find((item) => boardQuestionShortcutKey(item.questionId) === threadId)
+  if (boardQuestion) {
+    openBoardQuestion(boardQuestion)
+    return true
+  }
   const runningItem = runningActivity.value.find((candidate) => candidate.id === threadId)
   if (runningItem) {
     openRunningItem(runningItem)

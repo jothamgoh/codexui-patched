@@ -303,7 +303,7 @@ function extractResponseAnnotations(itemId: string, value: string): ResponseText
   }
 }
 
-function parseUserMessageContent(
+export function parseUserMessageContent(
   itemId: string,
   content: UserInput[] | undefined,
 ): {

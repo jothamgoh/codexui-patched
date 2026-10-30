@@ -22,7 +22,7 @@ export function sortMessagesByOrder(messages: UiMessage[]): UiMessage[] {
   return next.every((message, index) => message === messages[index]) ? messages : next
 }
 
-function formatDuration(durationMs: number): string {
+export function formatDuration(durationMs: number): string {
   if (!Number.isFinite(durationMs) || durationMs <= 0) return '<1s'
   const seconds = Math.max(1, Math.round(durationMs / 1000))
   const hours = Math.floor(seconds / 3600)

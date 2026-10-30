@@ -94,7 +94,8 @@ export type VoicePushSink = {
 const SOURCE_TIMEOUT_MS = 3_000
 const MAX_EXTRA_SUMMARIES = 8
 
-async function within<T>(promise: Promise<T>, fallback: T, timeoutMs = SOURCE_TIMEOUT_MS): Promise<T> {
+/** The promise's value, or `fallback` when it fails or takes longer than `timeoutMs`. */
+export async function within<T>(promise: Promise<T>, fallback: T, timeoutMs = SOURCE_TIMEOUT_MS): Promise<T> {
   let timer: ReturnType<typeof setTimeout> | undefined
   try {
     return await Promise.race([
@@ -106,10 +107,11 @@ async function within<T>(promise: Promise<T>, fallback: T, timeoutMs = SOURCE_TI
   }
 }
 
-/** Gathers everything the router needs; a slow or failing source degrades to empty. */
-export async function collectVoiceSnapshot(bridge: VoiceBridgeSources, push: VoicePushSink, now = Date.now()): Promise<VoiceSourceSnapshot> {
-  const [threadSummaries, titles, readState, boardSnapshot, workspaceRoots, history, pinnedThreadIds] = await Promise.all([
-    within(bridge.listThreads(), [] as unknown[]),
+export type VoiceSources = Omit<VoiceSourceSnapshot, 'threadSummaries' | 'extraSummaries'>
+
+/** Everything the snapshot holds except the chat list; a slow or failing source degrades to empty. */
+export async function collectVoiceSources(bridge: VoiceBridgeSources, push: Pick<VoicePushSink, 'readHistory'>, now = Date.now()): Promise<VoiceSources> {
+  const [titles, readState, boardSnapshot, workspaceRoots, history, pinnedThreadIds] = await Promise.all([
     within(bridge.readTitles(), {} as Record<string, string>),
     within(bridge.readReadState(), { readAtByThreadId: {}, unreadThreadIds: [] }),
     within(bridge.readProjectBoards().then((value): ProjectBoardSnapshot | null => value), null),
@@ -117,17 +119,10 @@ export async function collectVoiceSnapshot(bridge: VoiceBridgeSources, push: Voi
     within(push.readHistory(), { items: [], dismissals: [] }),
     within(bridge.readPinnedThreadIds(), [] as string[]),
   ])
-  const replyThreadIds = bridge.replyThreadIds()
-  // Running helper sub-chats are not in the main list; read them so their parent counts as running.
-  const listed = new Set(threadSummaries.map((row) => (row && typeof row === 'object' ? (row as Record<string, unknown>).id : '')))
-  const missing = replyThreadIds.filter((id) => !listed.has(id)).slice(0, MAX_EXTRA_SUMMARIES)
-  const extraSummaries = (await Promise.all(missing.map((id) => within(bridge.readThreadSummary(id), null, 1_500)))).filter(Boolean)
   return {
-    threadSummaries,
-    extraSummaries,
     titles,
     readState,
-    activeTurnThreadIds: replyThreadIds,
+    activeTurnThreadIds: bridge.replyThreadIds(),
     backgroundThreadIds: bridge.backgroundThreadIds(),
     pendingRequests: bridge.listPendingServerRequests(),
     history: history.items,
@@ -137,6 +132,19 @@ export async function collectVoiceSnapshot(bridge: VoiceBridgeSources, push: Voi
     pinnedThreadIds,
     nowMs: now,
   }
+}
+
+/** Gathers everything the router needs; a slow or failing source degrades to empty. */
+export async function collectVoiceSnapshot(bridge: VoiceBridgeSources, push: Pick<VoicePushSink, 'readHistory'>, now = Date.now()): Promise<VoiceSourceSnapshot> {
+  const [threadSummaries, sources] = await Promise.all([
+    within(bridge.listThreads(), [] as unknown[]),
+    collectVoiceSources(bridge, push, now),
+  ])
+  // Running helper sub-chats are not in the main list; read them so their parent counts as running.
+  const listed = new Set(threadSummaries.map((row) => (row && typeof row === 'object' ? (row as Record<string, unknown>).id : '')))
+  const missing = sources.activeTurnThreadIds.filter((id) => !listed.has(id)).slice(0, MAX_EXTRA_SUMMARIES)
+  const extraSummaries = (await Promise.all(missing.map((id) => within(bridge.readThreadSummary(id), null, 1_500)))).filter(Boolean)
+  return { ...sources, threadSummaries, extraSummaries }
 }
 
 /** The handler as mounted by the production server and the Vite dev server. */
@@ -170,13 +178,13 @@ export type VoiceRouteDeps = {
   log?: (line: string) => void
 }
 
-class HttpError extends Error {
+export class HttpError extends Error {
   constructor(readonly status: number, message: string) {
     super(message)
   }
 }
 
-function setJson(res: ServerResponse, status: number, payload: unknown, headers: Record<string, string> = {}): void {
+export function setJson(res: ServerResponse, status: number, payload: unknown, headers: Record<string, string> = {}): void {
   res.statusCode = status
   res.setHeader('Content-Type', 'application/json; charset=utf-8')
   res.setHeader('Cache-Control', 'no-store')
@@ -184,7 +192,7 @@ function setJson(res: ServerResponse, status: number, payload: unknown, headers:
   res.end(JSON.stringify(payload))
 }
 
-async function readBody(req: IncomingMessage, limit: number): Promise<Buffer> {
+export async function readBody(req: IncomingMessage, limit: number): Promise<Buffer> {
   const chunks: Buffer[] = []
   let size = 0
   for await (const chunk of req) {
@@ -200,10 +208,15 @@ function digest(value: string): Buffer {
   return createHash('sha256').update(value).digest()
 }
 
+/** The bearer token in `env[name]`, or null when it is unset or too short and its routes are off. */
+export function configuredBearerToken(env: NodeJS.ProcessEnv, name: string): string | null {
+  const token = (env[name] ?? '').trim()
+  return token.length >= MIN_SHORTCUT_TOKEN_LENGTH ? token : null
+}
+
 /** null when the Shortcut routes are disabled. */
 export function configuredShortcutToken(env: NodeJS.ProcessEnv): string | null {
-  const token = (env[VOICE_ENV.shortcutToken] ?? '').trim()
-  return token.length >= MIN_SHORTCUT_TOKEN_LENGTH ? token : null
+  return configuredBearerToken(env, VOICE_ENV.shortcutToken)
 }
 
 export function isAuthorizedShortcutRequest(req: IncomingMessage, token: string): boolean {

@@ -5,6 +5,7 @@ import { createWebPushTurnNotifier } from "./src/server/webPushTurnNotifier";
 import { createTelegramTurnNotifier } from "./src/server/telegramTurnNotifier";
 import { createTurnNotificationRouter } from "./src/server/turnNotificationRouter";
 import { createServerVoiceHandler } from "./src/server/voice/voiceRoutes";
+import { createServerWatchHandler } from "./src/server/watch/watchRoutes";
 import { loadCodexUiEnv } from "./src/server/envFile";
 import tailwindcss from "@tailwindcss/vite";
 import { createReadStream } from "node:fs";
@@ -121,6 +122,8 @@ export default defineConfig({
         });
         server.middlewares.use(telegramTurnNotifier.handleRequest);
         server.middlewares.use(webPushTurnNotifier.handleRequest);
+        // Before the voice routes, which claim the whole shortcut prefix.
+        server.middlewares.use(createServerWatchHandler(bridge.watch, webPushTurnNotifier));
         const voiceHandler = createServerVoiceHandler(bridge.voice, webPushTurnNotifier);
         server.middlewares.use(voiceHandler);
         server.middlewares.use(bridge);

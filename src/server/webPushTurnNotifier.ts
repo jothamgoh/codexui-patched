@@ -112,7 +112,11 @@ export type WebPushTurnNotifier = {
   /** Shows a notification on every subscribed device, even one with the app open. */
   sendCustomNotification: (notification: CustomNotification) => Promise<{ sent: number; failed: number }>
   readHistory: () => Promise<{ items: StoredNotificationHistoryItem[]; dismissals: StoredNotificationDismissal[] }>
+  markHistoryRead: (selection: HistoryReadSelection) => Promise<StoredNotificationHistoryItem[]>
 }
+
+/** Activity to mark read: entries by id, every entry of one chat, or everything. */
+export type HistoryReadSelection = { ids?: Iterable<string>; threadId?: string; all?: boolean }
 
 export type CustomNotification = {
   title: string
@@ -699,6 +703,20 @@ export function createWebPushTurnNotifier(): WebPushTurnNotifier {
     return { items: [...state.history], dismissals: [...state.dismissals] }
   }
 
+  /** Marks the chosen activity read, as opening it in the notification panel does. Returns the history. */
+  const markHistoryRead = async (selection: HistoryReadSelection): Promise<StoredNotificationHistoryItem[]> => {
+    const ids = new Set(selection.ids ?? [])
+    return mutateState((currentState) => {
+      const readAt = new Date().toISOString()
+      for (const item of currentState.history) {
+        if (selection.all === true || ids.has(item.id) || (Boolean(selection.threadId) && item.threadId === selection.threadId)) {
+          item.readAt = item.readAt ?? readAt
+        }
+      }
+      return currentState.history
+    })
+  }
+
   // What each device's service worker reported for its latest push, so a lost
   // alert can be placed: never reached the device, or shown but hidden by the OS.
   const receipts = new Map<string, PushReceipt>()
@@ -786,15 +804,7 @@ export function createWebPushTurnNotifier(): WebPushTurnNotifier {
           return
         }
 
-        const history = await mutateState((currentState) => {
-          const readAt = new Date().toISOString()
-          for (const item of currentState.history) {
-            if (markAll || ids.has(item.id) || item.threadId === threadId) {
-              item.readAt = item.readAt ?? readAt
-            }
-          }
-          return currentState.history
-        })
+        const history = await markHistoryRead({ ids, threadId, all: markAll })
         setJson(res, 200, {
           data: {
             items: history,
@@ -982,5 +992,6 @@ export function createWebPushTurnNotifier(): WebPushTurnNotifier {
     removeThreadHistory,
     sendCustomNotification,
     readHistory,
+    markHistoryRead,
   }
 }

@@ -8,6 +8,7 @@ import { createTelegramTurnNotifier } from './telegramTurnNotifier.js'
 import { createTurnNotificationRouter } from './turnNotificationRouter.js'
 import { createWebPushTurnNotifier } from './webPushTurnNotifier.js'
 import { createServerVoiceHandler } from './voice/voiceRoutes.js'
+import { createServerWatchHandler } from './watch/watchRoutes.js'
 import { createResponseCompression } from './responseCompression.js'
 import { WebSocketServer, type WebSocket } from 'ws'
 
@@ -81,14 +82,17 @@ export function createServer(options: ServerOptions = {}): ServerInstance {
   // 3. Web Push subscription API
   app.use(webPushTurnNotifier.handleRequest)
 
-  // 4. Voice commands (/codex-api/voice/*), before the bridge answers unknown routes with 404
+  // 4. Watch API (/codex-api/voice/shortcut/watch/*), before the voice routes claim the shortcut prefix
+  app.use(createServerWatchHandler(bridge.watch, webPushTurnNotifier))
+
+  // 5. Voice commands (/codex-api/voice/*), before the bridge answers unknown routes with 404
   const voiceHandler = createServerVoiceHandler(bridge.voice, webPushTurnNotifier)
   app.use(voiceHandler)
 
-  // 5. Bridge middleware for /codex-api/*
+  // 6. Bridge middleware for /codex-api/*
   app.use(bridge)
 
-  // 6. Serve local images referenced in markdown (desktop parity for absolute image paths)
+  // 7. Serve local images referenced in markdown (desktop parity for absolute image paths)
   app.get('/codex-local-image', (req, res) => {
     const rawPath = typeof req.query.path === 'string' ? req.query.path : ''
     const localPath = normalizeLocalImagePath(rawPath)
@@ -111,10 +115,10 @@ export function createServer(options: ServerOptions = {}): ServerInstance {
     })
   })
 
-  // 7. Static files from Vue build
+  // 8. Static files from Vue build
   app.use(express.static(distDir))
 
-  // 8. SPA fallback
+  // 9. SPA fallback
   app.use((_req, res) => {
     res.sendFile(join(distDir, 'index.html'))
   })

@@ -1778,7 +1778,13 @@ export class ClaudeBackend {
         completedAtMs: null,
       })
     }
-    return this.threadPayload(sessionId, meta, turns.map(({ startedAtMs: _s, completedAtMs: _c, ...turn }) => turn))
+    // Codex turns carry their times in Unix seconds; Claude turns do the same.
+    const seconds = (ms: number | null) => (ms === null ? null : Math.floor(ms / 1000))
+    return this.threadPayload(sessionId, meta, turns.map(({ startedAtMs, completedAtMs, ...turn }) => ({
+      ...turn,
+      startedAt: seconds(startedAtMs),
+      completedAt: turn.status === 'inProgress' ? null : seconds(completedAtMs),
+    })))
   }
 
   private async resumeThread(threadId: string) {

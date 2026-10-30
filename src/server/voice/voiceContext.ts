@@ -53,7 +53,7 @@ function hasActivityAfterRead(readAtIso: string, updatedAtIso: string): boolean 
   return readAtIso !== updatedAtIso
 }
 
-function normalizeSummary(value: unknown): UiThread | null {
+export function normalizeSummary(value: unknown): UiThread | null {
   const record = asRecord(value)
   if (!record || typeof record.id !== 'string' || !record.id || typeof record.cwd !== 'string') return null
   try {

@@ -59,6 +59,7 @@ import {
 import type { GitWorkspaceReviewSource } from '../types/codex'
 import type { VoiceBridgeSources } from './voice/voiceRoutes'
 import { voiceChatModel } from './voice/voiceDelivery'
+import type { WatchBridgeSources } from './watch/watchRoutes'
 
 type JsonRpcCall = {
   jsonrpc: '2.0'
@@ -1634,6 +1635,7 @@ type CodexBridgeMiddleware = ((req: IncomingMessage, res: ServerResponse, next: 
   publishLocalNotification: (method: string, params: unknown) => void
   subscribeNotifications: (listener: (value: { method: string; params: unknown; atIso: string }) => void) => () => void
   voice: VoiceBridgeSources
+  watch: WatchBridgeSources
 }
 
 type SharedBridgeState = {
@@ -1792,6 +1794,17 @@ export function createCodexBridgeMiddleware(): CodexBridgeMiddleware {
     }
   }
 
+  /** Project boards drive their own Lead chats, so the composer may not start turns in them. */
+  const isBoardManagedChat = async (threadId: unknown): Promise<boolean> =>
+    typeof threadId === 'string' && projectBoardThreadIds(await projectBoardService.read()).has(threadId)
+
+  /** Saves a chat's read state and tells every open client. */
+  const saveThreadReadState = async (threadId: string, unread: boolean, readAtIso: string): Promise<SharedThreadReadState> => {
+    const state = await updateSharedThreadReadState(threadId, unread, readAtIso)
+    appServer.publishLocalNotification('codexui/threadReadState/updated', state)
+    return state
+  }
+
   const readCodexProviderStatus = async () => {
     try {
       const payload = asRecord(await shared.appServer.rpc('account/read', { refreshToken: false }))
@@ -1944,12 +1957,9 @@ export function createCodexBridgeMiddleware(): CodexBridgeMiddleware {
           setJson(res, 400, { error: 'Invalid body: expected { method, params? }' })
           return
         }
-        if (body.method === 'turn/start') {
-          const threadId = asRecord(body.params)?.threadId
-          if (typeof threadId === 'string' && projectBoardThreadIds(await projectBoardService.read()).has(threadId)) {
-            setJson(res, 409, { error: 'This Lead chat is managed by a project board. Refresh CodexUI and send from its linked chat controls to continue a tracked run.' })
-            return
-          }
+        if (body.method === 'turn/start' && await isBoardManagedChat(asRecord(body.params)?.threadId)) {
+          setJson(res, 409, { error: 'This Lead chat is managed by a project board. Refresh CodexUI and send from its linked chat controls to continue a tracked run.' })
+          return
         }
         const params =
           body.method === 'thread/start'
@@ -2734,9 +2744,7 @@ export function createCodexBridgeMiddleware(): CodexBridgeMiddleware {
           setJson(res, 400, { error: 'Invalid body: threadId and unread are required' })
           return
         }
-        const state = await updateSharedThreadReadState(threadId, unread, readAtIso)
-        appServer.publishLocalNotification('codexui/threadReadState/updated', state)
-        setJson(res, 200, { data: state })
+        setJson(res, 200, { data: await saveThreadReadState(threadId, unread, readAtIso) })
         return
       }
 
@@ -3001,6 +3009,31 @@ export function createCodexBridgeMiddleware(): CodexBridgeMiddleware {
     readVoiceSettings: async () => (await readCodexGlobalState())[VOICE_SETTINGS_STATE_KEY] ?? null,
     writeVoiceSettings: async (settings: Parameters<VoiceBridgeSources['writeVoiceSettings']>[0]) => {
       await mutateCodexGlobalState((payload) => { payload[VOICE_SETTINGS_STATE_KEY] = settings })
+    },
+  }
+  middleware.watch = {
+    ...middleware.voice,
+    readThread: async (threadId: string) => asRecord(asRecord(await appServer.rpc('thread/read', { threadId, includeTurns: true }))?.thread),
+    isBoardManagedChat,
+    sendComposerMessage: async (threadId: string, text: string, localPort?: number) => {
+      // As the composer does: resume the chat, then turn/start with its model, which
+      // steers a reply that is still running (Claude and Codex alike).
+      const resumed = asRecord(await resumeThreadLite(appServer, threadId))
+      const model = typeof resumed?.model === 'string' ? resumed.model.trim() : ''
+      const effort = typeof resumed?.reasoningEffort === 'string' ? resumed.reasoningEffort.trim() : ''
+      await appServer.rpc('turn/start', withBoardPlanningContext({
+        threadId,
+        input: [{ type: 'text', text }],
+        ...(model ? { model } : {}),
+        ...(effort ? { effort } : {}),
+      }, localPort ?? shared.localPort))
+    },
+    interruptTurn: async (threadId: string, turnId: string) => {
+      await appServer.rpc('turn/interrupt', { threadId, turnId })
+    },
+    respondToServerRequest: (payload: unknown) => appServer.respondToServerRequest(payload),
+    markThreadRead: async (threadId: string, readAtIso: string) => {
+      await saveThreadReadState(threadId, false, readAtIso)
     },
   }
   middleware.subscribeNotifications = (

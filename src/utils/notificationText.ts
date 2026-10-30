@@ -22,7 +22,7 @@ const BLOCK_BOUNDARY_TYPES = new Set([
   'tr_close',
 ])
 
-function removeWritingBlockMarkers(value: string): string {
+export function removeWritingBlockMarkers(value: string): string {
   let inWritingBlock = false
   const lines: string[] = []
   for (const line of value.split(/\r?\n/u)) {

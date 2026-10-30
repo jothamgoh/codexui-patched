@@ -64,6 +64,10 @@ const WORKING_LINE_FRESH_MS = 3_000
 const WORKING_LINE_FIRST_WAIT_MS = 400
 /** Pinned chats missing from the chat list are read one by one, as the panel does. */
 const PINNED_READS = 8
+/** A pinned read's own limit; lists wait at most FIRST_WAIT for one not yet remembered, and refresh after FRESH. */
+const PINNED_READ_MS = 5_000
+const PINNED_FIRST_WAIT_MS = 300
+const PINNED_FRESH_MS = 60_000
 const AGENTS: readonly WatchAgent[] = ['claude', 'codex']
 const MISSING_CHAT = /not found|no rollout|unknown thread|invalid thread id|does not exist/iu
 
@@ -165,12 +169,39 @@ export function createWatchHandler(deps: WatchRouteDeps) {
   }
 
   /** The voice inbox's snapshot, plus pinned chats missing from the list, which the panel reads too. */
+  // Old pinned chats are read one by one, and an unloaded one can take seconds
+  // or never answer, so their summaries are remembered like working lines.
+  const rememberedPinned = new Map<string, { summary: unknown; atMs: number }>()
+  const pinnedReads = new Map<string, Promise<unknown>>()
+
+  function refreshPinned(id: string): Promise<unknown> {
+    const inFlight = pinnedReads.get(id)
+    if (inFlight) return inFlight
+    const read = within(bridge.readThreadSummary(id), null, PINNED_READ_MS)
+      .then((summary) => {
+        rememberedPinned.set(id, { summary, atMs: now() })
+        return summary
+      })
+      .catch(() => null)
+      .finally(() => pinnedReads.delete(id))
+    pinnedReads.set(id, read)
+    return read
+  }
+
   async function listSnapshot(): Promise<VoiceSourceSnapshot> {
     const snapshot = await collectVoiceSnapshot(bridge, push, now())
     const listed = new Set([...snapshot.threadSummaries, ...(snapshot.extraSummaries ?? [])].map(idOf))
     const missing = (snapshot.pinnedThreadIds ?? []).filter((id) => !listed.has(id)).slice(0, PINNED_READS)
+    for (const id of rememberedPinned.keys()) if (!missing.includes(id)) rememberedPinned.delete(id)
     if (missing.length === 0) return snapshot
-    const pinned = (await Promise.all(missing.map((id) => within(bridge.readThreadSummary(id), null, 1_500)))).filter(Boolean)
+    const pinned = (await Promise.all(missing.map(async (id) => {
+      const remembered = rememberedPinned.get(id)
+      if (remembered) {
+        if (now() - remembered.atMs >= PINNED_FRESH_MS) void refreshPinned(id)
+        return remembered.summary
+      }
+      return within(refreshPinned(id), null, PINNED_FIRST_WAIT_MS)
+    }))).filter(Boolean)
     return { ...snapshot, extraSummaries: [...(snapshot.extraSummaries ?? []), ...pinned] }
   }
 

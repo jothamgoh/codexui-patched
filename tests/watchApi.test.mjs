@@ -568,6 +568,25 @@ test('GET feed never waits long for a slow running chat, and shows its working l
   assert.equal(reads, readsBefore + 1, 'and is refreshed in the background')
 })
 
+test('GET chats never waits long for a slow pinned chat, and shows it from memory next time', async (t) => {
+  const setup = panelWorld()
+  setup.world.unlisted.add('chat-pinned')
+  const summary = setup.bridge.readThreadSummary
+  let release
+  const slowRead = new Promise((resolve) => { release = resolve })
+  setup.bridge.readThreadSummary = async (id) => {
+    if (id === 'chat-pinned') await slowRead
+    return summary(id)
+  }
+  const { call } = await startWatch(t, setup)
+  const first = await call('chats')
+  assert.deepEqual(first.json.pinned.map((row) => row.id), [], 'a slow pinned read does not hold the list')
+  release()
+  await new Promise((resolve) => setTimeout(resolve, 20))
+  const second = await call('chats')
+  assert.deepEqual(second.json.pinned.map((row) => row.id), ['chat-pinned'], 'it shows from memory on the next request')
+})
+
 test('GET ping answers ok with the token and checks it like every route', async (t) => {
   const { call } = await startWatch(t, panelWorld())
   const ok = await call('ping', { method: 'GET' })

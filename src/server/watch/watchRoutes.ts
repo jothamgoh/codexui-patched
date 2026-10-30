@@ -53,6 +53,14 @@ const MAX_ID_LENGTH = 200
 /** A list reads the turns of at most this many running chats for their working line, each within the time. */
 const RUNNING_READS = 8
 const RUNNING_READ_MS = 2_000
+/**
+ * Reading a long chat takes about a second, so lists show a working line
+ * remembered from an earlier read and refresh it in the background once it
+ * is older than FRESH_MS. A chat with no remembered line holds the list for
+ * at most FIRST_WAIT_MS, then shows the generic line.
+ */
+const WORKING_LINE_FRESH_MS = 3_000
+const WORKING_LINE_FIRST_WAIT_MS = 400
 /** Pinned chats missing from the chat list are read one by one, as the panel does. */
 const PINNED_READS = 8
 const AGENTS: readonly WatchAgent[] = ['claude', 'codex']
@@ -165,11 +173,38 @@ export function createWatchHandler(deps: WatchRouteDeps) {
     return { ...snapshot, extraSummaries: [...(snapshot.extraSummaries ?? []), ...pinned] }
   }
 
+  const rememberedLines = new Map<string, { line: string; atMs: number }>()
+  const lineReads = new Map<string, Promise<string | null>>()
+
+  function refreshWorkingLine(id: string, activity: WatchActivity): Promise<string | null> {
+    const inFlight = lineReads.get(id)
+    if (inFlight) return inFlight
+    const read = within(bridge.readThread(id), null, RUNNING_READ_MS)
+      .then((thread) => {
+        if (!thread) return null
+        const line = runningLine(thread, activity.threads.get(id))
+        rememberedLines.set(id, { line, atMs: now() })
+        return line
+      })
+      .catch(() => null)
+      .finally(() => lineReads.delete(id))
+    lineReads.set(id, read)
+    return read
+  }
+
   async function readWorkingLines(activity: WatchActivity): Promise<Map<string, string>> {
+    const ids = runningChatIds(activity).slice(0, RUNNING_READS)
+    for (const id of rememberedLines.keys()) if (!ids.includes(id)) rememberedLines.delete(id)
     const lines = new Map<string, string>()
-    await Promise.all(runningChatIds(activity).slice(0, RUNNING_READS).map(async (id) => {
-      const thread = await within(bridge.readThread(id), null, RUNNING_READ_MS)
-      if (thread) lines.set(id, runningLine(thread, activity.threads.get(id)))
+    await Promise.all(ids.map(async (id) => {
+      const remembered = rememberedLines.get(id)
+      if (remembered) {
+        lines.set(id, remembered.line)
+        if (now() - remembered.atMs >= WORKING_LINE_FRESH_MS) void refreshWorkingLine(id, activity)
+        return
+      }
+      const line = await within(refreshWorkingLine(id, activity), null, WORKING_LINE_FIRST_WAIT_MS)
+      if (line) lines.set(id, line)
     }))
     return lines
   }

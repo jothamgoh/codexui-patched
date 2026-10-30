@@ -287,13 +287,13 @@ function panelWorld() {
   return { world, bridge, push }
 }
 
-async function startWatch(t, { world, bridge, push }, { env = { CODEXUI_WATCH_TOKEN: TOKEN } } = {}) {
+async function startWatch(t, { world, bridge, push }, { env = { CODEXUI_WATCH_TOKEN: TOKEN }, now = () => NOW } = {}) {
   const logs = []
   const handler = routes.createWatchHandler({
     bridge,
     push,
     env: () => env,
-    now: () => NOW,
+    now,
     isDirectory: async (path) => path === '/work/fresh-folder',
     log: (line) => logs.push(line),
   })
@@ -532,6 +532,36 @@ test('GET feed lists empty sections too', async (t) => {
   const { json } = await (await startWatch(t, { world, bridge, push })).call('feed')
   assert.deepEqual(json.sections.map((section) => [section.id, section.chats.length]), [['needs_you', 0], ['running', 0], ['unread', 0], ['recent', 1]])
   assert.deepEqual(json.summary, { needsYou: 0, running: 0, unread: 0 })
+})
+
+test('GET feed never waits long for a slow running chat, and shows its working line from memory', async (t) => {
+  const setup = panelWorld()
+  const read = setup.bridge.readThread
+  let reads = 0
+  let release
+  const slowRead = new Promise((resolve) => { release = resolve })
+  setup.bridge.readThread = async (id) => {
+    reads += 1
+    if (id === CLAUDE_ID) await slowRead
+    return read(id)
+  }
+  let clock = NOW
+  const { call } = await startWatch(t, setup, { now: () => clock })
+  const workingLine = (json) => json.sections.find((section) => section.id === 'running').chats[0].line
+
+  const first = await call('feed')
+  assert.notEqual(workingLine(first.json), 'Running npm run deploy:staging', 'a slow first read does not hold the list')
+  release()
+  await new Promise((resolve) => setTimeout(resolve, 20))
+  const second = await call('feed')
+  assert.equal(workingLine(second.json), 'Running npm run deploy:staging', 'the line read in the background shows on the next request')
+
+  const readsBefore = reads
+  clock += 5_000
+  const third = await call('feed')
+  assert.equal(workingLine(third.json), 'Running npm run deploy:staging', 'a stale line still shows at once')
+  await new Promise((resolve) => setTimeout(resolve, 20))
+  assert.equal(reads, readsBefore + 1, 'and is refreshed in the background')
 })
 
 test('GET chats: pinned first, then projects newest first, at most 25 chats each', async (t) => {

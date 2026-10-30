@@ -642,14 +642,14 @@ function continuationAfter(
   runner: SessionRunner,
   turn: LiveTurn,
   status: 'completed' | 'interrupted' | 'failed',
-  limitRetry: boolean,
+  { limitRetry, unreadMessage }: { limitRetry: boolean; unreadMessage: boolean },
 ): TurnContinuation | null {
   if (status === 'interrupted') return null
   if (limitRetry) return { reason: 'limitRetry' }
   if (runner.closed) return null
   // Claude Code starts a reply when each background task ends.
   if (runner.backgroundTasks.length > 0) return { reason: 'backgroundWork' }
-  if (runner.pushedCommands.size > 0) return { reason: 'queuedMessage' }
+  if (unreadMessage || runner.pushedCommands.size > 0) return { reason: 'queuedMessage' }
   if (runner.wakeAtMs !== null && runner.wakeAtMs > Date.now()) {
     return { reason: 'scheduledWakeup', resumesAt: new Date(runner.wakeAtMs).toISOString() }
   }
@@ -2282,7 +2282,7 @@ export class ClaudeBackend {
     runner: SessionRunner,
     status: 'completed' | 'interrupted' | 'failed',
     errorMessage = '',
-    options: { checkAccounts?: boolean; limitRetry?: boolean } = {},
+    options: { checkAccounts?: boolean; limitRetry?: boolean; unreadMessage?: boolean } = {},
   ): void {
     const turn = runner.activeTurn
     if (!turn || turn.settled) return
@@ -2298,7 +2298,10 @@ export class ClaudeBackend {
       ? [{ type: 'agentMessage', id: turn.lastAgentItemId, text: turn.lastAgentText, phase: 'final_answer' }]
       : []
     const threadTitle = this.titleFor(turn.sessionId)
-    const continuation = continuationAfter(runner, turn, status, options.limitRetry === true)
+    const continuation = continuationAfter(runner, turn, status, {
+      limitRetry: options.limitRetry === true,
+      unreadMessage: options.unreadMessage === true,
+    })
     this.emit('turn/completed', {
       threadId: turn.threadId,
       ...(threadTitle ? { threadTitle } : {}),
@@ -2650,11 +2653,14 @@ export class ClaudeBackend {
       }
       if (!turn) return
       // Messages sent during this reply that it took in are not waiting for another one.
-      for (const uuid of message.user_message_uuids ?? []) runner.pushedCommands.delete(uuid)
+      const consumed = message.user_message_uuids ?? (message.user_message_uuid ? [message.user_message_uuid] : [])
+      for (const uuid of consumed) runner.pushedCommands.delete(uuid)
+      // Claude Code can answer a task notification before it reads the message this turn was started for.
+      const unreadMessage = runner.pushedCommands.has(turn.turnId)
       if (turn.interrupted) {
         this.finishTurn(runner, 'interrupted')
       } else if (message.subtype === 'success' && !message.is_error) {
-        this.finishTurn(runner, 'completed')
+        this.finishTurn(runner, 'completed', '', { unreadMessage })
       } else {
         const detail = message.subtype === 'success' ? message.result : message.errors.join('\n')
         this.failTurn(runner, turn, detail)

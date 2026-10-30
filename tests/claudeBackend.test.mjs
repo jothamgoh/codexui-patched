@@ -657,6 +657,16 @@ test('marks a finished reply when the chat will carry on by itself, so alerts wa
     backend.handleMessage(runner, finishedReply)
     assert.equal(lastContinuation(), undefined, 'a wakeup that has fired no longer holds alerts')
 
+    // After a restart, Claude Code answered a stopped task's notification before reading "continue".
+    backend.beginTurn(runner, 'continue', directory, null)
+    runner.pushedCommands.set('continue', {})
+    backend.handleMessage(runner, reply('msg_8', 'No response requested.'))
+    backend.handleMessage(runner, finishedReply)
+    assert.deepEqual(lastContinuation(), { reason: 'queuedMessage' }, 'the message the turn was started for is still unread')
+    backend.handleMessage(runner, reply('msg_9', 'Picked up where I left off.'))
+    backend.handleMessage(runner, { ...finishedReply, user_message_uuids: ['continue'] })
+    assert.equal(lastContinuation(), undefined)
+
     backend.beginTurn(runner, 'turn-9', directory, null)
     backend.handleMessage(runner, { type: 'system', subtype: 'background_tasks_changed', tasks: [{ task_id: 'tests', task_type: 'local_bash', description: 'Run the tests' }] })
     backend.interrupt(runner.threadId)

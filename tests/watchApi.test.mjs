@@ -480,6 +480,10 @@ test('the working line says the current step in plain words', () => {
   assert.equal(line(userMessage('u', 'go')), 'Thinking')
   assert.equal(line(command('c', 'npm run test:e2e', undefined, 'inProgress')), 'Running npm run test:e2e')
   assert.equal(line({ type: 'commandExecution', id: 'c', command: 'cd /x && FOO=1 node --test tests/watchApi.test.mjs | tail -5', commandActions: [] }), 'Running node --test watchApi.test.mjs')
+  const running = (command) => line({ type: 'commandExecution', id: 'c', command, commandActions: [] })
+  assert.equal(running('TOKEN=$(security find-generic-password -s "Application cloudflare-api-token" -w) && curl -s x'), 'Running security find-generic-password -s', 'a command inside $( ) shows, without its quotes or parentheses')
+  assert.equal(running(`git commit -m "Fix the feed; keep 'quoted' words" --no-verify`), 'Running git commit -m', 'quoted text stays one word and never leaks its quotes')
+  assert.equal(running(`/bin/zsh -lc 'echo "hello world"'`), 'Running echo hello world')
   assert.equal(line(codexTurns[0].items[4]), 'Reading upload.test.ts')
   assert.equal(line(codexTurns[0].items[5]), 'Searching for “sleep”')
   assert.equal(line(fileChange('f', '/work/hr-ai/src/upload.ts')), 'Editing upload.ts')
@@ -562,6 +566,21 @@ test('GET feed never waits long for a slow running chat, and shows its working l
   assert.equal(workingLine(third.json), 'Running npm run deploy:staging', 'a stale line still shows at once')
   await new Promise((resolve) => setTimeout(resolve, 20))
   assert.equal(reads, readsBefore + 1, 'and is refreshed in the background')
+})
+
+test('GET ping answers ok with the token and checks it like every route', async (t) => {
+  const { call } = await startWatch(t, panelWorld())
+  const ok = await call('ping', { method: 'GET' })
+  assert.equal(ok.status, 200)
+  assert.deepEqual(ok.json, { ok: true })
+  assert.equal((await call('ping', { method: 'GET', token: 'x'.repeat(40) })).status, 401)
+})
+
+test('GET chat: a chat outside the listed page still has its own updated time', async (t) => {
+  const setup = panelWorld()
+  setup.world.unlisted.add('chat-pinned')
+  const { json } = await (await startWatch(t, setup)).call('chat?id=chat-pinned')
+  assert.equal(json.chat.updatedAt, iso(2 * 24 * 60), 'not an empty string the watch cannot read')
 })
 
 test('GET chats: pinned first, then projects newest first, at most 25 chats each', async (t) => {

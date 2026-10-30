@@ -2,6 +2,7 @@
  * HTTP routes of the CodexUI Watch API (contract: codexui-watch/API.md, v1):
  *   GET  /codex-api/voice/shortcut/watch/feed                  the notification panel's sections
  *   GET  /codex-api/voice/shortcut/watch/chats                 every chat, pinned first, by project
+ *   GET  /codex-api/voice/shortcut/watch/ping                       reachability and token check
  *   GET  /codex-api/voice/shortcut/watch/chat?id=&before=&limit=   one conversation
  *   POST /codex-api/voice/shortcut/watch/send|stop|answer|read|new
  *
@@ -346,6 +347,7 @@ export function createWatchHandler(deps: WatchRouteDeps) {
           return
         }
         switch (route) {
+          case 'GET ping': return setJson(res, 200, { ok: true })
           case 'GET feed': return await handleFeed(res)
           case 'GET chats': return await handleChats(res)
           case 'GET chat': return await handleChat(url, res)

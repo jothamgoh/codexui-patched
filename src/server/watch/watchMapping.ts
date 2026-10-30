@@ -454,6 +454,37 @@ function looksLikePath(value: string): boolean {
   return /^\S+$/u.test(value) && (value.includes('/') || /\.[A-Za-z0-9]{1,8}$/u.test(value))
 }
 
+/** Shell words with their quotes removed: `a "b c" 'd'` gives a, b c, d. An unclosed quote runs to the end. */
+function shellWords(text: string): string[] {
+  const words: string[] = []
+  let word = ''
+  let inWord = false
+  let quote: string | null = null
+  for (let index = 0; index < text.length; index += 1) {
+    const char = text[index] ?? ''
+    if (quote) {
+      if (char === quote) quote = null
+      else if (char === '\\' && quote === '"' && index + 1 < text.length) word += text[++index]
+      else word += char
+    } else if (char === '"' || char === "'") {
+      quote = char
+      inWord = true
+    } else if (char === '\\' && index + 1 < text.length) {
+      word += text[++index]
+      inWord = true
+    } else if (/\s/u.test(char)) {
+      if (inWord) words.push(word)
+      word = ''
+      inWord = false
+    } else {
+      word += char
+      inWord = true
+    }
+  }
+  if (inWord) words.push(word)
+  return words
+}
+
 /** A shell command as a few words: the program and its first arguments, never the whole line. */
 function commandWords(command: string): string {
   let text = command.trim()
@@ -461,9 +492,18 @@ function commandWords(command: string): string {
   if (wrapped) text = wrapped[2] ?? ''
   const segments = text.split(/\s*(?:&&|\|\||;|\n)\s*/u).map((segment) => segment.trim()).filter(Boolean)
   const main = segments.find((segment) => !/^(?:cd|export|set|source|\.)\s/u.test(segment)) ?? segments[0] ?? ''
-  const words = (main.split('|')[0] ?? '').trim().split(/\s+/u).filter(Boolean)
-  while (words.length > 1 && /^[A-Za-z_]\w*=/u.test(words[0] ?? '')) words.shift()
-  const shown = words.slice(0, 3).map((word) => (word.includes('/') ? basename(word.replace(/^['"]|['"]$/gu, '')) : word))
+  const words = shellWords((main.split('|')[0] ?? '').trim())
+  while (words.length > 1 && /^[A-Za-z_]\w*=/u.test(words[0] ?? '')) {
+    // `NAME=$(cmd args)` runs cmd: show it rather than dropping it with the assignment.
+    const inner = (words[0] ?? '').match(/^[A-Za-z_]\w*=\$\((.+)$/u)?.[1]
+    if (inner) words[0] = inner
+    else words.shift()
+  }
+  if (words[0]?.startsWith('$(')) words[0] = words[0].slice(2)
+  const shown = words.slice(0, 3).map((word) => {
+    const bare = word.replace(/\)+$/u, '')
+    return bare.includes('/') ? basename(bare) : bare
+  }).filter(Boolean)
   return clip(shown.join(' '), 40)
 }
 
@@ -761,7 +801,7 @@ function chatRow(thread: RawRecord, turns: RawRecord[], activity: WatchActivity)
     unread: section === 'unread',
     pinned: activity.pinned.includes(id),
     line,
-    updatedAt: listed?.updatedAtIso ?? flagged?.updatedAtIso ?? '',
+    updatedAt: listed?.updatedAtIso ?? flagged?.updatedAtIso ?? secondsToIso(thread.updatedAt) ?? '',
   }
 }
 

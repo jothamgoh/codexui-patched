@@ -41,9 +41,13 @@ const inputRequestModuleUrl = `data:text/javascript;base64,${Buffer.from(ts.tran
   compilerOptions: { module: ts.ModuleKind.ES2022, target: ts.ScriptTarget.ES2022 },
 }).outputText).toString('base64')}`
 const { inputRequestNotificationCopy } = await import(inputRequestModuleUrl)
+const turnContinuationSource = await readFile(new URL('../src/utils/turnContinuation.ts', import.meta.url), 'utf8')
+const turnContinuationModuleUrl = `data:text/javascript;base64,${Buffer.from(ts.transpileModule(turnContinuationSource, {
+  compilerOptions: { module: ts.ModuleKind.ES2022, target: ts.ScriptTarget.ES2022 },
+}).outputText).toString('base64')}`
 const { createTurnNotificationRouter } = await importTypeScriptModule(
   '../src/server/turnNotificationRouter.ts',
-  [['../utils/codexThreadSource.js', threadSourceModuleUrl], ['./projectBoardNotificationEvents.js', boardEventModuleUrl], ['../utils/projectBoardNotifications', boardUtilityModuleUrl], ['../utils/inputRequestNotifications', inputRequestModuleUrl]],
+  [['../utils/codexThreadSource.js', threadSourceModuleUrl], ['./projectBoardNotificationEvents.js', boardEventModuleUrl], ['../utils/projectBoardNotifications', boardUtilityModuleUrl], ['../utils/inputRequestNotifications', inputRequestModuleUrl], ['../utils/turnContinuation', turnContinuationModuleUrl]],
 )
 
 const delay = (milliseconds) => new Promise((resolve) => setTimeout(resolve, milliseconds))
@@ -56,6 +60,7 @@ function createHarness({
   readProjectBoards,
   takeProjectBoardRecoveryBaseline,
   listPendingServerRequests,
+  continuationSettleMs,
 }) {
   let listener = null
   const telegram = []
@@ -101,6 +106,7 @@ function createHarness({
     },
     threadLookupTimeoutMs,
     backfillRequestTimeoutMs,
+    continuationSettleMs,
   })
 
   return {
@@ -401,4 +407,96 @@ test('records selected feature results quietly and sends one final batch summary
   assert.equal(paused.boardPush[0].quiet, undefined, 'Pausing the queue must restore an alert when its active feature finishes')
   assert.deepEqual(paused.boardTelegram.map((event) => event.kind), ['completed'])
   paused.router.dispose()
+})
+
+const claudeChat = 'claude-11111111-2222-3333-4444-555555555555'
+const continuing = (turnId, continuation) => {
+  const notification = completedNotification(claudeChat, turnId)
+  return { ...notification, params: { ...notification.params, codexuiContinuation: continuation } }
+}
+const started = (turnId) => ({ method: 'turn/started', params: { threadId: claudeChat, turn: { id: turnId, status: 'inProgress' } }, atIso: '2026-10-30T09:00:00.000Z' })
+const backgroundTasks = (tasks) => ({ method: 'thread/backgroundTasks/updated', params: { threadId: claudeChat, tasks }, atIso: '2026-10-30T09:00:00.000Z' })
+const pushedTurnIds = (harness) => harness.webPush.map((notification) => notification.params.turn.id)
+
+function createContinuationHarness() {
+  return createHarness({
+    readThread: async (threadId) => ({ thread: { id: threadId, source: 'cli' } }),
+    continuationSettleMs: 30,
+  })
+}
+
+test('stays quiet while background work runs and alerts once, for the reply that ends it', async () => {
+  const harness = createContinuationHarness()
+  harness.emit(started('turn-1'))
+  harness.emit(backgroundTasks([{ id: 'validator', type: 'local_agent', description: 'Re-check the cut' }]))
+  harness.emit(continuing('turn-1', { reason: 'backgroundWork' }))
+  await delay(90)
+  assert.deepEqual(pushedTurnIds(harness), [], 'a reply that ends while its validator runs does not alert, however long it runs')
+
+  harness.emit(backgroundTasks([]))
+  harness.emit(started('turn-2'))
+  harness.emit(completedNotification(claudeChat, 'turn-2'))
+  await delay(90)
+  assert.deepEqual(pushedTurnIds(harness), ['turn-2'])
+  assert.deepEqual(harness.telegram.map((notification) => notification.params.turn.id), ['turn-2'])
+  harness.router.dispose()
+})
+
+test('alerts for a held reply when the chat goes quiet instead of carrying on', async () => {
+  const harness = createContinuationHarness()
+  harness.emit(backgroundTasks([{ id: 'server', type: 'local_bash', description: 'Stopped by the user' }]))
+  harness.emit(continuing('turn-1', { reason: 'backgroundWork' }))
+  await delay(15)
+  harness.emit(backgroundTasks([]))
+  assert.deepEqual(pushedTurnIds(harness), [])
+  await delay(90)
+  assert.deepEqual(pushedTurnIds(harness), ['turn-1'], 'stopped background work that never wakes the chat still ends in one alert')
+
+  harness.emit(started('turn-2'))
+  harness.emit(continuing('turn-2', { reason: 'queuedMessage' }))
+  await delay(90)
+  assert.deepEqual(pushedTurnIds(harness), ['turn-1', 'turn-2'], 'a queued message that never starts its reply still alerts')
+  harness.router.dispose()
+})
+
+test('a usage-limit failure that the chat retries alerts only for the retried reply', async () => {
+  const harness = createContinuationHarness()
+  const failed = continuing('turn-1', { reason: 'limitRetry' })
+  failed.params.turn = { ...failed.params.turn, status: 'failed', error: { message: "You've hit your session limit" } }
+  harness.emit(failed)
+  await delay(40)
+  harness.emit(started('retry'))
+  harness.emit(completedNotification(claudeChat, 'retry'))
+  await delay(160)
+  assert.deepEqual(pushedTurnIds(harness), ['retry'])
+  harness.router.dispose()
+})
+
+test('a scheduled wakeup holds the alert until the chat has had time to wake', async () => {
+  const harness = createContinuationHarness()
+  harness.emit(continuing('turn-1', { reason: 'scheduledWakeup', resumesAt: new Date(Date.now() + 100).toISOString() }))
+  await delay(100)
+  assert.deepEqual(pushedTurnIds(harness), [], 'the wait covers the wakeup time plus a grace period')
+  await delay(160)
+  assert.deepEqual(pushedTurnIds(harness), ['turn-1'], 'a wakeup that never fires still ends in one alert')
+  harness.router.dispose()
+})
+
+test('a held reply whose next reply started during its lookup never alerts', async () => {
+  let releaseLookup
+  const lookup = new Promise((resolve) => { releaseLookup = resolve })
+  const harness = createHarness({
+    readThread: async (threadId) => { await lookup; return { thread: { id: threadId, source: 'cli' } } },
+    threadLookupTimeoutMs: 500,
+    continuationSettleMs: 30,
+  })
+  harness.emit(continuing('turn-1', { reason: 'goal' }))
+  harness.emit(started('turn-2'))
+  releaseLookup()
+  await delay(90)
+  assert.deepEqual(pushedTurnIds(harness), [], 'no alert while the next reply is still running')
+  harness.emit(completedNotification(claudeChat, 'turn-2'))
+  await delay(15)
+  assert.deepEqual(pushedTurnIds(harness), ['turn-2'])
+  harness.router.dispose()
 })

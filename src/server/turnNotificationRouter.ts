@@ -9,6 +9,7 @@ import type { ProjectBoardSnapshot } from '../types/projectBoards'
 import { isProjectBoardNotification, projectBoardNativeRequestNotification, type ProjectBoardNotification } from '../utils/projectBoardNotifications'
 import { collectProjectBoardNotifications, projectBoardThreadIds } from './projectBoardNotificationEvents.js'
 import { readInputRequestNotification, type InputRequestNotification } from '../utils/inputRequestNotifications'
+import { readTurnContinuation, type TurnContinuation } from '../utils/turnContinuation'
 
 type BridgeNotification = {
   method: string
@@ -48,10 +49,20 @@ type TurnNotificationRouterOptions = {
   webPushTurnNotifier: WebPushNotificationSink
   threadLookupTimeoutMs?: number
   backfillRequestTimeoutMs?: number
+  /** How long a held completion waits for its chat to start the next reply before it alerts anyway. */
+  continuationSettleMs?: number
+}
+
+/** A completion whose chat said it would carry on, waiting for that to happen. */
+type HeldCompletion = {
+  notification: BridgeNotification
+  continuation: TurnContinuation
+  timer: ReturnType<typeof setTimeout> | null
 }
 
 const DEFAULT_THREAD_LOOKUP_TIMEOUT_MS = 4_000
 const DEFAULT_BACKFILL_REQUEST_TIMEOUT_MS = 5_000
+const DEFAULT_CONTINUATION_SETTLE_MS = 30_000
 const MAX_REMEMBERED_INPUT_REQUESTS = 200
 
 function asRecord(value: unknown): Record<string, unknown> | null {
@@ -90,6 +101,10 @@ export function createTurnNotificationRouter(
   const pendingAudienceLookups = new Map<string, Promise<CodexThreadAudience>>()
   const threadLookupTimeoutMs = options.threadLookupTimeoutMs ?? DEFAULT_THREAD_LOOKUP_TIMEOUT_MS
   const backfillRequestTimeoutMs = options.backfillRequestTimeoutMs ?? DEFAULT_BACKFILL_REQUEST_TIMEOUT_MS
+  const continuationSettleMs = options.continuationSettleMs ?? DEFAULT_CONTINUATION_SETTLE_MS
+  const heldCompletions = new Map<string, HeldCompletion>()
+  const turnStartCounts = new Map<string, number>()
+  const threadsWithBackgroundWork = new Set<string>()
   let disposed = false
   let boardSnapshot: ProjectBoardSnapshot | null = null
   let boardThreadIds = new Set<string>()
@@ -242,7 +257,50 @@ export function createTurnNotificationRouter(
       })
     : Promise.resolve()
 
-  const deliverCompletion = async (notification: BridgeNotification): Promise<void> => {
+  const sendCompletion = (notification: BridgeNotification): void => {
+    options.telegramTurnNotifier.handleNotification(notification)
+    options.webPushTurnNotifier.handleNotification(notification)
+  }
+
+  const dropHeldCompletion = (threadId: string): void => {
+    const held = heldCompletions.get(threadId)
+    if (held?.timer) clearTimeout(held.timer)
+    heldCompletions.delete(threadId)
+  }
+
+  /** Alert for the held completion after `delayMs` unless the chat starts another reply first. */
+  const settleHeldCompletion = (threadId: string, delayMs: number): void => {
+    const held = heldCompletions.get(threadId)
+    if (!held) return
+    if (held.timer) clearTimeout(held.timer)
+    held.timer = setTimeout(() => {
+      if (disposed || heldCompletions.get(threadId) !== held) return
+      heldCompletions.delete(threadId)
+      sendCompletion(held.notification)
+    }, delayMs)
+    held.timer.unref?.()
+  }
+
+  const settleDelayMs = (continuation: TurnContinuation): number => {
+    switch (continuation.reason) {
+      case 'scheduledWakeup':
+        return Math.max(0, Date.parse(continuation.resumesAt) - Date.now()) + 2 * continuationSettleMs
+      case 'limitRetry':
+        // The retry first waits up to 30 s for the exhausted process to exit.
+        return 4 * continuationSettleMs
+      default:
+        return continuationSettleMs
+    }
+  }
+
+  const holdCompletion = (threadId: string, notification: BridgeNotification, continuation: TurnContinuation): void => {
+    heldCompletions.set(threadId, { notification, continuation, timer: null })
+    // Running background work starts the wait when it ends.
+    if (continuation.reason === 'backgroundWork' && threadsWithBackgroundWork.has(threadId)) return
+    settleHeldCompletion(threadId, settleDelayMs(continuation))
+  }
+
+  const deliverCompletion = async (notification: BridgeNotification, turnStartsBefore: number): Promise<void> => {
     const threadId = readCodexNotificationThreadId(notification)
     if (!threadId) return
     await boardSnapshotQueue
@@ -259,10 +317,17 @@ export function createTurnNotificationRouter(
       return
     }
 
+    // A reply that started while this one was looked up owns any held completion and alerts for itself.
+    const superseded = (turnStartCounts.get(threadId) ?? 0) !== turnStartsBefore
+    if (!superseded) dropHeldCompletion(threadId)
+    const continuation = readTurnContinuation(notification.params)
+    if (continuation) {
+      if (!superseded) holdCompletion(threadId, notification, continuation)
+      return
+    }
     // Fail open after a bounded lookup so an app-server hiccup cannot swallow a
     // legitimate top-level completion indefinitely.
-    options.telegramTurnNotifier.handleNotification(notification)
-    options.webPushTurnNotifier.handleNotification(notification)
+    sendCompletion(notification)
   }
 
   const unsubscribe = options.bridge.subscribeNotifications((notification) => {
@@ -306,9 +371,27 @@ export function createTurnNotificationRouter(
     if (observedAudience === 'internalSubagent' && observedThreadId) {
       removeInternalHistory([observedThreadId])
     }
+    if (notification.method === 'turn/started' && observedThreadId) {
+      turnStartCounts.set(observedThreadId, (turnStartCounts.get(observedThreadId) ?? 0) + 1)
+      dropHeldCompletion(observedThreadId)
+      return
+    }
+    if (notification.method === 'thread/backgroundTasks/updated' && observedThreadId) {
+      const tasks = asRecord(notification.params)?.tasks
+      if (Array.isArray(tasks) && tasks.length > 0) {
+        threadsWithBackgroundWork.add(observedThreadId)
+      } else {
+        threadsWithBackgroundWork.delete(observedThreadId)
+        if (heldCompletions.get(observedThreadId)?.continuation.reason === 'backgroundWork') {
+          settleHeldCompletion(observedThreadId, continuationSettleMs)
+        }
+      }
+      return
+    }
     if (notification.method !== 'turn/completed') return
 
-    void deliverCompletion(notification).catch((error: unknown) => {
+    const turnStartsBefore = observedThreadId ? turnStartCounts.get(observedThreadId) ?? 0 : 0
+    void deliverCompletion(notification, turnStartsBefore).catch((error: unknown) => {
       const message = error instanceof Error ? error.message : String(error)
       console.warn(`[notifications] Could not route turn completion: ${message}`)
     })
@@ -338,6 +421,7 @@ export function createTurnNotificationRouter(
   return {
     dispose: () => {
       disposed = true
+      for (const threadId of [...heldCompletions.keys()]) dropHeldCompletion(threadId)
       unsubscribe()
     },
   }

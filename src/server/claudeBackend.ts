@@ -21,6 +21,7 @@ import type {
   SpawnedProcess,
   SpawnOptions,
 } from '@anthropic-ai/claude-agent-sdk'
+import type { TurnContinuation } from '../utils/turnContinuation'
 import { getCodexUiChildEnv } from './envFile'
 import { claudeComputerUseNeedsApproval, loadClaudeComputerUseMcpConfig } from './claudeComputerUse'
 import { CLAUDE_HOST_DOWN_MESSAGE, isClaudeHostReachable, spawnThroughHost } from './claudeProcessHost'
@@ -634,6 +635,27 @@ class ClaudeSessionAlreadyResumedError extends Error {}
 
 function runnerIsBusy(runner: SessionRunner): boolean {
   return Boolean(runner.activeTurn) || runner.pushedCommands.size > 0 || runner.backgroundTasks.length > 0
+}
+
+/** Why the chat will start another reply by itself once this one ends, if it will. */
+function continuationAfter(
+  runner: SessionRunner,
+  turn: LiveTurn,
+  status: 'completed' | 'interrupted' | 'failed',
+  limitRetry: boolean,
+): TurnContinuation | null {
+  if (status === 'interrupted') return null
+  if (limitRetry) return { reason: 'limitRetry' }
+  if (runner.closed) return null
+  // Claude Code starts a reply when each background task ends.
+  if (runner.backgroundTasks.length > 0) return { reason: 'backgroundWork' }
+  if (runner.pushedCommands.size > 0) return { reason: 'queuedMessage' }
+  if (runner.wakeAtMs !== null && runner.wakeAtMs > Date.now()) {
+    return { reason: 'scheduledWakeup', resumesAt: new Date(runner.wakeAtMs).toISOString() }
+  }
+  const goalEnded = GOAL_COMPLETE_MARKER.test(turn.lastAgentText) || GOAL_BLOCKED_MARKER.test(turn.lastAgentText)
+  if (turn.goalContinuation && status === 'completed' && !goalEnded) return { reason: 'goal' }
+  return null
 }
 
 export function isClaudeHardLimitError(message: string): boolean {
@@ -2260,7 +2282,7 @@ export class ClaudeBackend {
     runner: SessionRunner,
     status: 'completed' | 'interrupted' | 'failed',
     errorMessage = '',
-    options: { checkAccounts?: boolean } = {},
+    options: { checkAccounts?: boolean; limitRetry?: boolean } = {},
   ): void {
     const turn = runner.activeTurn
     if (!turn || turn.settled) return
@@ -2276,9 +2298,11 @@ export class ClaudeBackend {
       ? [{ type: 'agentMessage', id: turn.lastAgentItemId, text: turn.lastAgentText, phase: 'final_answer' }]
       : []
     const threadTitle = this.titleFor(turn.sessionId)
+    const continuation = continuationAfter(runner, turn, status, options.limitRetry === true)
     this.emit('turn/completed', {
       threadId: turn.threadId,
       ...(threadTitle ? { threadTitle } : {}),
+      ...(continuation ? { codexuiContinuation: continuation } : {}),
       durationMs,
       turn: {
         id: turn.turnId,
@@ -2301,7 +2325,7 @@ export class ClaudeBackend {
   private failTurn(runner: SessionRunner, turn: LiveTurn, errorMessage: string): void {
     const hardLimit = isClaudeHardLimitError(errorMessage)
     const exhaustedAccountNumber = hardLimit ? runner.accountNumber ?? this.accounts.activeAccountNumber() : null
-    this.finishTurn(runner, 'failed', errorMessage, { checkAccounts: !hardLimit })
+    this.finishTurn(runner, 'failed', errorMessage, { checkAccounts: !hardLimit, limitRetry: hardLimit })
     if (hardLimit) {
       // This process cannot continue on the exhausted account. Retire it before
       // recovery so its own background commands cannot keep the global account
@@ -2625,6 +2649,8 @@ export class ClaudeBackend {
         if (turn) this.publishUsage(runner, turn)
       }
       if (!turn) return
+      // Messages sent during this reply that it took in are not waiting for another one.
+      for (const uuid of message.user_message_uuids ?? []) runner.pushedCommands.delete(uuid)
       if (turn.interrupted) {
         this.finishTurn(runner, 'interrupted')
       } else if (message.subtype === 'success' && !message.is_error) {

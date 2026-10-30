@@ -602,6 +602,84 @@ test('keeps an idle Claude process until a wakeup it scheduled has fired', async
   })
 })
 
+test('marks a finished reply when the chat will carry on by itself, so alerts wait for the reply that ends its work', async (t) => {
+  await withMeteredRunner(async ({ backend, runner, directory }) => {
+    t.mock.timers.enable({ apis: ['setTimeout', 'Date'] })
+    const completions = []
+    const unsubscribe = backend.onNotification(({ method, params }) => {
+      if (method === 'turn/completed') completions.push(params)
+    })
+    const reply = (id, text) => ({ ...opusReply(id, 1000), message: { ...opusReply(id, 1000).message, content: [{ type: 'text', text }] } })
+    const lastContinuation = () => completions.at(-1).codexuiContinuation
+
+    backend.beginTurn(runner, 'turn-1', directory, null)
+    backend.handleMessage(runner, { type: 'system', subtype: 'background_tasks_changed', tasks: [{ task_id: 'validator', task_type: 'local_agent', description: 'Re-check the cut' }] })
+    backend.handleMessage(runner, reply('msg_1', 'A second validator is re-checking.'))
+    backend.handleMessage(runner, finishedReply)
+    assert.deepEqual(lastContinuation(), { reason: 'backgroundWork' })
+
+    // The validator ends and Claude Code starts the next reply by itself.
+    backend.handleMessage(runner, { type: 'system', subtype: 'background_tasks_changed', tasks: [] })
+    backend.handleMessage(runner, reply('msg_2', 'Sent to Telegram.'))
+    backend.handleMessage(runner, finishedReply)
+    assert.equal(completions.length, 2)
+    assert.equal(lastContinuation(), undefined, 'the reply that ends the work alerts')
+
+    backend.beginTurn(runner, 'turn-3', directory, null)
+    runner.pushedCommands.set('turn-3', {})
+    runner.pushedCommands.set('steer', {})
+    runner.pushedCommands.set('queued', {})
+    backend.handleMessage(runner, { ...finishedReply, user_message_uuids: ['turn-3', 'steer'] })
+    assert.deepEqual(lastContinuation(), { reason: 'queuedMessage' }, 'a message the reply did not take in starts the next one')
+    backend.beginTurn(runner, 'queued', directory, null)
+    backend.handleMessage(runner, { ...finishedReply, user_message_uuids: ['queued'] })
+    assert.equal(lastContinuation(), undefined)
+
+    backend.beginTurn(runner, 'turn-5', directory, null)
+    runner.activeTurn.goalContinuation = true
+    backend.handleMessage(runner, reply('msg_5', 'Two of five pages done.'))
+    backend.handleMessage(runner, finishedReply)
+    assert.deepEqual(lastContinuation(), { reason: 'goal' })
+    backend.beginTurn(runner, 'turn-6', directory, null)
+    runner.activeTurn.goalContinuation = true
+    backend.handleMessage(runner, reply('msg_6', 'All pages done.\nGOAL COMPLETE'))
+    backend.handleMessage(runner, finishedReply)
+    assert.equal(lastContinuation(), undefined)
+
+    backend.beginTurn(runner, 'turn-7', directory, null)
+    const wakeup = { type: 'tool_use', id: 'toolu_wake', name: 'ScheduleWakeup', input: { delaySeconds: 20 * 60, prompt: '/loop check', reason: 'waiting' } }
+    backend.handleMessage(runner, { ...opusReply('msg_7', 1000), message: { ...opusReply('msg_7', 1000).message, content: [wakeup] } })
+    backend.handleMessage(runner, { type: 'user', parent_tool_use_id: null, message: { role: 'user', content: [{ type: 'tool_result', tool_use_id: 'toolu_wake', content: 'Scheduled' }] } })
+    backend.handleMessage(runner, finishedReply)
+    assert.deepEqual(lastContinuation(), { reason: 'scheduledWakeup', resumesAt: new Date(Date.now() + 20 * 60_000).toISOString() })
+    t.mock.timers.tick(20 * 60_000)
+    backend.beginTurn(runner, 'turn-8', directory, null)
+    backend.handleMessage(runner, finishedReply)
+    assert.equal(lastContinuation(), undefined, 'a wakeup that has fired no longer holds alerts')
+
+    backend.beginTurn(runner, 'turn-9', directory, null)
+    backend.handleMessage(runner, { type: 'system', subtype: 'background_tasks_changed', tasks: [{ task_id: 'tests', task_type: 'local_bash', description: 'Run the tests' }] })
+    backend.interrupt(runner.threadId)
+    backend.handleMessage(runner, finishedReply)
+    assert.equal(lastContinuation(), undefined, 'a stopped reply never waits')
+    unsubscribe()
+  })
+})
+
+test('marks a usage-limit failure that CodexUI retries by itself', async () => {
+  await withMeteredRunner(async ({ backend, runner, directory }) => {
+    const completions = []
+    const unsubscribe = backend.onNotification(({ method, params }) => {
+      if (method === 'turn/completed') completions.push(params)
+    })
+    backend.beginTurn(runner, 'turn-1', directory, null)
+    backend.handleMessage(runner, { type: 'result', subtype: 'success', is_error: true, result: "You've hit your session limit · resets 10pm (Asia/Singapore)", modelUsage: {} })
+    assert.equal(completions[0].turn.status, 'failed')
+    assert.deepEqual(completions[0].codexuiContinuation, { reason: 'limitRetry' })
+    unsubscribe()
+  })
+})
+
 /** A saved Claude chat with a subagent folder, and a backend that has, by default, started its process. */
 async function withSavedClaudeChat(run, { startProcess = true } = {}) {
   const configDir = await mkdtemp(join(tmpdir(), 'codexui-claude-delete-'))

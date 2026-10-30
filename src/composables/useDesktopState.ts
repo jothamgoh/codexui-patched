@@ -89,6 +89,7 @@ import type { CodexThreadAudience } from '../utils/codexThreadSource'
 import { MAX_THREAD_REFERENCE_COUNT } from '../utils/threadReferences'
 import { insertTurnSummaryMessages, sortMessagesByOrder } from '../utils/conversationMessages'
 import { providerForModelId, providerForThreadId, type ChatProvider } from '../utils/chatProvider'
+import { readTurnContinuation } from '../utils/turnContinuation'
 
 function flattenThreads(groups: UiProjectGroup[]): UiThread[] {
   return groups.flatMap((group) => group.threads)
@@ -3197,6 +3198,8 @@ export function useDesktopState() {
 
     const status = readTurnCompletionStatus(notification)
     if (status === 'interrupted') return
+    // The chat carries on by itself; the reply that ends its work alerts instead.
+    if (readTurnContinuation(notification.params)) return
     const automation = asRecord(asRecord(notification.params)?.codexuiAutomation)
     const notificationPolicy = readString(automation?.notificationPolicy)
     if (

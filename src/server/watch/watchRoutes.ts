@@ -9,6 +9,8 @@
  *   POST /codex-api/voice/shortcut/watch/command                    spoken words in, a plan out; changes nothing
  *   POST /codex-api/voice/shortcut/watch/command/run|cancel         carries out a plan once, or drops it
  *   POST /codex-api/voice/shortcut/watch/summaries                  each chat's latest reply in a sentence or two
+ *   GET  /codex-api/voice/shortcut/watch/signature                  the watch app's signature date it last reported
+ *   POST /codex-api/voice/shortcut/watch/notify                     a notification on every device, for the Mac's renewal job
  *
  * Cloudflare Access lets service tokens through only under /codex-api/voice/shortcut*,
  * so the routes live there. Every request needs `Authorization: Bearer
@@ -97,6 +99,14 @@ const MAX_VISIBLE_CHATS = 50
 const MAX_SUMMARY_CHATS = 8
 /** The open chat, when it is not in the list, is read within this. */
 const SCREEN_CHAT_READ_MS = 2_000
+/**
+ * The date the watch app's free 7-day signature runs out. The app sends it
+ * with every request so the Mac's renewal job can tell whether a renewal
+ * reached the watch.
+ */
+const SIGNED_UNTIL_HEADER = 'x-codexui-signed-until'
+const MAX_NOTICE_TITLE = 120
+const MAX_NOTICE_BODY = 1_000
 
 /** What the bridge exposes for the watch (codexAppServerBridge.ts), on top of the voice sources. */
 export type WatchBridgeSources = VoiceBridgeSources & {
@@ -111,7 +121,7 @@ export type WatchBridgeSources = VoiceBridgeSources & {
   markThreadRead: (threadId: string, readAtIso: string) => Promise<void>
 }
 
-export type WatchPushSink = Pick<VoicePushSink, 'readHistory'> & {
+export type WatchPushSink = Pick<VoicePushSink, 'readHistory' | 'sendCustomNotification'> & {
   markHistoryRead: (selection: { threadId: string }) => Promise<unknown>
 }
 
@@ -176,6 +186,15 @@ function readText(body: Record<string, unknown>): string {
   return text
 }
 
+/** The X-CodexUI-Signed-Until date as ISO 8601, or null when it is missing or not a date. */
+function readSignedUntil(req: IncomingMessage): string | null {
+  const raw = req.headers[SIGNED_UNTIL_HEADER]
+  const value = Array.isArray(raw) ? raw[0] : raw
+  if (typeof value !== 'string' || value.length > 64) return null
+  const ms = Date.parse(value)
+  return Number.isFinite(ms) ? new Date(ms).toISOString() : null
+}
+
 export function createWatchHandler(deps: WatchRouteDeps) {
   const { bridge, push } = deps
   const env = deps.env ?? (() => process.env)
@@ -186,6 +205,8 @@ export function createWatchHandler(deps: WatchRouteDeps) {
   const summaryTimeoutMs = deps.summaryTimeoutMs ?? SUMMARY_TIMEOUT_MS
   const plans = new WatchPlanStore(now)
   const summaries = new SummaryCache()
+  /** What the watch last reported. In memory only: the renewal job keeps its own record across restarts. */
+  let signature: { signedUntil: string; seenAt: string } | null = null
 
   async function readJson(req: IncomingMessage): Promise<Record<string, unknown>> {
     let payload: unknown
@@ -559,6 +580,17 @@ export function createWatchHandler(deps: WatchRouteDeps) {
   }
 
   /** On demand only: nothing is summarized when a reply finishes. Neither replies nor summaries are logged. */
+  /** For the Mac's renewal job: "renewed until …", or what it needs from the user. */
+  async function handleNotify(req: IncomingMessage, res: ServerResponse): Promise<void> {
+    const body = await readJson(req)
+    const title = typeof body.title === 'string' ? body.title.trim() : ''
+    const text = typeof body.body === 'string' ? body.body.trim() : ''
+    if (!title || title.length > MAX_NOTICE_TITLE) throw new HttpError(400, `Expected a "title" of at most ${String(MAX_NOTICE_TITLE)} characters.`)
+    if (text.length > MAX_NOTICE_BODY) throw new HttpError(400, `Expected a "body" of at most ${String(MAX_NOTICE_BODY)} characters.`)
+    const delivery = await push.sendCustomNotification({ title, body: text, url: '/#/', tag: 'codexui-watch' })
+    setJson(res, 200, { ok: true, sent: delivery.sent, failed: delivery.failed })
+  }
+
   async function handleSummaries(req: IncomingMessage, res: ServerResponse): Promise<void> {
     const started = performance.now()
     const ids = (await readJson(req)).chatIds
@@ -594,6 +626,8 @@ export function createWatchHandler(deps: WatchRouteDeps) {
           setJson(res, 401, { error: 'Not authorized.' }, { 'WWW-Authenticate': 'Bearer' })
           return
         }
+        const signedUntil = readSignedUntil(req)
+        if (signedUntil) signature = { signedUntil, seenAt: new Date(now()).toISOString() }
         switch (route) {
           case 'GET ping': return setJson(res, 200, { ok: true })
           case 'GET feed': return await handleFeed(res)
@@ -609,6 +643,8 @@ export function createWatchHandler(deps: WatchRouteDeps) {
           case 'POST command/run': return await handleCommandRun(req, res)
           case 'POST command/cancel': return await handleCommandCancel(req, res)
           case 'POST summaries': return await handleSummaries(req, res)
+          case 'GET signature': return setJson(res, 200, signature ?? { signedUntil: null, seenAt: null })
+          case 'POST notify': return await handleNotify(req, res)
           default: throw new HttpError(404, 'Unknown watch route.')
         }
       } catch (error) {

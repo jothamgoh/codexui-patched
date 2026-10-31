@@ -211,7 +211,7 @@ function fakeWorld() {
     boardChats: new Set(),
     /** Chats thread/list leaves out, such as ones older than its page. */
     unlisted: new Set(),
-    sent: [], interrupted: [], responded: [], markedRead: [], historyRead: [], started: [],
+    sent: [], interrupted: [], responded: [], markedRead: [], historyRead: [], started: [], notified: [],
     respond: null,
     add(thread) { world.threads.set(thread.id, thread); return world },
   }
@@ -250,6 +250,7 @@ function fakeWorld() {
   const push = {
     readHistory: async () => ({ items: world.history, dismissals: world.dismissals }),
     markHistoryRead: async (selection) => { world.historyRead.push(selection) },
+    sendCustomNotification: async (notification) => { world.notified.push(notification); return { sent: 2, failed: 0 } },
   }
   return { world, bridge, push }
 }
@@ -616,6 +617,35 @@ test('GET ping answers ok with the token and checks it like every route', async 
   assert.equal(ok.status, 200)
   assert.deepEqual(ok.json, { ok: true })
   assert.equal((await call('ping', { method: 'GET', token: 'x'.repeat(40) })).status, 401)
+})
+
+test('GET signature answers the signature date the watch last sent with any request', async (t) => {
+  let clock = NOW
+  const { call } = await startWatch(t, panelWorld(), { now: () => clock })
+  assert.deepEqual((await call('signature', { method: 'GET' })).json, { signedUntil: null, seenAt: null }, 'nothing reported yet')
+
+  const signed = { 'X-CodexUI-Signed-Until': '2026-11-07T18:40:21Z' }
+  assert.equal((await call('feed', { headers: signed, token: 'x'.repeat(40) })).status, 401)
+  assert.deepEqual((await call('signature', { method: 'GET' })).json, { signedUntil: null, seenAt: null }, 'not without the token')
+
+  assert.equal((await call('feed', { headers: signed })).status, 200)
+  clock = NOW + 60_000
+  assert.equal((await call('ping', { method: 'GET', headers: { 'X-CodexUI-Signed-Until': 'next week' } })).status, 200)
+  assert.deepEqual((await call('signature', { method: 'GET' })).json, {
+    signedUntil: '2026-11-07T18:40:21.000Z',
+    seenAt: new Date(NOW).toISOString(),
+  }, 'a date that does not parse leaves the last one')
+})
+
+test('POST notify shows the renewal job\'s note on every device', async (t) => {
+  const { call, world } = await startWatch(t, panelWorld())
+  const note = { title: 'CodexUI renewed on your watch', body: 'It opens until Thu 12 Nov, 02:40.' }
+  assert.deepEqual((await call('notify', { body: note })).json, { ok: true, sent: 2, failed: 0 })
+  assert.deepEqual(world.notified, [{ ...note, url: '/#/', tag: 'codexui-watch' }])
+  assert.equal((await call('notify', { body: { body: 'no title' } })).status, 400)
+  assert.equal((await call('notify', { body: { title: 'x'.repeat(121) } })).status, 400)
+  assert.equal((await call('notify', { body: note, token: 'x'.repeat(40) })).status, 401)
+  assert.equal(world.notified.length, 1)
 })
 
 test('GET chat: a chat outside the listed page still has its own updated time', async (t) => {

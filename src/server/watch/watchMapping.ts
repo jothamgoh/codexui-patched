@@ -341,6 +341,17 @@ function replyText(items: RawRecord[], status: TurnStatus): string {
   return readString((messages.filter((item) => item.phase !== 'commentary').at(-1) ?? messages.at(-1))?.text)
 }
 
+/** The newest turn with an answer, and the answer: a running turn counts only once its final answer is in. */
+export function latestReply(thread: RawRecord): { turnId: string; text: string } | null {
+  const turns = turnsOf(thread)
+  for (let index = turns.length - 1; index >= 0; index -= 1) {
+    const turn = turns[index]
+    const text = replyText(itemsOf(turn), readTurnStatus(turn.status)).trim()
+    if (text) return { turnId: readString(turn.id), text }
+  }
+  return null
+}
+
 /** "Worked · 5 commands, 2 edits", or null for a turn that only answered. */
 export function stepsSummary(items: RawRecord[], status: TurnStatus = 'completed'): string | null {
   let commands = 0
@@ -691,7 +702,7 @@ function requestLine(request: PendingRequest | undefined): string {
  * the open request, the running step, else the push history's result and the
  * panel's one-line summary (the reply's first words, or the chat's preview).
  */
-function listRow(activity: WatchActivity, row: VoiceChatRow, workingLines: ReadonlyMap<string, string>): ChatRow {
+export function listRow(activity: WatchActivity, row: VoiceChatRow, workingLines: ReadonlyMap<string, string>): ChatRow {
   const id = row.threadId
   const section = activity.sectionOf.get(id)
   const result = activity.lastResult.get(id)
@@ -762,6 +773,14 @@ export function buildChatList(activity: WatchActivity, workingLines: ReadonlyMap
 
 // ── One chat ─────────────────────────────────────────────────────────────
 
+/** The chat's title as its row shows it. */
+export function chatTitleOf(thread: RawRecord, activity: WatchActivity): string {
+  const id = readString(thread.id)
+  const listed = activity.rows.find((row) => row.threadId === id)
+  const flagged = activity.threads.get(id) ?? normalizeSummary(thread)
+  return listed?.title ?? (flagged ? activityThreadTitle(flagged) : 'Chat')
+}
+
 /** The chat's row from its own turns, which also know when a reply stopped or failed. */
 function chatRow(thread: RawRecord, turns: RawRecord[], activity: WatchActivity): ChatRow {
   const id = readString(thread.id)
@@ -794,7 +813,7 @@ function chatRow(thread: RawRecord, turns: RawRecord[], activity: WatchActivity)
   }
   return {
     id,
-    title: listed?.title ?? (flagged ? activityThreadTitle(flagged) : 'Chat'),
+    title: chatTitleOf(thread, activity),
     project: listed?.projectName ?? (flagged ? activity.labels[flagged.cwd] || flagged.projectName : ''),
     agent: agentOf(id),
     state,

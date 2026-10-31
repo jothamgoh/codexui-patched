@@ -24,7 +24,8 @@ export type VoiceDeliveryRecord = Omit<VoiceDelivery, 'remainingMs'> & { sendAtM
 
 type Entry<T> = { value: T; expiresAtMs: number }
 
-class ExpiringMap<T> {
+/** In memory only, each entry for `ttlMs`, at most 200 entries (the oldest go first). The watch's plans use it too. */
+export class ExpiringMap<T> {
   private readonly entries = new Map<string, Entry<T>>()
 
   constructor(private readonly ttlMs: number, private readonly now: () => number) {}

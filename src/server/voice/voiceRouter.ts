@@ -16,6 +16,7 @@ import {
   type VoiceResult,
 } from '../../types/voice'
 import { choiceMargin, type JevAnswers, type JevChoiceAnswer, type JevOutcome, type JevQuestions } from './jevClient'
+import { CHAT_GROUP_LIMIT, ownWords, readChatCommand, readChatTarget, type ChatTarget } from './voiceCommandRules'
 import type { LlmChatStep, LlmDecision, LlmNewChatStep, LlmRouterInput, LlmStep } from './voiceLlmRouter'
 import {
   compactLetters,
@@ -26,6 +27,7 @@ import {
   extractNewChatByRule,
   extractSendByRule,
   normalizeTranscript,
+  stripFillers,
   type LlmExtraction,
   type ProjectAliasEntry,
   type RuleExtraction,
@@ -94,12 +96,32 @@ export type VoiceRouterDeps = {
   decideWithLlm: (input: LlmRouterInput) => Promise<LlmDecision | null>
 }
 
-/** Why Jev's pass 1 was not enough to act on. */
-export type VoiceFallbackReason = 'low_confidence' | 'other' | 'compound' | 'jev_unavailable' | 'chat_unclear'
+/**
+ * What a caller with a screen (the watch) adds. The iPhone passes none of it,
+ * and without it every rule below is off, so its routing is unchanged.
+ */
+export type VoiceRouteOptions = {
+  /** The chat open on the screen: a reply, "tell it …" or a plain message goes there. */
+  openChat?: VoiceChatRow | null
+  /** Chats on the screen: offered first, and they win near-ties. */
+  visibleChatIds?: readonly string[]
+  /** Stop and summarize commands, and whole panel sections as targets ("all unread"). */
+  chatActions?: boolean
+}
+
+type Screen = { open: VoiceChatRow | null; visible: ReadonlySet<string>; actions: boolean }
+
+function readScreen(options: VoiceRouteOptions): Screen | null {
+  if (!options.openChat && !options.visibleChatIds?.length && !options.chatActions) return null
+  return { open: options.openChat ?? null, visible: new Set(options.visibleChatIds ?? []), actions: options.chatActions === true }
+}
+
+/** Why Jev's pass 1 was not enough to act on. `group_message`: a whole section's message the rules could not cut. */
+export type VoiceFallbackReason = 'low_confidence' | 'other' | 'compound' | 'jev_unavailable' | 'chat_unclear' | 'group_message'
 
 export type VoiceRouteTrace = {
-  /** Who decided: Jev, the LLM fallback, Jev with the LLM settling the chat, or nobody (empty or failed). */
-  path?: 'jev' | 'llm' | 'jev+llm' | 'none'
+  /** Who decided: Jev, the LLM fallback, Jev with the LLM settling the chat, the screen rules, or nobody (empty or failed). */
+  path?: 'jev' | 'llm' | 'jev+llm' | 'rule' | 'none'
   calls: Array<{ pass: 1 | 2; ok: boolean; reason?: string; status?: number; elapsedMs: number }>
   fallback?: { reason: VoiceFallbackReason; ok: boolean; provider?: string; steps?: number; elapsedMs: number }
   pass1?: { action: string; actionConfidence: number; actionProbabilities: Record<string, number>; listType: string; compound: number }
@@ -254,10 +276,20 @@ export function panelOrder(context: VoiceContext): VoiceChatRow[] {
   return VOICE_LIST_TYPES.flatMap((type) => context.sections[type])
 }
 
-/** Top panel chats in panel order, then older chats whose title or project the user named. */
-export function selectChatCandidates(heard: string, context: VoiceContext): VoiceChatRow[] {
-  const ordered = panelOrder(context)
-  const chosen = ordered.slice(0, VOICE_THRESHOLDS.panelCandidates)
+/** The open chat, then the chats on the screen in their order: candidates before the panel's. */
+function screenRows(context: VoiceContext, screen: Screen | null): VoiceChatRow[] {
+  if (!screen) return []
+  const listed = new Map([...panelOrder(context), ...context.otherChats].map((row) => [row.threadId, row]))
+  const rows = [...(screen.open ? [screen.open] : []), ...[...screen.visible].flatMap((id) => listed.get(id) ?? [])]
+  return [...new Map(rows.map((row) => [row.threadId, row])).values()].slice(0, VOICE_THRESHOLDS.panelCandidates)
+}
+
+/** Top panel chats in panel order, then older chats whose title or project the user named. A screen's chats come first. */
+export function selectChatCandidates(heard: string, context: VoiceContext, screen: Screen | null = null): VoiceChatRow[] {
+  const preferred = screenRows(context, screen)
+  const preferredIds = new Set(preferred.map((row) => row.threadId))
+  const ordered = panelOrder(context).filter((row) => !preferredIds.has(row.threadId))
+  const chosen = [...preferred, ...ordered.slice(0, VOICE_THRESHOLDS.panelCandidates)]
   const chosenIds = new Set(chosen.map((row) => row.threadId))
   const extras = [...ordered.slice(VOICE_THRESHOLDS.panelCandidates), ...context.otherChats]
     .filter((row) => !chosenIds.has(row.threadId))
@@ -478,17 +510,50 @@ function wordsFitSeveral(nameWords: string, chat: VoiceChatRow, candidates: Voic
   return { onlyProjectNamed, twins: chatsMatchingSameWords(nameWords, chat, candidates) }
 }
 
+/** Commands that act on chats the words name. Stop and summarize come only with VoiceRouteOptions. */
+type ChatAction = 'open_chat' | 'send_to_chat' | 'stop_chats' | 'summarize_chats'
+
+/** One chat, settled: opened, sent to, stopped or caught up on. */
+function chatReady(base: { heard: string; action: ChatAction; sections: VoiceContext['sections'] }, chat: VoiceChatRow, message: string, basis: VoiceBasis | null): VoiceResult {
+  const { action } = base
+  if (action === 'stop_chats' || action === 'summarize_chats') {
+    return { ...base, outcome: action === 'stop_chats' ? 'stop_ready' : 'summarize_ready', candidates: [chat], threadId: chat.threadId, ...(basis ? { basis } : {}) }
+  }
+  if (action === 'send_to_chat' && message) {
+    return { ...base, outcome: 'send_ready', candidates: [chat], threadId: chat.threadId, message, ...(basis ? { basis } : {}) }
+  }
+  return { ...base, outcome: 'open_chat', ...(action === 'send_to_chat' ? { reason: 'no_message' } : {}), candidates: [chat], threadId: chat.threadId }
+}
+
+/** The ranked chats the top does not clearly beat. */
+function nearTies(ranked: Array<[string, number]>, candidates: VoiceChatRow[]): VoiceChatRow[] {
+  const byId = new Map(candidates.map((row) => [row.threadId, row]))
+  const known = ranked.filter(([key]) => byId.has(key))
+  const top = known[0]?.[1] ?? 0
+  return known.filter(([, score]) => score > 0 && score * VOICE_THRESHOLDS.chatRatio >= top).map(([key]) => byId.get(key)!)
+}
+
+/** Of chats the words fit about equally, the one the screen points at: the open chat, else the only one on screen. */
+function pickOnScreen(contenders: VoiceChatRow[], screen: Screen): VoiceChatRow | null {
+  const open = screen.open ? contenders.find((row) => row.threadId === screen.open!.threadId) : undefined
+  if (open) return open
+  const visible = contenders.filter((row) => screen.visible.has(row.threadId))
+  return visible.length === 1 ? visible[0] : null
+}
+
 /**
  * What the user sees for one chat command, whoever picked the chat. A clear
- * pick still becomes a chooser when the words fit several chats equally.
+ * pick still becomes a chooser when the words fit several chats equally,
+ * unless a screen points at one of them.
  */
 function decideChat(
   heard: string,
   context: VoiceContext,
-  action: 'open_chat' | 'send_to_chat',
+  action: ChatAction,
   candidates: VoiceChatRow[],
   pick: ChatPick,
   message: string,
+  screen: Screen | null = null,
 ): VoiceResult {
   const base = { heard, action, sections: context.sections }
   const withMessage = message ? { message } : {}
@@ -507,36 +572,71 @@ function decideChat(
   }
   const namedProjects = namedProjectNames(nameWords, new Set([...candidates.map((row) => row.projectName), ...context.projects.map((project) => project.label)]))
   const ambiguity = wordsFitSeveral(nameWords, chat, candidates, namedProjects)
+  const { twins } = ambiguity
+  if (screen) {
+    const contenders = !clear ? nearTies(ranked, candidates)
+      : ambiguity.onlyProjectNamed ? candidates.filter((row) => row.projectName === chat.projectName)
+      : twins.length > 0 ? [chat, ...twins]
+      : []
+    const shown = pickOnScreen(contenders, screen)
+    if (shown) return chatReady(base, shown, message, 'screen')
+  }
   if (clear && ambiguity.onlyProjectNamed) {
     return { ...base, outcome: 'picker', reason: 'same_project', candidates: pickerRows(ranked, candidates, new Set([chat.projectName])), ...withMessage }
   }
-  const { twins } = ambiguity
   if (clear && twins.length > 0) {
     const ids = new Set([chat.threadId, ...twins.map((row) => row.threadId)])
     const rows = [chat, ...pickerRows(ranked, candidates).filter((row) => ids.has(row.threadId) && row.threadId !== chat.threadId)]
     for (const row of twins) if (!rows.includes(row)) rows.push(row)
     return { ...base, outcome: 'picker', reason: 'same_words', candidates: rows.slice(0, VOICE_THRESHOLDS.pickerMax), ...withMessage }
   }
-  if (clear) {
-    if (action === 'send_to_chat' && message) {
-      return { ...base, outcome: 'send_ready', candidates: [chat], threadId: chat.threadId, message, ...(pick.basis ? { basis: pick.basis } : {}) }
-    }
-    return { ...base, outcome: 'open_chat', ...(action === 'send_to_chat' ? { reason: 'no_message' } : {}), candidates: [chat], threadId: chat.threadId }
-  }
+  if (clear) return chatReady(base, chat, message, pick.basis)
   return { ...base, outcome: 'picker', reason: 'close_call', candidates: pickerRows(ranked, candidates, namedProjects), ...withMessage }
 }
 
+/** "open …", "go to …": words that ask for a chat even when no title matches. */
+const OPEN_WORDS = /^(?:open|go to|go back to|switch to|jump to|jump into|take me to|pull up|bring up|view)\b/iu
+/** "chat" and its synonyms; not "one" or "agent", which plain replies use too ("go with that one"). */
+const CHAT_WORDS = /\b(?:chats?|threads?|conversations?|sessions?)\b/iu
+/** A stop or summarize target can also be "the stripe one" or "the busy agents". */
+const CHAT_NOUN_WORDS = /\b(?:chats?|threads?|conversations?|sessions?|ones?|agents?)\b/iu
+/** Words that call a chat a chat: "the stripe chat", "that thread", "the webhook one"; not "that one". */
+const CHAT_REFERENCE = /\b(?:chats?|threads?|conversations?|sessions?)\b|\b(?:the|my|that|this)\s+(?:[\w'-]+\s+){1,4}ones?\b/iu
+
+/**
+ * With a chat open, whether the words take a command to another chat: a send's
+ * target ("tell the stripe one …"), "open …", or a stop or summarize target.
+ * Words that only call some chat a chat ("the stripe chat should …") need Jev
+ * to be sure; a topic that shares a word with a title never does.
+ */
+function namesAnotherChat(action: ChatAction, heard: string, chatPhrase: string | undefined): 'yes' | 'if_sure' | 'no' {
+  if (action === 'stop_chats' || action === 'summarize_chats' || chatPhrase) return 'yes'
+  if (action === 'open_chat' && OPEN_WORDS.test(stripFillers(heard))) return 'yes'
+  return CHAT_REFERENCE.test(heard) ? 'if_sure' : 'no'
+}
+
+/**
+ * The chat the words name, for a command on one chat. `named`: the words a
+ * stop or summarize rule found. With a chat open on the screen, the words go
+ * to it unless they name another chat (namesAnotherChat).
+ */
 async function routeChatTarget(
   heard: string,
   context: VoiceContext,
-  action: 'open_chat' | 'send_to_chat',
+  action: ChatAction,
   deps: VoiceRouterDeps,
   trace: VoiceRouteTrace,
+  screen: Screen | null = null,
+  named?: string,
 ): Promise<VoiceResult> {
   const rule = action === 'send_to_chat' ? extractSendByRule(heard) : null
-  const candidates = selectChatCandidates(heard, context)
+  const chatPhrase = named ?? rule?.chatPhrase
+  const elsewhere = screen?.open ? namesAnotherChat(action, heard, chatPhrase) : 'yes'
+  if (screen?.open && elsewhere === 'no') return replyToOpenChat(heard, context, screen.open)
+  const open = screen?.open && elsewhere === 'if_sure' ? screen.open : null
+  const candidates = selectChatCandidates(heard, context, screen)
   trace.candidateCount = candidates.length
-  const messagePromise = action === 'send_to_chat' ? extractMessage(action, heard, rule, deps, trace) : Promise.resolve('')
+  const messagePromise = action === 'send_to_chat' && !open ? extractMessage(action, heard, rule, deps, trace) : Promise.resolve('')
   const base = { heard, action, sections: context.sections }
 
   if (candidates.length === 0) {
@@ -546,12 +646,13 @@ async function routeChatTarget(
 
   const questions = buildChatQuestion(candidates, context.nowMs)
   const [outcome, message] = await Promise.all([
-    deps.jev(questions, { spoken_request: heard, ...(rule?.chatPhrase ? { chat_named_as: rule.chatPhrase } : {}) }),
+    deps.jev(questions, { spoken_request: heard, ...(chatPhrase ? { chat_named_as: chatPhrase } : {}) }),
     messagePromise,
   ])
   trace.calls.push({ pass: 2, ok: outcome.ok, ...(outcome.ok ? {} : { reason: outcome.reason, status: outcome.status }), elapsedMs: outcome.elapsedMs })
 
   if (!outcome.ok) {
+    if (open) return replyToOpenChat(heard, context, open)
     // Jev is unavailable: offer the chats the words point at, else the panel's top chats.
     const ranked = candidates
       .map((row, index) => ({ row, index, score: wordMatchScore(heard, row) }))
@@ -564,7 +665,7 @@ async function routeChatTarget(
   const answer = outcome.answers.chat
   const margin = choiceMargin(answer)
   trace.pass2 = { top: margin.top, topProbability: margin.topProbability, ratio: margin.ratio }
-  const nameWords = rule?.chatPhrase ?? heard
+  const nameWords = chatPhrase ?? heard
   const chat = answer.choice === 'none' ? null : candidates.find((row) => row.threadId === answer.choice) ?? null
   // When Jev's top chat is also the only best match for the words, two signals agree.
   const wordsAgree = Boolean(chat) && uniqueBestWordMatch(nameWords, candidates)?.threadId === answer.choice
@@ -573,13 +674,18 @@ async function routeChatTarget(
   const clear = jevSure || wordsSure
   // Jev's own scores order the chooser; "none" carries no suggestion of its own.
   const pick: ChatPick = { chat, clear, ranked: chat ? margin.ranked : [], nameWords, basis: jevSure ? 'jev' : wordsSure ? 'jev+words' : null }
+  if (open) {
+    if (!clear || !chat || chat.threadId === open.threadId) return replyToOpenChat(heard, context, open)
+    const otherMessage = action === 'send_to_chat' ? await extractMessage(action, heard, rule, deps, trace) : ''
+    return decideChat(heard, context, action, candidates, pick, otherMessage, screen)
+  }
   // The LLM cannot settle a chat the words themselves leave open; that is the chooser's job.
   const namedProjects = namedProjectNames(nameWords, new Set([...candidates.map((row) => row.projectName), ...context.projects.map((project) => project.label)]))
   const ambiguity = chat ? wordsFitSeveral(nameWords, chat, candidates, namedProjects) : null
   const wordsLeaveItOpen = Boolean(ambiguity && (ambiguity.onlyProjectNamed || ambiguity.twins.length > 0))
-  if (clear || wordsLeaveItOpen) return decideChat(heard, context, action, candidates, pick, message)
-  const settled = await settleChatWithLlm(heard, context, action, candidates, pick, margin.ranked, deps, trace)
-  return decideChat(heard, context, action, candidates, settled.pick, message || settled.message)
+  if (clear || wordsLeaveItOpen) return decideChat(heard, context, action, candidates, pick, message, screen)
+  const settled = await settleChatWithLlm(heard, context, action, candidates, pick, margin.ranked, deps, trace, screen)
+  return decideChat(heard, context, action, candidates, settled.pick, message || settled.message, screen)
 }
 
 /**
@@ -591,16 +697,17 @@ async function routeChatTarget(
 async function settleChatWithLlm(
   heard: string,
   context: VoiceContext,
-  action: 'open_chat' | 'send_to_chat',
+  action: ChatAction,
   candidates: VoiceChatRow[],
   jevPick: ChatPick,
   jevRanked: Array<[string, number]>,
   deps: VoiceRouterDeps,
   trace: VoiceRouteTrace,
+  screen: Screen | null = null,
 ): Promise<{ pick: ChatPick; message: string }> {
   const started = performance.now()
-  const decision = await deps.decideWithLlm({ heard, chats: candidates, projects: context.projects, describeAge: (iso) => describeAge(iso, context.nowMs) }).catch(() => null)
-  const step = decision?.steps.find((entry): entry is LlmChatStep => entry.action === 'open_chat' || entry.action === 'send_to_chat')
+  const decision = await deps.decideWithLlm(llmInput(heard, context, candidates, screen)).catch(() => null)
+  const step = decision?.steps.find(isChatStep)
   trace.fallback = { reason: 'chat_unclear', ok: Boolean(decision), elapsedMs: Math.round(performance.now() - started), ...(decision ? { provider: decision.provider, steps: decision.steps.length } : {}) }
   const chat = step?.threadId ? candidates.find((row) => row.threadId === step.threadId) ?? null : null
   if (!step || !chat) return { pick: jevPick, message: '' }
@@ -725,6 +832,20 @@ async function routeNewChat(heard: string, context: VoiceContext, deps: VoiceRou
 // ---------------------------------------------------------------------------
 // LLM fallback
 
+function llmInput(heard: string, context: VoiceContext, candidates: VoiceChatRow[], screen: Screen | null): LlmRouterInput {
+  return {
+    heard,
+    chats: candidates,
+    projects: context.projects,
+    describeAge: (iso) => describeAge(iso, context.nowMs),
+    ...(screen?.actions ? { chatActions: true } : {}),
+  }
+}
+
+function isChatStep(step: LlmStep): step is LlmChatStep {
+  return step.action !== 'list_chats' && step.action !== 'new_chat'
+}
+
 /** A score for each of the LLM's suggestions, best first, so pickerRows keeps its order. */
 function llmRanking(step: LlmChatStep): Array<[string, number]> {
   const ids = [...(step.threadId ? [step.threadId] : []), ...step.alternatives]
@@ -736,11 +857,17 @@ function llmRanking(step: LlmChatStep): Array<[string, number]> {
  * words spelled out in it still count (`single`); in a multi-step command they
  * mix several requests, so only the LLM's per-step words are used.
  */
-function decideLlmStep(heard: string, context: VoiceContext, candidates: VoiceChatRow[], step: LlmStep, steps: LlmStep[]): VoiceResult {
+function decideLlmStep(heard: string, context: VoiceContext, candidates: VoiceChatRow[], step: LlmStep, steps: LlmStep[], screen: Screen | null = null): VoiceResult {
   const single = steps.length === 1
   const draft = step.action !== 'list_chats' && step.draftOnly ? { draftOnly: true } : {}
   if (step.action === 'list_chats') return routeList(heard, context, step.listType)
-  if (step.action === 'new_chat') return { ...decideLlmNewChat(heard, context, candidates, step, steps), ...draft }
+  if (step.action === 'new_chat') {
+    // With a chat open, a task said on its own is a reply to it.
+    if (screen?.open && single && !asksForNewChat(heard, context)) return { ...replyToOpenChat(heard, context, screen.open), ...draft }
+    return { ...decideLlmNewChat(heard, context, candidates, step, steps), ...draft }
+  }
+  const onScreen = screen ? decideLlmStepOnScreen(heard, context, step, single, screen) : null
+  if (onScreen) return { ...onScreen, ...draft }
   const rule = single && step.action === 'send_to_chat' ? extractSendByRule(heard) : null
   const message = step.action === 'send_to_chat' ? step.message || rule?.message || '' : ''
   const chat = step.threadId ? candidates.find((row) => row.threadId === step.threadId) ?? null : null
@@ -749,7 +876,41 @@ function decideLlmStep(heard: string, context: VoiceContext, candidates: VoiceCh
   const wordsNameIt = Boolean(chat) && uniqueBestWordMatch(nameWords, candidates)?.threadId === chat?.threadId
   const clear = Boolean(chat) && (step.certain || wordsNameIt)
   const basis: VoiceBasis | null = !clear ? null : wordsNameIt ? 'llm+words' : 'llm'
-  return { ...decideChat(heard, context, step.action, candidates, { chat, clear, ranked: llmRanking(step), nameWords, basis }, message), ...draft }
+  return { ...decideChat(heard, context, step.action, candidates, { chat, clear, ranked: llmRanking(step), nameWords, basis }, message, screen), ...draft }
+}
+
+/**
+ * An LLM chat step for a caller with a screen. A whole section comes from the
+ * words the model copied, read by code (the model never picks the section).
+ * With a chat open, a step whose words name no chat is about that chat, whatever
+ * chat the model guessed, unless the user asked to open one. Null for the usual
+ * decision.
+ */
+function decideLlmStepOnScreen(heard: string, context: VoiceContext, step: LlmChatStep, single: boolean, screen: Screen): VoiceResult | null {
+  const { action } = step
+  const target: ChatTarget = step.chatWords ? readChatTarget(step.chatWords) : { kind: 'self' }
+  if (screen.actions && target.kind === 'group') {
+    if (action === 'open_chat') return routeList(heard, context, target.section)
+    if (action === 'send_to_chat') return step.message ? groupResult(heard, context, action, target.section, step.message) : noGroupMessage(heard, context, target.section)
+    return groupResult(heard, context, action, target.section)
+  }
+  const acting = action === 'stop_chats' || action === 'summarize_chats'
+  if (acting && target.kind === 'everything') return targetResult(heard, context, action, target, screen)
+  if (screen.open && single) {
+    // As for Jev (namesAnotherChat), with the words the model copied; a chat it only called a chat must be one it is sure of.
+    const rulePhrase = extractSendByRule(heard)?.chatPhrase
+    const elsewhere = target.kind === 'self' ? (acting ? 'no' : namesAnotherChat(action, heard, rulePhrase))
+      : acting || rulePhrase || (action === 'open_chat' && OPEN_WORDS.test(stripFillers(heard))) ? 'yes'
+      : CHAT_REFERENCE.test(step.chatWords) ? 'if_sure'
+      : 'no'
+    if (elsewhere === 'yes' || (elsewhere === 'if_sure' && step.certain && step.threadId && step.threadId !== screen.open.threadId)) return null
+    if (acting) return targetResult(heard, context, action, { kind: 'self' }, screen)
+    return replyToOpenChat(heard, context, screen.open, action === 'send_to_chat' && step.message ? step.message : undefined)
+  }
+  // A chat named in so many words: the usual decision, a chooser when the model could not find it.
+  if (target.kind !== 'self') return null
+  if (acting && !step.threadId) return targetResult(heard, context, action, target, screen)
+  return null
 }
 
 /**
@@ -786,38 +947,121 @@ async function routeWithLlm(
   jevAction: VoiceAction,
   deps: VoiceRouterDeps,
   trace: VoiceRouteTrace,
+  screen: Screen | null = null,
 ): Promise<VoiceResult> {
-  const candidates = selectChatCandidates(heard, context)
+  const candidates = selectChatCandidates(heard, context, screen)
   trace.candidateCount = candidates.length
   const started = performance.now()
-  const decision = await deps.decideWithLlm({
-    heard,
-    chats: candidates,
-    projects: context.projects,
-    describeAge: (iso) => describeAge(iso, context.nowMs),
-  }).catch(() => null)
+  const decision = await deps.decideWithLlm(llmInput(heard, context, candidates, screen)).catch(() => null)
   const elapsedMs = Math.round(performance.now() - started)
   trace.fallback = { reason, ok: Boolean(decision), elapsedMs, ...(decision ? { provider: decision.provider, steps: decision.steps.length } : {}) }
+  // With a chat open, words the LLM could not place are a reply to it, unless they name chats or ask for several things.
+  const reply = screen?.open && reason !== 'compound' && !CHAT_WORDS.test(heard) ? screen.open : null
   if (!decision) {
     trace.path = 'none'
-    return notUnderstood(heard, context, reason, jevAction)
+    return reply ? replyToOpenChat(heard, context, reply) : notUnderstood(heard, context, reason, jevAction)
   }
   trace.path = 'llm'
-  if (decision.steps.length === 0) return notUnderstood(heard, context, 'other')
-  const results = decision.steps.map((step) => decideLlmStep(heard, context, candidates, step, decision.steps))
+  if (decision.steps.length === 0) return reply ? replyToOpenChat(heard, context, reply) : notUnderstood(heard, context, 'other')
+  const results = decision.steps.map((step) => decideLlmStep(heard, context, candidates, step, decision.steps, screen))
   if (results.length === 1) return results[0]
   return { heard, action: results[0].action, outcome: 'steps', sections: context.sections, candidates: [], steps: results }
+}
+
+// ---------------------------------------------------------------------------
+// A caller with a screen (VoiceRouteOptions)
+
+/** "new chat …", or a project named with words that start something: a new chat even with a chat open. */
+function asksForNewChat(heard: string, context: VoiceContext): boolean {
+  if (extractNewChatByRule(heard, projectAliasEntries(context.projects))) return true
+  return /\b(?:new|start|fresh|another|create|spin up|kick off)\b/iu.test(heard) && namedProjectNames(heard, context.projects.map((project) => project.label)).size > 0
+}
+
+/** The words, or `message`, as a send to the chat open on the screen. */
+function replyToOpenChat(heard: string, context: VoiceContext, open: VoiceChatRow, message = ownWords(heard)): VoiceResult {
+  return chatReady({ heard, action: 'send_to_chat', sections: context.sections }, open, message, 'screen')
+}
+
+/** A whole panel section, at most CHAT_GROUP_LIMIT chats in panel order; code chose it, so it is sure. */
+function groupResult(heard: string, context: VoiceContext, action: 'send_to_chat' | 'stop_chats' | 'summarize_chats', section: VoiceListType, message = ''): VoiceResult {
+  const base = { heard, action, group: section, sections: context.sections }
+  const rows = context.sections[section].slice(0, CHAT_GROUP_LIMIT)
+  if (rows.length === 0) return { ...base, outcome: 'empty', reason: 'empty_group', candidates: [] }
+  const outcome = action === 'send_to_chat' ? 'send_ready' : action === 'stop_chats' ? 'stop_ready' : 'summarize_ready'
+  return { ...base, outcome, candidates: rows, basis: 'words', ...(message ? { message } : {}) }
+}
+
+/** A send to a whole section without words to send. */
+function noGroupMessage(heard: string, context: VoiceContext, section: VoiceListType): VoiceResult {
+  return { heard, action: 'send_to_chat', outcome: 'not_understood', reason: 'no_message', group: section, sections: context.sections, candidates: [] }
+}
+
+/** A stop or summarize that names a section, everything or nothing; null when it names a chat. */
+function targetResult(heard: string, context: VoiceContext, action: 'stop_chats' | 'summarize_chats', target: ChatTarget, screen: Screen): VoiceResult | null {
+  if (target.kind === 'group') return groupResult(heard, context, action, target.section)
+  if (target.kind === 'everything') return groupResult(heard, context, action, action === 'stop_chats' ? 'running' : 'unread')
+  if (target.kind === 'named') return null
+  if (screen.open) return chatReady({ heard, action, sections: context.sections }, screen.open, '', 'screen')
+  if (action === 'summarize_chats') return groupResult(heard, context, action, 'unread')
+  // "stop it" with no chat open: which of the working chats.
+  const working = [...context.sections.running, ...context.sections.needs_you].slice(0, VOICE_THRESHOLDS.pickerMax)
+  const base = { heard, action, sections: context.sections }
+  return working.length === 0
+    ? { ...base, outcome: 'empty', reason: 'empty_group', group: 'running', candidates: [] }
+    : { ...base, outcome: 'picker', reason: 'which_chat', candidates: working }
+}
+
+/** Words that name a chat rather than a topic: "the stripe one", or most of a title. */
+function namesChat(words: string, candidates: VoiceChatRow[]): boolean {
+  return CHAT_NOUN_WORDS.test(words) || candidates.some((row) => wordMatchScore(words, row) >= 2) || uniqueBestWordMatch(words, candidates) !== null
+}
+
+/** The commands the phrase rules settle before Jev; null for the usual routing. */
+async function routeByRule(heard: string, context: VoiceContext, deps: VoiceRouterDeps, trace: VoiceRouteTrace, screen: Screen): Promise<VoiceResult | null> {
+  const command = readChatCommand(heard, { actions: screen.actions, openChat: Boolean(screen.open) })
+  if (!command) return null
+  if (command.kind === 'reply') {
+    trace.path = 'rule'
+    return replyToOpenChat(heard, context, screen.open!, command.message)
+  }
+  if (command.kind === 'send_group') {
+    trace.path = 'rule'
+    if (command.message) return groupResult(heard, context, 'send_to_chat', command.section, command.message)
+    return groupMessageWithLlm(heard, context, command.section, deps, trace, screen)
+  }
+  const action = command.kind === 'stop' ? 'stop_chats' : 'summarize_chats'
+  const settled = targetResult(heard, context, action, command.target, screen)
+  if (settled) {
+    trace.path = 'rule'
+    return settled
+  }
+  // A chat by name, which Jev's pass 2 picks; words that name no chat ("summarise the news") route as usual.
+  const words = command.target.kind === 'named' ? command.target.words : ''
+  if (!namesChat(words, selectChatCandidates(heard, context, screen))) return null
+  trace.path = 'rule'
+  return routeChatTarget(heard, context, action, deps, trace, screen, words)
+}
+
+/** "tell all unread, um, the deploy is done": the rules found the section; the LLM cuts the user's own words. */
+async function groupMessageWithLlm(heard: string, context: VoiceContext, section: VoiceListType, deps: VoiceRouterDeps, trace: VoiceRouteTrace, screen: Screen): Promise<VoiceResult> {
+  const started = performance.now()
+  const decision = await deps.decideWithLlm(llmInput(heard, context, selectChatCandidates(heard, context, screen), screen)).catch(() => null)
+  trace.fallback = { reason: 'group_message', ok: Boolean(decision), elapsedMs: Math.round(performance.now() - started), ...(decision ? { provider: decision.provider, steps: decision.steps.length } : {}) }
+  const [step] = decision?.steps ?? []
+  const message = decision?.steps.length === 1 && step?.action === 'send_to_chat' ? step.message : ''
+  return message ? groupResult(heard, context, 'send_to_chat', section, message) : noGroupMessage(heard, context, section)
 }
 
 /**
  * Routes a command. Words asking only for a draft ("draft …", "don't send")
  * are taken out before routing and mark the result (and each step) draft-only;
- * the result keeps everything that was heard.
+ * the result keeps everything that was heard. `options` are for a caller with
+ * a screen (the watch); the iPhone passes none.
  */
-export async function routeVoiceCommand(rawHeard: string, context: VoiceContext, deps: VoiceRouterDeps): Promise<VoiceRouteOutput> {
+export async function routeVoiceCommand(rawHeard: string, context: VoiceContext, deps: VoiceRouterDeps, options: VoiceRouteOptions = {}): Promise<VoiceRouteOutput> {
   const heard = normalizeTranscript(rawHeard)
   const { text, draftOnly } = detectDraftOnly(heard)
-  const { result, trace } = await routeCommandText(text, context, deps)
+  const { result, trace } = await routeCommandText(text, context, deps, readScreen(options))
   const mark = (value: VoiceResult): VoiceResult => ({
     ...value,
     heard,
@@ -827,37 +1071,45 @@ export async function routeVoiceCommand(rawHeard: string, context: VoiceContext,
   return { result: mark(result), trace }
 }
 
-async function routeCommandText(heard: string, context: VoiceContext, deps: VoiceRouterDeps): Promise<VoiceRouteOutput> {
+async function routeCommandText(heard: string, context: VoiceContext, deps: VoiceRouterDeps, screen: Screen | null): Promise<VoiceRouteOutput> {
   const trace: VoiceRouteTrace = { calls: [] }
   if (!heard) {
     trace.path = 'none'
     return { result: notUnderstood(heard, context, 'empty'), trace }
   }
+  if (screen) {
+    const ruled = await routeByRule(heard, context, deps, trace, screen)
+    if (ruled) return { result: ruled, trace }
+  }
 
   // A few titles let Jev see that "pull up the payouts report" names a chat.
   // The same chats pass 2 would choose from, including older ones the words name.
-  const chatTitles = selectChatCandidates(heard, context).map((row) => row.title)
+  const chatTitles = selectChatCandidates(heard, context, screen).map((row) => row.title)
   const pass1 = await deps.jev(buildPass1Questions(), { spoken_request: heard, ...(chatTitles.length > 0 ? { chat_titles: chatTitles } : {}) })
   trace.calls.push({ pass: 1, ok: pass1.ok, ...(pass1.ok ? {} : { reason: pass1.reason, status: pass1.status }), elapsedMs: pass1.elapsedMs })
-  if (!pass1.ok) return { result: await routeWithLlm(heard, context, 'jev_unavailable', 'other', deps, trace), trace }
+  if (!pass1.ok) return { result: await routeWithLlm(heard, context, 'jev_unavailable', 'other', deps, trace, screen), trace }
 
   const { action, list_type: listType, compound } = pass1.answers
   trace.pass1 = { action: action.choice, actionConfidence: action.confidence, actionProbabilities: action.probabilities, listType: listType.choice, compound: compound.noul }
   const chosen = action.choice as VoiceAction
   if (chosen === 'other' && (action.probabilities.other ?? 0) >= VOICE_THRESHOLDS.trustedOther) {
     trace.path = 'jev'
-    return { result: notUnderstood(heard, context, 'other'), trace }
+    return { result: screen?.open ? replyToOpenChat(heard, context, screen.open) : notUnderstood(heard, context, 'other'), trace }
   }
-  if (chosen === 'other') return { result: await routeWithLlm(heard, context, 'other', chosen, deps, trace), trace }
+  if (chosen === 'other') return { result: await routeWithLlm(heard, context, 'other', chosen, deps, trace, screen), trace }
   const fallback: VoiceFallbackReason | null = compound.noul >= VOICE_THRESHOLDS.compound ? 'compound'
     : action.confidence < VOICE_THRESHOLDS.actionConfidence ? 'low_confidence'
     : null
-  if (fallback) return { result: await routeWithLlm(heard, context, fallback, chosen, deps, trace), trace }
+  if (fallback) return { result: await routeWithLlm(heard, context, fallback, chosen, deps, trace, screen), trace }
 
   trace.path = 'jev'
   if (chosen === 'list_chats') return { result: routeList(heard, context, listType.choice as VoiceListType), trace }
-  if (chosen === 'new_chat') return { result: await routeNewChat(heard, context, deps, trace), trace }
-  return { result: await routeChatTarget(heard, context, chosen, deps, trace), trace }
+  if (chosen === 'new_chat') {
+    // With a chat open, a task said on its own ("run the tests again") is a reply to it.
+    if (screen?.open && !asksForNewChat(heard, context)) return { result: replyToOpenChat(heard, context, screen.open), trace }
+    return { result: await routeNewChat(heard, context, deps, trace), trace }
+  }
+  return { result: await routeChatTarget(heard, context, chosen, deps, trace, screen), trace }
 }
 
 /** Whether a send may be confirmed inside the Shortcut, without the app: only when Jev itself was sure. */

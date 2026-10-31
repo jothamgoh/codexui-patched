@@ -44,7 +44,7 @@ import { askJev } from './jevClient'
 import { buildVoiceContext, type VoiceSourceSnapshot } from './voiceContext'
 import { decideWithLlm } from './voiceLlmRouter'
 import { extractMessageWithLlm, type LlmEnv } from './voiceMessage'
-import { allowsShortcutConfirm, routeVoiceCommand, type VoiceRouteTrace } from './voiceRouter'
+import { allowsShortcutConfirm, routeVoiceCommand, type VoiceRouteTrace, type VoiceRouterDeps } from './voiceRouter'
 import { VoiceResultStore } from './voiceStore'
 
 export const VOICE_ENV = {
@@ -147,6 +147,26 @@ export async function collectVoiceSnapshot(bridge: VoiceBridgeSources, push: Pic
   return { ...sources, threadSummaries, extraSummaries }
 }
 
+/** The LLM fallback's keys from the environment. */
+export function voiceLlmEnv(values: NodeJS.ProcessEnv): LlmEnv {
+  return {
+    anthropicApiKey: values[VOICE_ENV.anthropicApiKey]?.trim(),
+    anthropicWorkspaceId: values[VOICE_ENV.anthropicWorkspaceId]?.trim(),
+    deepseekApiKey: values[VOICE_ENV.deepseekApiKey]?.trim(),
+    kimiApiKey: values[VOICE_ENV.kimiApiKey]?.trim(),
+  }
+}
+
+/** Jev and the LLM fallback as the router calls them, with the environment's keys. */
+export function createVoiceRouterDeps(values: NodeJS.ProcessEnv, fetchImpl: typeof fetch): VoiceRouterDeps {
+  const llmEnv = voiceLlmEnv(values)
+  return {
+    jev: (questions, state) => askJev(questions, state, { apiKey: values[VOICE_ENV.typesafeApiKey]?.trim() ?? '', fetchImpl }),
+    extractWithLlm: (kind, transcript) => extractMessageWithLlm(kind, transcript, llmEnv, fetchImpl),
+    decideWithLlm: (input) => decideWithLlm(input, llmEnv, fetchImpl),
+  }
+}
+
 /** The handler as mounted by the production server and the Vite dev server. */
 export function createServerVoiceHandler(bridge: VoiceBridgeSources, push: VoicePushSink) {
   return createVoiceCommandHandler({
@@ -242,7 +262,7 @@ function plural(count: number, word: string): string {
   return `${count} ${word}${count === 1 ? '' : 's'}`
 }
 
-const EMPTY_LIST_SAY: Record<string, string> = {
+export const EMPTY_LIST_SAY: Record<string, string> = {
   needs_you: 'Nothing waiting on you ✓',
   running: 'Nothing running ✓',
   unread: 'Nothing unread ✓',
@@ -453,17 +473,7 @@ export function createVoiceCommandHandler(deps: VoiceRouteDeps) {
     const [snapshot, settings] = await Promise.all([deps.collectSnapshot(), currentSettings()])
     const listed = buildVoiceContext(snapshot)
     const context = { ...listed, defaultProject: resolveDefaultProject(settings, values, listed.projects) }
-    const llmEnv: LlmEnv = {
-      anthropicApiKey: values[VOICE_ENV.anthropicApiKey]?.trim(),
-      anthropicWorkspaceId: values[VOICE_ENV.anthropicWorkspaceId]?.trim(),
-      deepseekApiKey: values[VOICE_ENV.deepseekApiKey]?.trim(),
-      kimiApiKey: values[VOICE_ENV.kimiApiKey]?.trim(),
-    }
-    const { result, trace } = await routeVoiceCommand(text, context, {
-      jev: (questions, state) => askJev(questions, state, { apiKey: values[VOICE_ENV.typesafeApiKey]?.trim() ?? '', fetchImpl }),
-      extractWithLlm: (kind, transcript) => extractMessageWithLlm(kind, transcript, llmEnv, fetchImpl),
-      decideWithLlm: (input) => decideWithLlm(input, llmEnv, fetchImpl),
-    })
+    const { result, trace } = await routeVoiceCommand(text, context, createVoiceRouterDeps(values, fetchImpl))
     const stored = store.save(result)
     const plan = planAutoDelivery(result, stored, options.dryRun ? { autoSend: true } : settings)
     const totalMs = Math.round(performance.now() - started)

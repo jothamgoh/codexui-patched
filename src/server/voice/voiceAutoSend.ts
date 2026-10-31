@@ -10,8 +10,9 @@ import type { VoiceBasis, VoiceResult, VoiceSettings } from '../../types/voice'
 /**
  * The LLM alone (`llm`) is not enough: it needs the words or Jev to agree.
  * `default`: no project was named (Jev or the LLM sure, and no name in the words).
+ * `screen`: the chat open on the caller's screen (the watch; the iPhone never has one).
  */
-export const AUTO_SEND_BASES: ReadonlySet<VoiceBasis> = new Set<VoiceBasis>(['jev', 'jev+words', 'jev+llm', 'llm+words', 'words', 'default'])
+export const AUTO_SEND_BASES: ReadonlySet<VoiceBasis> = new Set<VoiceBasis>(['jev', 'jev+words', 'jev+llm', 'llm+words', 'words', 'default', 'screen'])
 
 export type AutoSendSkip =
   | 'setting_off'

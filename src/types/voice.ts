@@ -12,7 +12,8 @@ export const VOICE_LIST_LABELS: Record<VoiceListType, string> = {
 
 export type VoiceAgent = 'claude' | 'codex'
 
-export type VoiceAction = 'open_chat' | 'list_chats' | 'send_to_chat' | 'new_chat' | 'other'
+/** `stop_chats` and `summarize_chats` come only from callers that pass VoiceRouteOptions (the watch). */
+export type VoiceAction = 'open_chat' | 'list_chats' | 'send_to_chat' | 'new_chat' | 'stop_chats' | 'summarize_chats' | 'other'
 
 export type VoiceChatRow = {
   threadId: string
@@ -35,9 +36,11 @@ export type VoiceProjectOption = {
  * `empty`: the requested list has nothing in it. `send_ready`: one clear chat
  * and a message, typed in for the user to send. `new_chat`: the new-chat page,
  * filled in. `steps`: several requests in one command, each a row to tap.
- * `not_understood`: recent chats and what was heard.
+ * `not_understood`: recent chats and what was heard. Only for callers that
+ * pass VoiceRouteOptions: `stop_ready` and `summarize_ready`, the chats to stop
+ * or catch up on; `empty` also covers a whole section with nothing in it.
  */
-export type VoiceOutcome = 'open_chat' | 'picker' | 'empty' | 'send_ready' | 'new_chat' | 'steps' | 'not_understood'
+export type VoiceOutcome = 'open_chat' | 'picker' | 'empty' | 'send_ready' | 'new_chat' | 'steps' | 'not_understood' | 'stop_ready' | 'summarize_ready'
 
 /**
  * What made the router sure of the chat or project it picked: Jev on its own
@@ -45,9 +48,10 @@ export type VoiceOutcome = 'open_chat' | 'picker' | 'empty' | 'send_ready' | 'ne
  * (`jev+llm`), the LLM with the spoken words (`llm+words`), the words alone
  * (`words`, a rule), or the LLM alone (`llm`). `default`: the command named
  * no project, so the default project was used. Only a sure send or a new chat
- * with a project has one.
+ * with a project has one. `screen` (callers with a screen only): the chat open
+ * there, or the only chat on it that the words fit.
  */
-export type VoiceBasis = 'jev' | 'jev+words' | 'jev+llm' | 'llm+words' | 'words' | 'llm' | 'default'
+export type VoiceBasis = 'jev' | 'jev+words' | 'jev+llm' | 'llm+words' | 'words' | 'llm' | 'default' | 'screen'
 
 export type VoiceResult = {
   heard: string
@@ -66,6 +70,8 @@ export type VoiceResult = {
   basis?: VoiceBasis
   /** The user asked only to type it in ("draft…", "don't send"): never sent or started without a tap. */
   draftOnly?: boolean
+  /** The whole panel section the candidates came from ("all unread"); only with VoiceRouteOptions. */
+  group?: VoiceListType
   /** `steps` only: each request routed on its own, in the order said. */
   steps?: VoiceResult[]
 }

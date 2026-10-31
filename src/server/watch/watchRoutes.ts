@@ -6,36 +6,52 @@
  *   POST /codex-api/voice/shortcut/watch/transcribe                 audio body in, { text } out
  *   GET  /codex-api/voice/shortcut/watch/chat?id=&before=&limit=   one conversation
  *   POST /codex-api/voice/shortcut/watch/send|stop|answer|read|new
+ *   POST /codex-api/voice/shortcut/watch/command                    spoken words in, a plan out; changes nothing
+ *   POST /codex-api/voice/shortcut/watch/command/run|cancel         carries out a plan once, or drops it
+ *   POST /codex-api/voice/shortcut/watch/summaries                  each chat's latest reply in a sentence or two
  *
  * Cloudflare Access lets service tokens through only under /codex-api/voice/shortcut*,
  * so the routes live there. Every request needs `Authorization: Bearer
  * $CODEXUI_WATCH_TOKEN`, from local and LAN addresses too; without the token
- * configured the routes answer 404. Payloads come from watchMapping.ts.
+ * configured the routes answer 404. Payloads come from watchMapping.ts and
+ * watchCommand.ts.
  */
 import { stat } from 'node:fs/promises'
 import type { IncomingMessage, ServerResponse } from 'node:http'
 import { basename, isAbsolute } from 'node:path'
 import type { UiThread } from '../../types/codex'
-import { normalizeSummary, type VoiceSourceSnapshot } from '../voice/voiceContext'
+import { isVoiceCode, parseVoiceSettings, type VoiceChatRow } from '../../types/voice'
+import { isClaudeThreadId } from '../../utils/chatProvider'
+import { activityThreadTitle } from '../../utils/notificationActivity'
+import { boardInputs, normalizeSummary, type VoiceSourceSnapshot } from '../voice/voiceContext'
+import { routeVoiceCommand } from '../voice/voiceRouter'
 import {
   collectVoiceSnapshot,
   collectVoiceSources,
   configuredBearerToken,
+  createVoiceRouterDeps,
   HttpError,
   isAuthorizedShortcutRequest,
   readBody,
+  resolveDefaultProject,
   setJson,
   toTranscribeMultipart,
+  voiceLlmEnv,
+  voicePathLabel,
   within,
   type VoiceBridgeSources,
   type VoicePushSink,
+  type VoiceSources,
 } from '../voice/voiceRoutes'
+import { planChoice, planWatchCommand, WatchPlanStore, type PlanInputs, type PlannedCommand, type WatchCommandReply, type WatchPlan } from './watchCommand'
 import {
   buildChatList,
   buildChatPage,
   buildFeed,
   buildQuestionReply,
+  chatTitleOf,
   isOpenQuestion,
+  latestReply,
   projectChoices,
   readTurnStatus,
   readWatchActivity,
@@ -46,6 +62,7 @@ import {
   type WatchActivity,
   type WatchAgent,
 } from './watchMapping'
+import { SUMMARY_TIMEOUT_MS, SummaryCache, summarizeReply } from './watchSummaries'
 
 export const WATCH_ENV = { token: 'CODEXUI_WATCH_TOKEN' } as const
 export const WATCH_PREFIX = '/codex-api/voice/shortcut/watch/'
@@ -74,6 +91,12 @@ const PINNED_FIRST_WAIT_MS = 300
 const PINNED_FRESH_MS = 60_000
 const AGENTS: readonly WatchAgent[] = ['claude', 'codex']
 const MISSING_CHAT = /not found|no rollout|unknown thread|invalid thread id|does not exist/iu
+/** A minute or two of dictation is well under this. */
+const MAX_COMMAND_LENGTH = 4_000
+const MAX_VISIBLE_CHATS = 50
+const MAX_SUMMARY_CHATS = 8
+/** The open chat, when it is not in the list, is read within this. */
+const SCREEN_CHAT_READ_MS = 2_000
 
 /** What the bridge exposes for the watch (codexAppServerBridge.ts), on top of the voice sources. */
 export type WatchBridgeSources = VoiceBridgeSources & {
@@ -100,7 +123,30 @@ export type WatchRouteDeps = {
   /** For a new chat in a folder no listed chat uses yet. */
   isDirectory?: (path: string) => Promise<boolean>
   log?: (line: string) => void
+  /** Jev, the LLM fallback and the summaries' Claude Haiku calls. */
+  fetchImpl?: typeof fetch
+  /** Each chat's read and summary together. */
+  summaryTimeoutMs?: number
 }
+
+/** The chat open on the watch, and the chats on its screen, from a command's `context`. Anything malformed is left out. */
+function readScreen(value: unknown): { chatId: string | null; visibleChatIds: string[] } {
+  const record = value && typeof value === 'object' && !Array.isArray(value) ? value as Record<string, unknown> : {}
+  const chatId = typeof record.chatId === 'string' ? record.chatId.trim() : ''
+  const visible = Array.isArray(record.visibleChatIds) ? record.visibleChatIds : []
+  return {
+    chatId: chatId && chatId.length <= MAX_ID_LENGTH ? chatId : null,
+    visibleChatIds: visible.filter((id): id is string => typeof id === 'string' && id.length > 0 && id.length <= MAX_ID_LENGTH).slice(0, MAX_VISIBLE_CHATS),
+  }
+}
+
+function readCode(body: Record<string, unknown>): string {
+  if (!isVoiceCode(body.code)) throw new HttpError(400, 'Expected "code".')
+  return body.code
+}
+
+type ChatSummary = { chatId: string; title: string; turnId: string | null; summary: string | null }
+type RunOutcome = { chatId: string | null; error: HttpError | null }
 
 function oneLine(value: string): string {
   return value.replace(/\s+/gu, ' ').trim()
@@ -136,6 +182,10 @@ export function createWatchHandler(deps: WatchRouteDeps) {
   const now = deps.now ?? Date.now
   const log = deps.log ?? ((line: string) => console.info(line))
   const isDirectory = deps.isDirectory ?? (async (path: string) => (await stat(path)).isDirectory())
+  const fetchImpl = deps.fetchImpl ?? fetch
+  const summaryTimeoutMs = deps.summaryTimeoutMs ?? SUMMARY_TIMEOUT_MS
+  const plans = new WatchPlanStore(now)
+  const summaries = new SummaryCache()
 
   async function readJson(req: IncomingMessage): Promise<Record<string, unknown>> {
     let payload: unknown
@@ -375,6 +425,155 @@ export function createWatchHandler(deps: WatchRouteDeps) {
     setJson(res, 200, { ok: true, chatId })
   }
 
+  /** The chat open on the watch as the router sees chats; null when it cannot be read. */
+  async function screenChat(chatId: string, activity: WatchActivity, titles: Record<string, string>): Promise<VoiceChatRow | null> {
+    const listed = activity.rows.find((row) => row.threadId === chatId)
+    if (listed) return listed
+    const thread = normalizeSummary(await within(bridge.readThreadSummary(chatId), null, SCREEN_CHAT_READ_MS))
+    if (!thread) return null
+    return {
+      threadId: thread.id,
+      title: activityThreadTitle(titles[thread.id] ? { ...thread, title: titles[thread.id] } : thread),
+      projectName: activity.labels[thread.cwd] || thread.projectName,
+      agent: isClaudeThreadId(thread.id) ? 'claude' : 'codex',
+      status: 'recent',
+      updatedAtIso: thread.updatedAtIso || thread.createdAtIso,
+      summary: '',
+    }
+  }
+
+  /**
+   * Spoken words in, a plan out, through the iPhone's voice router with what the
+   * watch shows. Changes nothing: send, new and stop plans get a code for
+   * command/run. The words are never logged.
+   */
+  async function handleCommand(req: IncomingMessage, res: ServerResponse): Promise<void> {
+    const started = performance.now()
+    const body = await readJson(req)
+    const text = typeof body.text === 'string' ? body.text.trim() : ''
+    if (!text) throw new HttpError(400, 'Expected "text".')
+    if (text.length > MAX_COMMAND_LENGTH) throw new HttpError(413, 'The command is too long.')
+    const screen = readScreen(body.context)
+    const values = env()
+    const [snapshot, settings] = await Promise.all([listSnapshot(), within(bridge.readVoiceSettings(), null)])
+    const activity = readWatchActivity(snapshot)
+    const workingLines = new Map([...rememberedLines].map(([id, remembered]) => [id, remembered.line]))
+    const inputs: PlanInputs = { activity, workingLines, boardChatIds: new Set(boardInputs(snapshot.boardSnapshot).boardThreadIds) }
+    const openChat = screen.chatId ? await screenChat(screen.chatId, activity, snapshot.titles) : null
+    // A tap on a choice comes back as the same words with that chat open: no second routing.
+    const choice = openChat ? plans.takeChoice(text, openChat.threadId) : null
+    let planned: PlannedCommand
+    let path = 'choice'
+    if (choice && openChat) {
+      planned = planChoice(choice, openChat, inputs)
+    } else {
+      const context = { ...activity.context, defaultProject: resolveDefaultProject(parseVoiceSettings(settings), values, activity.context.projects) }
+      const { result, trace } = await routeVoiceCommand(text, context, createVoiceRouterDeps(values, fetchImpl), {
+        openChat,
+        visibleChatIds: screen.visibleChatIds,
+        chatActions: true,
+      })
+      planned = planWatchCommand(result, inputs)
+      path = `${voicePathLabel(trace)} outcome=${result.outcome}`
+    }
+    if (planned.choice) plans.remember(text, planned.choice)
+    const code = planned.plan ? plans.save(planned.plan) : null
+    log(`[watch] command kind=${planned.reply.kind} path=${path} total=${String(Math.round(performance.now() - started))}ms`)
+    setJson(res, 200, { code, ...planned.reply } satisfies WatchCommandReply)
+  }
+
+  async function attempt(work: () => Promise<string | null>): Promise<RunOutcome> {
+    try {
+      return { chatId: await work(), error: null }
+    } catch (error) {
+      return { chatId: null, error: error instanceof HttpError ? error : backendError(error) }
+    }
+  }
+
+  /** Sends go through the composer path (steering a running reply), stops interrupt each running turn, new chats are Claude. */
+  async function runPlan(plan: WatchPlan, localPort: number | undefined): Promise<RunOutcome[]> {
+    if (plan.kind === 'send') {
+      return Promise.all(plan.chatIds.map((chatId) => attempt(async () => {
+        if (await bridge.isBoardManagedChat(chatId)) throw new HttpError(409, 'A project board runs this chat. Continue it in CodexUI.')
+        await bridge.sendComposerMessage(chatId, plan.text, localPort)
+        return chatId
+      })))
+    }
+    if (plan.kind === 'stop') {
+      return Promise.all(plan.chatIds.map((chatId) => attempt(async () => {
+        const last = turnsOf(await readChat(chatId)).at(-1)
+        const turnId = typeof last?.id === 'string' ? last.id : ''
+        if (!last || !turnId || readTurnStatus(last.status) !== 'inProgress') return null
+        await bridge.interruptTurn(chatId, turnId)
+        return chatId
+      })))
+    }
+    // One at a time, as the voice route starts them.
+    const outcomes: RunOutcome[] = []
+    for (const { cwd, text } of plan.chats) outcomes.push(await attempt(async () => (await bridge.startChat({ cwd, agent: 'claude', message: text })).threadId))
+    return outcomes
+  }
+
+  /** Carries out a plan exactly once: the code is spent before anything runs. */
+  async function handleCommandRun(req: IncomingMessage, res: ServerResponse): Promise<void> {
+    const plan = plans.take(readCode(await readJson(req)))
+    if (!plan) throw new HttpError(404, 'That plan has expired, was cancelled or has already run.')
+    const outcomes = await runPlan(plan, req.socket.localPort)
+    const chatIds = outcomes.flatMap((outcome) => (outcome.chatId ? [outcome.chatId] : []))
+    const failed = outcomes.filter((outcome) => outcome.error)
+    log(`[watch] command ran kind=${plan.kind} targets=${String(outcomes.length)} done=${String(chatIds.length)} failed=${String(failed.length)}`)
+    const [first] = failed
+    if (chatIds.length === 0 && first?.error) throw first.error
+    setJson(res, 200, { ok: true, chatIds })
+  }
+
+  async function handleCommandCancel(req: IncomingMessage, res: ServerResponse): Promise<void> {
+    const state = plans.cancel(readCode(await readJson(req)))
+    if (state === 'unknown') throw new HttpError(404, 'That plan has expired.')
+    if (state === 'ran') throw new HttpError(409, 'That plan has already run.')
+    log('[watch] command cancelled')
+    setJson(res, 200, { ok: true })
+  }
+
+  /** One chat's latest reply, summarized within the time; the title even when there is no summary. */
+  async function summarizeChat(chatId: string, sources: VoiceSources, counts: Record<'summarized' | 'cached' | 'none', number>): Promise<ChatSummary> {
+    const deadline = performance.now() + summaryTimeoutMs
+    const thread = await within(bridge.readThread(chatId), null, summaryTimeoutMs)
+    if (!thread) {
+      counts.none += 1
+      return { chatId, title: '', turnId: null, summary: null }
+    }
+    const { turns: _turns, ...listed } = thread
+    const title = chatTitleOf(thread, readWatchActivity({ ...sources, threadSummaries: [listed], extraSummaries: [] }))
+    const reply = latestReply(thread)
+    if (!reply) {
+      counts.none += 1
+      return { chatId, title, turnId: null, summary: null }
+    }
+    const left = () => Math.max(0, deadline - performance.now())
+    const llmEnv = voiceLlmEnv(env())
+    const { summary, cached } = summaries.get(chatId, reply.turnId, reply.text, () => summarizeReply({ title, reply: reply.text }, llmEnv, fetchImpl, left()))
+    const text = await within(summary, null, left())
+    counts[text === null ? 'none' : cached ? 'cached' : 'summarized'] += 1
+    return { chatId, title, turnId: reply.turnId, summary: text }
+  }
+
+  /** On demand only: nothing is summarized when a reply finishes. Neither replies nor summaries are logged. */
+  async function handleSummaries(req: IncomingMessage, res: ServerResponse): Promise<void> {
+    const started = performance.now()
+    const ids = (await readJson(req)).chatIds
+    if (!Array.isArray(ids) || ids.length === 0 || ids.length > MAX_SUMMARY_CHATS
+      || !ids.every((id) => typeof id === 'string' && id.trim() && id.length <= MAX_ID_LENGTH)) {
+      throw new HttpError(400, `Expected "chatIds": 1 to ${String(MAX_SUMMARY_CHATS)} chat ids.`)
+    }
+    const chatIds = [...new Set((ids as string[]).map((id) => id.trim()))]
+    const sources = await collectVoiceSources(bridge, push, now())
+    const counts = { summarized: 0, cached: 0, none: 0 }
+    const entries = await Promise.all(chatIds.map((chatId) => summarizeChat(chatId, sources, counts)))
+    log(`[watch] summaries chats=${String(chatIds.length)} summarized=${String(counts.summarized)} cached=${String(counts.cached)} none=${String(counts.none)} total=${String(Math.round(performance.now() - started))}ms`)
+    setJson(res, 200, { summaries: entries })
+  }
+
   return (req: IncomingMessage, res: ServerResponse, next: () => void): void => {
     if (!(req.url ?? '/').split('?')[0].startsWith(WATCH_PREFIX)) {
       next()
@@ -406,6 +605,10 @@ export function createWatchHandler(deps: WatchRouteDeps) {
           case 'POST answer': return await handleAnswer(req, res)
           case 'POST read': return await handleRead(req, res)
           case 'POST new': return await handleNew(req, res)
+          case 'POST command': return await handleCommand(req, res)
+          case 'POST command/run': return await handleCommandRun(req, res)
+          case 'POST command/cancel': return await handleCommandCancel(req, res)
+          case 'POST summaries': return await handleSummaries(req, res)
           default: throw new HttpError(404, 'Unknown watch route.')
         }
       } catch (error) {

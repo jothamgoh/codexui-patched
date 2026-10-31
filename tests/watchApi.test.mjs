@@ -312,7 +312,7 @@ async function startWatch(t, { world, bridge, push }, { env = { CODEXUI_WATCH_TO
     try { json = JSON.parse(text) } catch {}
     return { status: response.status, json, text, headers: response.headers }
   }
-  return { call, logs, world }
+  return { call, logs, world, base }
 }
 
 // --- Auth --------------------------------------------------------------------------
@@ -585,6 +585,29 @@ test('GET chats never waits long for a slow pinned chat, and shows it from memor
   await new Promise((resolve) => setTimeout(resolve, 20))
   const second = await call('chats')
   assert.deepEqual(second.json.pinned.map((row) => row.id), ['chat-pinned'], 'it shows from memory on the next request')
+})
+
+test('POST transcribe sends the recording to the web transcriber and answers its words', async (t) => {
+  const setup = panelWorld()
+  const heard = []
+  setup.bridge.transcribe = async (body, contentType) => {
+    heard.push({ body, contentType })
+    return '  ship it  '
+  }
+  const { base, logs } = await startWatch(t, setup)
+  const audio = Buffer.from('fake-aac-bytes')
+  const post = (body, headers = {}) => fetch(`${base}transcribe`, { method: 'POST', headers: { Authorization: `Bearer ${TOKEN}`, ...headers }, body })
+  const ok = await post(audio, { 'Content-Type': 'audio/mp4' })
+  assert.equal(ok.status, 200)
+  assert.deepEqual(await ok.json(), { text: 'ship it' })
+  assert.match(heard[0].contentType, /^multipart\/form-data; boundary=/u, 'wrapped like the web mic upload')
+  assert.ok(heard[0].body.includes(audio), 'the recording itself is in the upload')
+  assert.ok(heard[0].body.toString('latin1').includes('Content-Type: audio/mp4'))
+  assert.equal((await post(Buffer.alloc(0), { 'Content-Type': 'audio/mp4' })).status, 400)
+  setup.bridge.transcribe = async () => { throw new Error('upstream down') }
+  assert.equal((await post(audio, { 'Content-Type': 'audio/mp4' })).status, 502)
+  assert.equal((await fetch(`${base}transcribe`, { method: 'POST', body: audio })).status, 401)
+  assert.ok(!logs.some((line) => line.includes('ship it')), 'the words are never logged')
 })
 
 test('GET ping answers ok with the token and checks it like every route', async (t) => {

@@ -3,6 +3,7 @@
  *   GET  /codex-api/voice/shortcut/watch/feed                  the notification panel's sections
  *   GET  /codex-api/voice/shortcut/watch/chats                 every chat, pinned first, by project
  *   GET  /codex-api/voice/shortcut/watch/ping                       reachability and token check
+ *   POST /codex-api/voice/shortcut/watch/transcribe                 audio body in, { text } out
  *   GET  /codex-api/voice/shortcut/watch/chat?id=&before=&limit=   one conversation
  *   POST /codex-api/voice/shortcut/watch/send|stop|answer|read|new
  *
@@ -24,6 +25,7 @@ import {
   isAuthorizedShortcutRequest,
   readBody,
   setJson,
+  toTranscribeMultipart,
   within,
   type VoiceBridgeSources,
   type VoicePushSink,
@@ -49,6 +51,8 @@ export const WATCH_ENV = { token: 'CODEXUI_WATCH_TOKEN' } as const
 export const WATCH_PREFIX = '/codex-api/voice/shortcut/watch/'
 
 const MAX_JSON_BYTES = 64 * 1024
+/** A watch recording of a minute or two in AAC is well under this. */
+const MAX_AUDIO_BYTES = 10 * 1024 * 1024
 const MAX_TEXT_LENGTH = 20_000
 const MAX_ID_LENGTH = 200
 /** A list reads the turns of at most this many running chats for their working line, each within the time. */
@@ -266,6 +270,20 @@ export function createWatchHandler(deps: WatchRouteDeps) {
     setJson(res, 200, page)
   }
 
+  /** Words from a watch recording, through the same transcriber as the web app's mic. Never logged. */
+  async function handleTranscribe(req: IncomingMessage, res: ServerResponse): Promise<void> {
+    const audio = await readBody(req, MAX_AUDIO_BYTES)
+    if (audio.length === 0) throw new HttpError(400, 'Expected audio.')
+    const multipart = toTranscribeMultipart(audio, String(req.headers['content-type'] ?? '') || 'audio/mp4')
+    let text: string
+    try {
+      text = await bridge.transcribe(multipart.body, multipart.contentType)
+    } catch {
+      throw new HttpError(502, 'Transcription failed.')
+    }
+    setJson(res, 200, { text: text.trim().slice(0, MAX_TEXT_LENGTH) })
+  }
+
   async function handleSend(req: IncomingMessage, res: ServerResponse): Promise<void> {
     const body = await readJson(req)
     const chatId = readChatId(body)
@@ -382,6 +400,7 @@ export function createWatchHandler(deps: WatchRouteDeps) {
           case 'GET feed': return await handleFeed(res)
           case 'GET chats': return await handleChats(res)
           case 'GET chat': return await handleChat(url, res)
+          case 'POST transcribe': return await handleTranscribe(req, res)
           case 'POST send': return await handleSend(req, res)
           case 'POST stop': return await handleStop(req, res)
           case 'POST answer': return await handleAnswer(req, res)

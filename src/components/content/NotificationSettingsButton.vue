@@ -689,6 +689,8 @@ const props = defineProps<{
   helpersError?: string
   pendingRequests?: UiServerRequest[]
   pinnedThreadIds?: string[]
+  /** When each chat was last read: a notification read in its chat counts as read. */
+  readAtByThreadId?: Record<string, string>
   /** Erase a chat for good; rejects with the reason it could not. */
   deleteThread: (threadId: string) => Promise<void>
   boardAttention: Array<{
@@ -788,6 +790,7 @@ const activity = computed(() => selectNotificationActivity({
   dismissedActivityByThreadId: dismissedActivityByThreadId.value,
   pinnedThreadIds: props.pinnedThreadIds,
   isThreadUnread,
+  readAtByThreadId: props.readAtByThreadId,
 }))
 const threadHelpers = computed(() => activity.value.threadHelpers)
 const requestAttention = computed(() => activity.value.requestAttention)

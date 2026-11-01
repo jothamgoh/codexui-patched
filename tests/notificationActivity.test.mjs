@@ -253,3 +253,21 @@ test('a chat waiting for an answer shows the question it asks', () => {
   assert.equal(byThread.approve.label, 'Approval needed')
   assert.equal(byThread.approve.detail, '', 'an approval never shows its command line')
 })
+
+test('a notification counts as read once its chat was read at or after its reply finished', () => {
+  const finishedAt = '2026-10-11T11:37:43.408Z'
+  const select = (readAtByThreadId, rows = [thread('blender', { updatedAtIso: '2026-10-11T11:37:43.000Z' })]) => selectNotificationActivity({
+    threads: rows,
+    boardAttention: [],
+    history: [historyItem('h-blender', 'blender', { completedAt: finishedAt })],
+    dismissedActivityByThreadId: {},
+    readAtByThreadId,
+  }).unreadActivity.map((item) => item.threadId)
+
+  assert.deepEqual(select({}), ['blender'], 'never read: unread')
+  assert.deepEqual(select({ blender: '2026-10-11T11:30:00.000Z' }), ['blender'], 'read before it finished: unread')
+  assert.deepEqual(select({ blender: '2026-10-11T11:37:43.000Z' }), [],
+    'the chat was open when it finished: read, though its time is kept to the second')
+  assert.deepEqual(select({ blender: '2026-10-11T11:37:43.000Z' }, [thread('blender', { unread: true })]), ['blender'],
+    'a chat marked unread keeps its notification unread')
+})

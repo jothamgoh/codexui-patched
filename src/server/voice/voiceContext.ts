@@ -147,6 +147,7 @@ export function buildVoiceContext(snapshot: VoiceSourceSnapshot): VoiceContext {
     history: snapshot.history,
     dismissedActivityByThreadId: Object.fromEntries(snapshot.dismissals.map((item) => [item.threadId, item.activityAt])),
     pinnedThreadIds: snapshot.pinnedThreadIds,
+    readAtByThreadId: snapshot.readState.readAtByThreadId,
   })
 
   const chats = new Map(selection.activityThreads.map((thread) => [thread.id, thread]))

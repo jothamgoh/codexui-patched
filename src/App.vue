@@ -212,6 +212,7 @@
               :helpers-error="helperActivity.error.value"
               :pending-requests="pendingServerRequests"
               :pinned-thread-ids="pinnedThreadIds"
+              :read-at-by-thread-id="readStateByThreadId"
               :delete-thread="deleteThreadById"
               @refresh-helpers="refreshHelperActivity"
               @set-thread-pinned="updatePinnedThread"
@@ -598,6 +599,7 @@ const worktreeName = import.meta.env.VITE_WORKTREE_NAME ?? 'unknown'
 const {
   projectGroups,
   threadSourceById,
+  readStateByThreadId,
   projectDisplayNameById,
   selectedThread,
   selectedThreadGoal,

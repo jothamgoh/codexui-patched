@@ -50,6 +50,12 @@ export type NotificationActivityInput = {
   pinnedThreadIds?: string[]
   /** Defaults to `thread.unread`; the panel layers its manual overrides on top. */
   isThreadUnread?: (thread: UiThread) => boolean
+  /**
+   * When each chat was last read. A notification whose reply finished by then
+   * counts as read: reading the chat read it, even where its own read marker
+   * was never set (the chat was already open when it finished).
+   */
+  readAtByThreadId?: Record<string, string>
 }
 
 export type RequestAttentionItem = {
@@ -143,6 +149,16 @@ export function selectNotificationActivity(input: NotificationActivityInput): No
   const boardActivity = input.boardActivity ?? []
   const pendingRequests = input.pendingRequests ?? []
   const isThreadUnread = input.isThreadUnread ?? ((thread: UiThread) => thread.unread)
+  const readAtByThreadId = input.readAtByThreadId ?? {}
+  // Whole seconds: a chat's read time is its last activity, which Claude chats keep to the second.
+  const readInChat = (item: ActivityHistoryItem): boolean => {
+    // A chat marked unread, or with news since its read, keeps its notification unread.
+    const thread = threads.find((candidate) => candidate.id === item.threadId)
+    if (thread && isThreadUnread(thread)) return false
+    const readAt = Date.parse(readAtByThreadId[item.threadId] ?? '')
+    const completedAt = Date.parse(item.completedAt)
+    return Number.isFinite(readAt) && Number.isFinite(completedAt) && Math.floor(readAt / 1000) >= Math.floor(completedAt / 1000)
+  }
 
   const threadHelpers = collectThreadHelpers(threads, input.threadSources ?? {}, boardThreadIds)
   const excluded = new Set([...boardThreadIds, ...boardActivity.map((item) => item.threadId).filter(Boolean)])
@@ -263,7 +279,7 @@ export function selectNotificationActivity(input: NotificationActivityInput): No
 
   const unreadCandidates: RecentActivityItem[] = []
   for (const item of visibleHistory) {
-    if (item.readAt !== null) continue
+    if (item.readAt !== null || readInChat(item)) continue
     if (waitingThreadIds.has(item.threadId) || runningThreadIds.has(item.threadId)) continue
     if (dismissedActivityByThreadId[item.threadId] === item.completedAt) continue
     const thread = threads.find((candidate) => candidate.id === item.threadId)

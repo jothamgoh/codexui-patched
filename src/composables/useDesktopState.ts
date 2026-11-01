@@ -5442,6 +5442,8 @@ export function useDesktopState() {
     setBoardManagedThreadIds,
     projectGroups,
     threadSourceById,
+    /** When each chat was last read, shared with every client and the watch. */
+    readStateByThreadId: computed(() => readStateByThreadId.value),
     projectDisplayNameById,
     selectedThread,
     selectedThreadGoal,

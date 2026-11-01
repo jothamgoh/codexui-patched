@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict'
-import { appendFile, chmod, mkdir, mkdtemp, readFile, rm, stat, writeFile } from 'node:fs/promises'
+import { appendFile, chmod, mkdir, mkdtemp, readFile, rm, stat, utimes, writeFile } from 'node:fs/promises'
 import { spawn } from 'node:child_process'
 import { createInterface } from 'node:readline'
 import { tmpdir } from 'node:os'
@@ -323,6 +323,55 @@ test('searches the text of saved Claude chats', async () => {
     assert.deepEqual(await backend.searchThreads({ searchTerm: 'zebra' }), [])
     backend.dispose()
   } finally {
+    await rm(configDir, { recursive: true, force: true })
+  }
+})
+
+test('a chat was last active at its newest entry, not when its idle session closed', async () => {
+  const configDir = await mkdtemp(join(tmpdir(), 'codexui-claude-config-'))
+  const previous = process.env.CLAUDE_CONFIG_DIR
+  process.env.CLAUDE_CONFIG_DIR = configDir
+  try {
+    const sessionId = '66666666-7777-4888-9999-aaaaaaaaaaaa'
+    const projectDir = join(configDir, 'projects', '-work-project')
+    await mkdir(projectDir, { recursive: true })
+    const file = join(projectDir, `${sessionId}.jsonl`)
+    const line = (value) => `${JSON.stringify(value)}\n`
+    const lastEntryMs = Math.max(...fixture.map((value) => Date.parse(value.timestamp ?? '')).filter(Number.isFinite))
+    // About five minutes after the reply the idle session closes and Claude Code
+    // writes these, without timestamps, which moves the file's own time.
+    const closing = [
+      { type: 'last-prompt', lastPrompt: 'Create notes.txt then edit it', sessionId },
+      { type: 'ai-title', aiTitle: 'Notes work', sessionId },
+      { type: 'cost-state', totalCostUSD: 0.12, sessionId },
+    ]
+    await writeFile(file, [...fixture, ...closing].map(line).join(''))
+    const closedAt = new Date(lastEntryMs + 5 * 60_000)
+    await utimes(file, closedAt, closedAt)
+
+    const backend = new ClaudeBackend(join(configDir, 'threads.json'))
+    backend.listAllSessions = async () => [{
+      sessionId, summary: 'Notes work', firstPrompt: 'Create notes.txt then edit it', cwd,
+      lastModified: closedAt.getTime(), fileSize: (await stat(file)).size,
+    }]
+    backend.refreshClaudeSessionStates = async () => ({ states: new Map() })
+    const expected = Math.floor(lastEntryMs / 1000)
+    const { thread } = await backend.rpc('thread/read', { threadId: `claude-${sessionId}`, includeTurns: false })
+    assert.equal(thread.updatedAt, expected, 'the chat page')
+    const [listed] = await backend.listThreads({})
+    assert.equal(listed.updatedAt, expected, 'the chat list, which reads only the end of the file')
+
+    await appendFile(file, line({ ...fixture.at(-1), uuid: 'later', timestamp: new Date(lastEntryMs + 9 * 60_000).toISOString() }))
+    backend.listAllSessions = async () => [{
+      sessionId, summary: 'Notes work', firstPrompt: 'Create notes.txt then edit it', cwd,
+      lastModified: Date.now(), fileSize: (await stat(file)).size,
+    }]
+    const [moved] = await backend.listThreads({})
+    assert.equal(moved.updatedAt, Math.floor((lastEntryMs + 9 * 60_000) / 1000), 'a new entry still counts')
+    backend.dispose()
+  } finally {
+    if (previous === undefined) delete process.env.CLAUDE_CONFIG_DIR
+    else process.env.CLAUDE_CONFIG_DIR = previous
     await rm(configDir, { recursive: true, force: true })
   }
 })

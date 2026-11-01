@@ -471,6 +471,8 @@ type ParsedTranscript = {
   title: string
   firstPrompt: string
   createdAtMs: number | null
+  /** The newest entry's time: when the chat last had activity (see `latestEntryMs`). */
+  lastEntryMs: number | null
 }
 
 function readTitle(entries: TranscriptEntry[]): { title: string; firstPrompt: string; createdAtMs: number | null } {
@@ -502,6 +504,8 @@ function readTitle(entries: TranscriptEntry[]): { title: string; firstPrompt: st
 
 /** Complete lines between two byte offsets; a partly written last line waits. */
 const TRANSCRIPT_CHUNK_BYTES = 4 * 1024 * 1024
+/** A chat list reads this much of each changed transcript's end for its last activity. */
+const TAIL_ACTIVITY_BYTES = 256 * 1024
 
 /**
  * Calls `visit` with each complete line between two byte offsets until it
@@ -541,6 +545,40 @@ async function forEachLine(
       position += bytesRead
     }
     return bytes
+  } finally {
+    await handle.close()
+  }
+}
+
+/**
+ * The newest entry time among `entries`, or `since` when none is newer. About
+ * five minutes after a reply the idle session closes and Claude Code appends
+ * closing lines (last-prompt, ai-title, cost-state) without timestamps. They
+ * move the file's own time, which would turn a chat already read unread again,
+ * so a chat's activity is its newest timestamped entry instead.
+ */
+export function latestEntryMs(entries: Iterable<TranscriptEntry>, since: number | null = null): number | null {
+  let latest = since
+  for (const entry of entries) {
+    const at = Date.parse(readString(entry.timestamp))
+    if (Number.isFinite(at) && (latest === null || at > latest)) latest = at
+  }
+  return latest
+}
+
+/** `latestEntryMs` of the complete lines in a transcript's last `tailBytes`, or null when they have no time. */
+export async function readLatestEntryMs(path: string, tailBytes = TAIL_ACTIVITY_BYTES): Promise<number | null> {
+  const handle = await open(path, 'r').catch(() => null)
+  if (!handle) return null
+  try {
+    const { size } = await handle.stat()
+    const start = Math.max(0, size - tailBytes)
+    const buffer = Buffer.alloc(size - start)
+    const { bytesRead } = await handle.read(buffer, 0, buffer.length, start)
+    const lines = buffer.subarray(0, bytesRead).toString('utf8').split('\n')
+    if (start > 0) lines.shift()
+    const timed = lines.filter((line) => line.includes('"timestamp"')).map(parseTranscriptLine)
+    return latestEntryMs(timed.filter((entry): entry is TranscriptEntry => entry !== null))
   } finally {
     await handle.close()
   }
@@ -929,6 +967,8 @@ export class ClaudeBackend {
   /** Best-known chat names, for notification titles. */
   private readonly sessionTitles = new Map<string, string>()
   private readonly humanSessions = new Map<string, { human: boolean; lastModified: number }>()
+  /** Each transcript's last activity, by path, for the file version it was read from. */
+  private readonly lastActivity = new Map<string, { lastModified: number; size: number | undefined; at: number | null }>()
   /** When CodexUI last saw its own Claude process write each session. */
   private readonly ownActivityMs = new Map<string, number>()
   private claudeSessionStates = new Map<string, ClaudeSessionState>()
@@ -1543,6 +1583,7 @@ export class ClaudeBackend {
       title,
       firstPrompt,
       createdAtMs,
+      lastEntryMs: latestEntryMs(delta.entries, appended && cached ? cached.lastEntryMs : null),
     }
     this.transcriptCache.delete(path)
     this.transcriptCache.set(path, parsed)
@@ -1593,8 +1634,19 @@ export class ClaudeBackend {
       preview: info.firstPrompt || name,
       cwd: info.cwd || stored?.cwd || '',
       createdAtMs: info.createdAt ?? stored?.createdAtMs ?? null,
-      updatedAtMs: info.lastModified,
+      updatedAtMs: await this.lastActivityMs(info),
     })
+  }
+
+  /** The chat's last activity (see `latestEntryMs`), read again only when its file changes. */
+  private async lastActivityMs(info: SDKSessionInfo): Promise<number> {
+    const path = await this.findTranscriptPath(info.sessionId, info.cwd ?? '')
+    if (!path) return info.lastModified
+    const known = this.lastActivity.get(path)
+    if (known && known.lastModified === info.lastModified && known.size === info.fileSize) return known.at ?? info.lastModified
+    const at = await readLatestEntryMs(path)
+    this.lastActivity.set(path, { lastModified: info.lastModified, size: info.fileSize, at })
+    return at ?? info.lastModified
   }
 
   async listThreads(params: unknown): Promise<Record<string, unknown>[]> {
@@ -1761,7 +1813,7 @@ export class ClaudeBackend {
       preview: transcript?.firstPrompt ?? '',
       cwd: summary.cwd || stored?.cwd || '',
       createdAtMs: transcript?.createdAtMs ?? stored?.createdAtMs ?? null,
-      updatedAtMs: transcript?.mtimeMs ?? stored?.createdAtMs ?? null,
+      updatedAtMs: transcript?.lastEntryMs ?? transcript?.mtimeMs ?? stored?.createdAtMs ?? null,
     }
     if (!includeTurns) return this.threadPayload(sessionId, meta)
     const turns: ClaudeTurn[] = [...summary.turns]

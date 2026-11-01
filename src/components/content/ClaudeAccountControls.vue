@@ -32,7 +32,7 @@
           </div>
           <span v-if="removeConfirm === account.number">Removes the saved login from switching. Keeps your chats and current sign-in.</span>
           <span v-if="account.disabled">Excluded from auto switch</span>
-          <span v-if="account.usageIsStale || account.usageRateLimited">Cached usage{{ account.usageRateLimited ? ' · checks paused after 429' : '' }}</span>
+          <span v-if="account.usageIsStale || account.usageError">Cached usage{{ usageCheckProblem(account) }}</span>
           <template v-if="account.limits.length">
             <div v-for="limit in account.limits" :key="limit.label" class="limit">
               <span>{{ limit.label }} · {{ Math.round(100 - limit.usedPercent) }}% left</span>
@@ -49,7 +49,7 @@
 
 <script setup lang="ts">
 import { computed, ref } from 'vue'
-import type { ClaudeAccountPool } from '../../types/claudeAccounts'
+import type { ClaudeAccountPool, ClaudeSavedAccount } from '../../types/claudeAccounts'
 const props = defineProps<{ pool: ClaudeAccountPool | null; disabled: boolean; connected: boolean }>()
 const emit = defineEmits<{
   switch: [number: number]
@@ -64,6 +64,11 @@ function removeAccount(number: number): void {
   if (removeConfirm.value !== number) { removeConfirm.value = number; return }
   removeConfirm.value = null
   emit('remove', number)
+}
+function usageCheckProblem(account: ClaudeSavedAccount): string {
+  if (account.usageRateLimited) return ' · checks paused after 429 (rate limited)'
+  if (account.usageError === 'http-403') return ' · usage check refused (403): the plan may have lapsed'
+  return account.usageError ? ` · usage check failed (${account.usageError})` : ''
 }
 const thresholds = computed(() => [...new Set([75, 80, 90, 95, 99, props.pool?.threshold ?? 90])].sort((a, b) => a - b))
 </script>

@@ -8,6 +8,8 @@ export type ClaudeSavedAccount = {
   usageStatus: string
   usageIsStale: boolean
   usageRateLimited: boolean
+  /** cswap's latest usage-check failure, such as `http-403`; null after a good read. */
+  usageError: string | null
   usageRetryAt: string | null
   usageFetchedAt: string | null
   limits: Array<{ label: string; usedPercent: number; resetsAt: string | null }>

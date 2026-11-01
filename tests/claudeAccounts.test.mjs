@@ -353,7 +353,20 @@ test('429 preserves cached bars while cswap remains responsible for its retry de
   f.advance(CLAUDE_CSWAP_CHECK_MS + 1)
   await f.manager.snapshot(true)
   assert.equal(f.calls.filter((args) => args[0] === 'list').length, listCalls + 1)
+  assert.equal((await f.manager.snapshot()).accounts[0].usageError, 'http-429')
+  f.rateLimited = false
+  f.advance(CLAUDE_CSWAP_CHECK_MS + 1)
+  const recovered = await f.manager.snapshot(true)
+  assert.equal(recovered.notice, null, 'the rate-limit notice clears once no account is rate limited')
+  assert.equal(recovered.accounts[0].usageError, null)
   f.manager.dispose()
+})
+
+test('a refused usage check reports its own status instead of a 429', () => {
+  const parsed = parseCSwapAccounts(JSON.stringify({ schemaVersion: 1, accounts: [{ number: 1, email: 'lapsed@example.test', usage: null, usageStatus: 'unavailable', usageError: 'http-403' }] }))
+  assert.equal(parsed.accounts[0].usageError, 'http-403')
+  assert.equal(parsed.accounts[0].usageRateLimited, false)
+  assert.equal(parsed.accounts[0].usageIsStale, true)
 })
 
 test('account removal waits for replies and removes only the saved login', async () => {

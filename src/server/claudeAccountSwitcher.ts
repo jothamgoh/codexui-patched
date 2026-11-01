@@ -28,6 +28,8 @@ type LimitRecoveryRequest = {
   resolve: (result: ClaudeLimitRecoveryResult) => void
 }
 
+const RATE_LIMITED_NOTICE = 'Claude usage checks are rate limited. Showing cached usage; replies and manual switching still work.'
+
 /** How often CodexUI asks cswap for its locally cached account state. */
 export const CLAUDE_CSWAP_CHECK_MS = 60_000
 
@@ -66,7 +68,7 @@ export function parseCSwapAccounts(output: string): { active: number | null; acc
       // adaptive scheduler may deliberately keep a successful reading for
       // longer than CodexUI's local check interval.
       usageIsStale: fallback,
-      usageRateLimited: row.usageError === 'http-429', usageRetryAt: text(row.usageRetryAt),
+      usageRateLimited: row.usageError === 'http-429', usageError: text(row.usageError), usageRetryAt: text(row.usageRetryAt),
       usageFetchedAt: text(fallback ? row.lastGoodFetchedAt : row.usageFetchedAt),
     })
   }
@@ -156,10 +158,9 @@ export class ClaudeAccountSwitcher {
           const last = previous?.accounts.find((old) => old.number === account.number && old.email === account.email)
           if (last?.limits.length) { account.limits = last.limits; account.usageIsStale = true }
         }
-        if (account.usageRateLimited) {
-          this.notice = 'Claude usage checks are rate limited. Showing cached usage; replies and manual switching still work.'
-        }
       }
+      if (this.cached.accounts.some((account) => account.usageRateLimited)) this.notice = RATE_LIMITED_NOTICE
+      else if (this.notice === RATE_LIMITED_NOTICE) this.notice = null
     })()
     this.reading = pending
     try { await pending } catch (error) {

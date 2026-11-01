@@ -515,13 +515,13 @@ test('the working line says the current step in plain words', () => {
 
 // --- Feed and chat list ---------------------------------------------------------------
 
-test('GET feed: the panel sections, each chat once, with state and one line', async (t) => {
+test('GET feed: the panel sections, what to act on first, each chat once, with state and one line', async (t) => {
   const { call } = await startWatch(t, panelWorld())
   const { status, json } = await call('feed')
   assert.equal(status, 200)
   assert.equal(json.generatedAt, new Date(NOW).toISOString())
-  assert.deepEqual(json.sections.map((section) => [section.id, section.title]), [['needs_you', 'Needs you'], ['running', 'Running'], ['unread', 'Unread'], ['recent', 'Recent']])
-  const [needsYou, running, unread, recent] = json.sections
+  assert.deepEqual(json.sections.map((section) => [section.id, section.title]), [['needs_you', 'Needs you'], ['unread', 'Unread'], ['running', 'Running'], ['recent', 'Recent']])
+  const [needsYou, unread, running, recent] = json.sections
   assert.deepEqual(needsYou.chats, [{
     id: 'chat-question', title: 'Pick a database', project: 'hr-ai', agent: 'codex', state: 'needsYou', unread: false, pinned: false,
     line: 'Which database should I use? (+2 more questions)', updatedAt: iso(5),
@@ -548,7 +548,7 @@ test('GET feed lists empty sections too', async (t) => {
   const { world, bridge, push } = fakeWorld()
   world.add(codexChat('only', 'Only chat', '/work/a', 5))
   const { json } = await (await startWatch(t, { world, bridge, push })).call('feed')
-  assert.deepEqual(json.sections.map((section) => [section.id, section.chats.length]), [['needs_you', 0], ['running', 0], ['unread', 0], ['recent', 1]])
+  assert.deepEqual(json.sections.map((section) => [section.id, section.chats.length]), [['needs_you', 0], ['unread', 0], ['running', 0], ['recent', 1]])
   assert.deepEqual(json.summary, { needsYou: 0, running: 0, unread: 0 })
 })
 

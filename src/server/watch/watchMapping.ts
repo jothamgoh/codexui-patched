@@ -754,9 +754,16 @@ export function listRow(activity: WatchActivity, row: VoiceChatRow, workingLines
   }
 }
 
-/** The notification panel's sections, each chat once, in priority order. */
+/**
+ * The watch shows what it can act on first: a chat waiting for an answer,
+ * then finished replies to read, then chats still running, then the rest.
+ * Each chat still sits in the one section the panel's priority gives it.
+ */
+const WATCH_SECTION_ORDER: readonly VoiceListType[] = ['needs_you', 'unread', 'running', 'recent']
+
+/** The notification panel's sections, each chat once, in the watch's order. */
 export function buildFeed(activity: WatchActivity, workingLines: ReadonlyMap<string, string>, generatedAt: string): Feed {
-  const sections = VOICE_LIST_TYPES.map((id) => {
+  const sections = WATCH_SECTION_ORDER.map((id) => {
     const rows = activity.context.sections[id]
     return {
       id,

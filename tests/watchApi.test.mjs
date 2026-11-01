@@ -357,7 +357,7 @@ test('the watch token is kept from agent processes', () => {
 
 // --- Markdown to blocks ------------------------------------------------------------
 
-test('Markdown becomes blocks: inline Markdown stays, code and tables collapse, images go', () => {
+test('Markdown becomes blocks: inline Markdown stays, code collapses, tables keep their cells, images go', () => {
   const source = [
     '# Release notes',
     '',
@@ -405,7 +405,7 @@ test('Markdown becomes blocks: inline Markdown stays, code and tables collapse, 
     { type: 'quote', text: 'quoted *text*\nmore' },
     { type: 'code', lines: 3, language: 'python', preview: 'def main():' },
     { type: 'code', lines: 1, preview: 'indented code' },
-    { type: 'table', rows: 2, preview: 'Name · Status' },
+    { type: 'table', rows: 2, preview: 'Name · Status', header: ['Name', 'Status'], cells: [['api', 'ok'], ['web', 'down']] },
     { type: 'p', text: 'Draft text' },
   ])
   assert.deepEqual(mapping.markdownToBlocks(''), [])
@@ -415,6 +415,19 @@ test('Markdown becomes blocks: inline Markdown stays, code and tables collapse, 
 })
 
 // --- Turns the chat started itself ---------------------------------------------------
+
+test('a table reaches the watch as its first 8 rows of at most 6 cells, inline Markdown kept', () => {
+  const head = `| ${Array.from({ length: 8 }, (_, index) => `C${String(index + 1)}`).join(' | ')} |`
+  const rule = `|${'---|'.repeat(8)}`
+  const body = Array.from({ length: 11 }, (_, row) => `| **r${String(row + 1)}** | ${Array.from({ length: 7 }, (_, col) => `v${String(col + 2)}`).join(' | ')} |`)
+  const [table] = mapping.markdownToBlocks([head, rule, ...body].join('\n'))
+  assert.equal(table.type, 'table')
+  assert.equal(table.rows, 11, 'every data row is counted')
+  assert.deepEqual(table.header, ['C1', 'C2', 'C3', 'C4', 'C5', 'C6'])
+  assert.equal(table.cells.length, 8)
+  assert.deepEqual(table.cells[0], ['**r1**', 'v2', 'v3', 'v4', 'v5', 'v6'])
+  assert.deepEqual(table.cells[7][0], '**r8**')
+})
 
 test('turns the chat started itself get a note instead of a user message', () => {
   const note = (text, prompts) => mapping.selfStartedNote(text, prompts && new Set(prompts))
@@ -760,7 +773,7 @@ test('GET chat: a Codex chat keeps the final answer, counts steps and drops reas
       { type: 'p', text: 'The upload test waited on a timer; it now awaits the upload.' },
       { type: 'bullet', text: 'Replaced the sleep', ordered: 1 },
       { type: 'bullet', text: 'Added a retry', ordered: 2 },
-      { type: 'table', rows: 2, preview: 'Test · Before · After' },
+      { type: 'table', rows: 2, preview: 'Test · Before · After', header: ['Test', 'Before', 'After'], cells: [['upload', 'flaky', 'passes'], ['resume', 'passes', 'passes']] },
     ],
     steps: 'Worked · 5 commands, 2 edits',
     workedFor: '26m 3s',

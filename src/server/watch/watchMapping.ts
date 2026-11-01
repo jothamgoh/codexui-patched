@@ -49,7 +49,8 @@ export type Block =
   | { type: 'bullet'; text: string; ordered?: number }
   | { type: 'quote'; text: string }
   | { type: 'code'; lines: number; language?: string; preview: string }
-  | { type: 'table'; rows: number; preview: string }
+  /** `rows` counts every data row; `cells` holds the first ones, each cell's inline Markdown kept. */
+  | { type: 'table'; rows: number; preview: string; header: string[]; cells: string[][] }
 
 export type TurnStatus = 'completed' | 'inProgress' | 'interrupted' | 'failed'
 
@@ -108,6 +109,10 @@ const LINE_LENGTH = 160
 const MAX_REPLY_BLOCKS = 60
 const MAX_BLOCK_TEXT = 2_000
 const MAX_PREVIEW = 120
+/** A table reaches the watch as at most this many row cards of this many fields. */
+const MAX_TABLE_ROWS = 8
+const MAX_TABLE_COLUMNS = 6
+const MAX_CELL_TEXT = 160
 const MAX_USER_TEXT = 2_000
 const MAX_ERROR_TEXT = 300
 const USER_INPUT_METHOD = 'item/tool/requestUserInput'
@@ -194,18 +199,36 @@ function codeBlock(token: Token): Block {
     : { type: 'code', lines: lines.length, preview }
 }
 
-/** Data rows, and the header row as plain text. */
+/**
+ * The header row as plain text, and the first data rows cell by cell for the
+ * watch's row cards. `rows` counts every data row, so the watch can say how
+ * many more there are.
+ */
 function tableBlock(tokens: Token[]): Block {
   let rows = 0
   let inHead = false
   const header: string[] = []
+  const cells: string[][] = []
+  let row: string[] | null = null
   for (const token of tokens) {
     if (token.type === 'thead_open') inHead = true
     else if (token.type === 'thead_close') inHead = false
-    else if (token.type === 'tr_open' && !inHead) rows += 1
-    else if (token.type === 'inline' && inHead) header.push(markdownToNotificationText(token.content))
+    else if (token.type === 'tr_open' && !inHead) {
+      rows += 1
+      row = rows <= MAX_TABLE_ROWS ? [] : null
+      if (row) cells.push(row)
+    } else if (token.type === 'inline') {
+      if (inHead) header.push(markdownToNotificationText(token.content))
+      else if (row && row.length < MAX_TABLE_COLUMNS) row.push(clip(inlineText(token.content), MAX_CELL_TEXT))
+    }
   }
-  return { type: 'table', rows, preview: clip(header.filter(Boolean).join(' · '), MAX_PREVIEW) }
+  return {
+    type: 'table',
+    rows,
+    preview: clip(header.filter(Boolean).join(' · '), MAX_PREVIEW),
+    header: header.slice(0, MAX_TABLE_COLUMNS).map((cell) => clip(cell, MAX_PREVIEW)),
+    cells,
+  }
 }
 
 /**

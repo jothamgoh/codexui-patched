@@ -102,6 +102,15 @@ and WebSocket client as having the same authority as the local Codex user.
 - Do not weaken the external access policy or assume a printed CodexUI password makes a public
   tunnel safe.
 
+## Claude sign-in expiry
+
+Saved Claude sign-ins (claude-swap) stop working roughly 30 days after the user signs in, even
+when they are used every day. CodexUI marks such an account "Sign in again", refuses to switch to
+it, and sends one phone alert. If Claude shows as signed out while the Claude host is running,
+look for `needsSignIn` accounts in `GET /codex-api/providers/claude/accounts`. Only the user can
+renew a sign-in: Claude's sign-in link opens a CAPTCHA, so do not try to complete it by driving a
+browser. Ask the user to choose Accounts → Sign in again once no Claude reply is running.
+
 ## Architecture
 
 Single-page Vue 3 app that communicates with Codex app-server via a Node.js bridge (Express middleware in dev, standalone Express server in production).

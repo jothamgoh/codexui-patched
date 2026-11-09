@@ -316,6 +316,8 @@ async function cancelClaudeLogin(): Promise<void> {
 
 function providerMeta(provider: ProviderStatus): string {
   if (provider.notice) return provider.notice
+  const expired = provider.id === 'claude' ? claudeAccounts.value?.accounts.find((account) => account.active && account.needsSignIn) : undefined
+  if (expired) return `Sign-in for ${expired.email} expired. Sign in again.`
   if (!provider.connected) return 'Not signed in'
   return [provider.email, provider.plan ? formatPlan(provider.plan) : '', provider.organization].filter(Boolean).join(' · ') || 'Connected'
 }

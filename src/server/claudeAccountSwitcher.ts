@@ -15,6 +15,8 @@ type Options = {
   /** `keepBusy` leaves working Claude processes running instead of refusing the change. */
   prepareSwitch: (options?: { keepBusy?: boolean }) => Promise<void>
   accountChanged: () => void
+  /** Alerts once per expired saved sign-in; `filePath` remembers alerted accounts across restarts. */
+  signInExpiry?: { filePath: string; notify: (accounts: ClaudeSavedAccount[]) => void }
   now?: () => number
 }
 
@@ -41,6 +43,13 @@ function text(value: unknown): string | null {
   return typeof value === 'string' ? value.slice(0, 256) : null
 }
 
+async function writePrivateJson(path: string, value: unknown): Promise<void> {
+  await mkdir(dirname(path), { recursive: true, mode: 0o700 })
+  const temporary = `${path}.${randomUUID()}.tmp`
+  await writeFile(temporary, JSON.stringify(value) + '\n', { mode: 0o600 })
+  await rename(temporary, path)
+}
+
 /** Only public account metadata crosses the HTTP boundary, never cswap's raw output. */
 export function parseCSwapAccounts(output: string): { active: number | null; accounts: ClaudeSavedAccount[] } {
   let data: Record<string, unknown>
@@ -64,6 +73,7 @@ export function parseCSwapAccounts(output: string): { active: number | null; acc
       number, email: text(row.email) ?? `Account ${number}`, alias: text(row.alias),
       organization: text(row.organizationName), active: row.active === true,
       disabled: row.disabled === true, usageStatus: text(row.usageStatus) ?? 'unavailable', limits,
+      needsSignIn: row.usageStatus === 'relogin_required',
       // cswap's usageStatus is the decision-grade freshness boundary. Its
       // adaptive scheduler may deliberately keep a successful reading for
       // longer than CodexUI's local check interval.
@@ -104,6 +114,7 @@ export class ClaudeAccountSwitcher {
   private nextAutoAt = 0
   private failures = 0
   private readFailure: Error | null = null
+  private signInAlerted: Promise<Set<string>> | null = null
   private readonly limitRecoveries: LimitRecoveryRequest[] = []
 
   constructor(private readonly options: Options) {}
@@ -161,6 +172,7 @@ export class ClaudeAccountSwitcher {
       }
       if (this.cached.accounts.some((account) => account.usageRateLimited)) this.notice = RATE_LIMITED_NOTICE
       else if (this.notice === RATE_LIMITED_NOTICE) this.notice = null
+      await this.alertExpiredSignIns(this.cached.accounts).catch(() => undefined)
     })()
     this.reading = pending
     try { await pending } catch (error) {
@@ -170,6 +182,25 @@ export class ClaudeAccountSwitcher {
       this.nextReadAt = Math.max(this.nextReadAt, this.now() + Math.min(60 * 60_000, CLAUDE_CSWAP_CHECK_MS * 2 ** Math.min(this.failures - 1, 6)))
       throw this.readFailure
     } finally { if (this.reading === pending) this.reading = null }
+  }
+
+  /** Reads are single-flight, so the alerted set never sees two writers. */
+  private async alertExpiredSignIns(accounts: ClaudeSavedAccount[]): Promise<void> {
+    const expiry = this.options.signInExpiry
+    if (!expiry) return
+    this.signInAlerted ??= readFile(expiry.filePath, 'utf8').then((raw) => {
+      const saved: unknown = JSON.parse(raw)
+      return new Set(Array.isArray(saved) ? saved.filter((email): email is string => typeof email === 'string') : [])
+    }).catch(() => new Set<string>())
+    const alerted = await this.signInAlerted
+    const expired = accounts.filter((account) => account.needsSignIn)
+    const fresh = expired.filter((account) => !alerted.has(account.email))
+    // With nothing fresh, every expired email is already alerted, so equal sizes mean equal sets.
+    if (fresh.length === 0 && expired.length === alerted.size) return
+    alerted.clear()
+    for (const account of expired) alerted.add(account.email)
+    if (fresh.length > 0) expiry.notify(fresh)
+    await writePrivateJson(expiry.filePath, [...alerted])
   }
 
   async snapshot(force = false): Promise<ClaudeAccountPool> {
@@ -193,11 +224,7 @@ export class ClaudeAccountSwitcher {
     }
     await this.exclusive(async () => {
       await this.initialize()
-      const directory = dirname(this.options.stateFilePath)
-      await mkdir(directory, { recursive: true, mode: 0o700 })
-      const temporary = `${this.options.stateFilePath}.${randomUUID()}.tmp`
-      await writeFile(temporary, JSON.stringify({ enabled, threshold }) + '\n', { mode: 0o600 })
-      await rename(temporary, this.options.stateFilePath)
+      await writePrivateJson(this.options.stateFilePath, { enabled, threshold })
       this.enabled = enabled
       this.threshold = Number(threshold)
     })
@@ -212,6 +239,9 @@ export class ClaudeAccountSwitcher {
       await this.refresh()
       const account = this.cached?.accounts.find((entry) => entry.number === number)
       if (!account) throw new Error('This saved Claude account is no longer available.')
+      if (account.needsSignIn && !account.active) {
+        throw new Error(`The saved sign-in for ${account.email} has expired. Sign in to that account again before switching to it.`)
+      }
       this.pending = account.active ? null : Number(number)
       this.notice = this.pending ? 'Account switch queued until Claude replies finish.' : null
       await this.applyPending()

@@ -26,6 +26,7 @@ import { getCodexUiChildEnv } from './envFile'
 import { claudeComputerUseNeedsApproval, loadClaudeComputerUseMcpConfig } from './claudeComputerUse'
 import { CLAUDE_HOST_DOWN_MESSAGE, isClaudeHostReachable, spawnThroughHost } from './claudeProcessHost'
 import { ClaudeAccountSwitcher, resolveCSwapExecutable, type CSwapResult } from './claudeAccountSwitcher'
+import { CLAUDE_SIGN_IN_EXPIRED_METHOD, type ClaudeSignInExpired } from './claudeSignInAlert'
 import {
   claudeConfigDir,
   isClaudeSessionActive,
@@ -992,6 +993,13 @@ export class ClaudeBackend {
       isAuthenticating: () => Boolean(this.login) || this.changingAccount,
       prepareSwitch: (options) => this.prepareAccountChange(options),
       accountChanged: () => this.accountChanged(),
+      signInExpiry: {
+        filePath: join(dirname(storeFilePath), 'codexui-claude-sign-in-alerts.json'),
+        notify: (accounts) => {
+          const params: ClaudeSignInExpired = { accounts: accounts.map(({ email, active }) => ({ email, active })) }
+          this.emit(CLAUDE_SIGN_IN_EXPIRED_METHOD, params)
+        },
+      },
     })
     this.accounts.start()
     void this.refreshClaudeSessionStates()

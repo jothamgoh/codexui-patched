@@ -10,6 +10,8 @@ import { isProjectBoardNotification, projectBoardNativeRequestNotification, type
 import { collectProjectBoardNotifications, projectBoardThreadIds } from './projectBoardNotificationEvents.js'
 import { readInputRequestNotification, type InputRequestNotification } from '../utils/inputRequestNotifications'
 import { readTurnContinuation, type TurnContinuation } from '../utils/turnContinuation'
+import { CLAUDE_SIGN_IN_EXPIRED_METHOD, claudeSignInExpiredPush, type ClaudeSignInExpired } from './claudeSignInAlert.js'
+import type { CustomNotification } from './webPushTurnNotifier.js'
 
 type BridgeNotification = {
   method: string
@@ -37,6 +39,7 @@ type WebPushNotificationSink = TurnNotificationSink & {
   removeThreadHistory: (threadIds: Iterable<string>) => Promise<void>
   resolveProjectBoardQuestions?: (questionIds: string[], atIso: string) => Promise<void>
   syncProjectBoardNativeRequests?: (pendingEventIds: string[], atIso: string) => Promise<void>
+  sendCustomNotification?: (notification: CustomNotification) => Promise<unknown>
 }
 
 export type TurnNotificationRouter = {
@@ -348,6 +351,15 @@ export function createTurnNotificationRouter(
         nativeRequestEvents.delete(Number(request.id))
         syncNativeRequestHistory(notification.atIso || new Date().toISOString())
       })
+      return
+    }
+    if (notification.method === CLAUDE_SIGN_IN_EXPIRED_METHOD) {
+      const push = claudeSignInExpiredPush(notification.params as ClaudeSignInExpired)
+      if (push) {
+        void options.webPushTurnNotifier.sendCustomNotification?.(push).catch((error: unknown) => {
+          console.warn('[web-push] Failed to send the Claude sign-in alert:', error instanceof Error ? error.message : error)
+        })
+      }
       return
     }
     if (notification.method === 'codexui/projectBoards/batchCompleted') {

@@ -45,9 +45,13 @@ const turnContinuationSource = await readFile(new URL('../src/utils/turnContinua
 const turnContinuationModuleUrl = `data:text/javascript;base64,${Buffer.from(ts.transpileModule(turnContinuationSource, {
   compilerOptions: { module: ts.ModuleKind.ES2022, target: ts.ScriptTarget.ES2022 },
 }).outputText).toString('base64')}`
+const signInAlertSource = await readFile(new URL('../src/server/claudeSignInAlert.ts', import.meta.url), 'utf8')
+const signInAlertModuleUrl = `data:text/javascript;base64,${Buffer.from(ts.transpileModule(signInAlertSource, {
+  compilerOptions: { module: ts.ModuleKind.ES2022, target: ts.ScriptTarget.ES2022 },
+}).outputText).toString('base64')}`
 const { createTurnNotificationRouter } = await importTypeScriptModule(
   '../src/server/turnNotificationRouter.ts',
-  [['../utils/codexThreadSource.js', threadSourceModuleUrl], ['./projectBoardNotificationEvents.js', boardEventModuleUrl], ['../utils/projectBoardNotifications', boardUtilityModuleUrl], ['../utils/inputRequestNotifications', inputRequestModuleUrl], ['../utils/turnContinuation', turnContinuationModuleUrl]],
+  [['../utils/codexThreadSource.js', threadSourceModuleUrl], ['./projectBoardNotificationEvents.js', boardEventModuleUrl], ['../utils/projectBoardNotifications', boardUtilityModuleUrl], ['../utils/inputRequestNotifications', inputRequestModuleUrl], ['../utils/turnContinuation', turnContinuationModuleUrl], ['./claudeSignInAlert.js', signInAlertModuleUrl]],
 )
 
 const delay = (milliseconds) => new Promise((resolve) => setTimeout(resolve, milliseconds))
@@ -65,6 +69,7 @@ function createHarness({
   let listener = null
   const telegram = []
   const webPush = []
+  const customPush = []
   const removedHistory = []
   const boardPush = []
   const boardTelegram = []
@@ -103,6 +108,7 @@ function createHarness({
       async removeThreadHistory(threadIds) {
         removedHistory.push([...threadIds])
       },
+      async sendCustomNotification(notification) { customPush.push(notification) },
     },
     threadLookupTimeoutMs,
     backfillRequestTimeoutMs,
@@ -115,6 +121,7 @@ function createHarness({
     router,
     telegram,
     webPush,
+    customPush,
     boardPush,
     boardTelegram,
     boardPublished,
@@ -498,5 +505,21 @@ test('a held reply whose next reply started during its lookup never alerts', asy
   harness.emit(completedNotification(claudeChat, 'turn-2'))
   await delay(15)
   assert.deepEqual(pushedTurnIds(harness), ['turn-2'])
+  harness.router.dispose()
+})
+
+test('an expired Claude sign-in sends one phone alert naming the accounts, not a turn notification', async () => {
+  const harness = createHarness({ readThread: async () => ({}) })
+  harness.emit({
+    method: 'codexui/claudeAccounts/signInExpired',
+    params: { accounts: [{ email: 'a@example.test', active: true }, { email: 'b@example.test', active: false }] },
+    atIso: new Date().toISOString(),
+  })
+  await delay(5)
+  assert.equal(harness.customPush.length, 1)
+  assert.equal(harness.customPush[0].title, 'Claude sign-in expired')
+  assert.match(harness.customPush[0].body, /a@example\.test, b@example\.test/u)
+  assert.match(harness.customPush[0].body, /Claude chats stop/u)
+  assert.equal(harness.webPush.length, 0)
   harness.router.dispose()
 })

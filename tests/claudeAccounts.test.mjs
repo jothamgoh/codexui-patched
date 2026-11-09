@@ -783,3 +783,34 @@ test('with nobody logged in to the desktop, Claude status and accounts say so in
     } finally { await new Promise((resolve) => server.close(resolve)) }
   } finally { backend.dispose(); await rm(socketDirectory, { recursive: true, force: true }) }
 })
+
+test('an expired saved sign-in is flagged, refused as a switch target, and alerts once across restarts', async () => {
+  const alerts = []
+  const expire = (dead) => rows().map((row) => dead.includes(row.number) ? { ...row, usageStatus: 'relogin_required', usage: null, lastGoodUsage: row.usage } : row)
+  const scratch = await mkdtemp(join(directory, 'sign-in-alerts-'))
+  const signInExpiry = { filePath: join(scratch, 'alerts.json'), notify: (accounts) => alerts.push(accounts.map((account) => account.email)) }
+  const first = await fixture({ signInExpiry })
+  first.setRows(expire([2]))
+  const pool = await first.manager.snapshot()
+  assert.deepEqual(pool.accounts.map((account) => account.needsSignIn), [false, true, false])
+  await assert.rejects(first.manager.requestSwitch(2), /account2@example\.test has expired/u)
+  assert.equal(first.calls.some((args) => args[0] === 'switch'), false)
+  first.advance(CLAUDE_CSWAP_CHECK_MS)
+  await first.manager.snapshot()
+  assert.deepEqual(alerts, [['account2@example.test']])
+  first.manager.dispose()
+
+  // A restarted server remembers the alert; an account signed in again alerts when it next expires.
+  const restarted = await fixture({ signInExpiry })
+  restarted.setRows(expire([2, 3]))
+  await restarted.manager.snapshot()
+  assert.deepEqual(alerts, [['account2@example.test'], ['account3@example.test']])
+  restarted.setRows(expire([3]))
+  restarted.advance(CLAUDE_CSWAP_CHECK_MS)
+  await restarted.manager.snapshot()
+  restarted.setRows(expire([2, 3]))
+  restarted.advance(CLAUDE_CSWAP_CHECK_MS)
+  await restarted.manager.snapshot()
+  assert.deepEqual(alerts, [['account2@example.test'], ['account3@example.test'], ['account2@example.test']])
+  restarted.manager.dispose()
+})

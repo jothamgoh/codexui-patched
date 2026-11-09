@@ -5,8 +5,8 @@
       <label class="account-label" for="claude-active-account">Account for all Claude chats</label>
       <select id="claude-active-account" aria-label="Active Claude account" :value="pool.pendingAccountNumber ?? pool.activeAccountNumber ?? ''" :disabled="disabled || pool.switching || !pool.accounts.length" @change="emit('switch', Number(($event.target as HTMLSelectElement).value))">
         <option value="" disabled>Save your current login first</option>
-        <option v-for="account in pool.accounts" :key="account.number" :value="account.number">
-          {{ account.alias || account.email }}{{ account.active ? ' · active' : '' }}
+        <option v-for="account in pool.accounts" :key="account.number" :value="account.number" :disabled="account.needsSignIn && !account.active">
+          {{ account.alias || account.email }}{{ account.active ? ' · active' : '' }}{{ account.needsSignIn ? ' · sign in again' : '' }}
         </option>
       </select>
       <label class="auto-row">
@@ -22,7 +22,7 @@
       </div>
       <p v-if="pool.notice" class="account-notice" role="status">{{ pool.notice }}</p>
       <details v-if="pool.accounts.length" class="account-usage">
-        <summary>Manage saved accounts</summary>
+        <summary>Manage saved accounts<span v-if="expiredCount" class="needs-sign-in"> · {{ expiredCount }} need sign-in</span></summary>
         <div v-for="account in pool.accounts" :key="account.number" class="saved-account">
           <div class="saved-account-header" :class="{ 'is-confirming': removeConfirm === account.number }">
             <strong>{{ account.alias || account.email }}</strong>
@@ -32,14 +32,20 @@
           </div>
           <span v-if="removeConfirm === account.number">Removes the saved login from switching. Keeps your chats and current sign-in.</span>
           <span v-if="account.disabled">Excluded from auto switch</span>
-          <span v-if="account.usageIsStale || account.usageError">Cached usage{{ usageCheckProblem(account) }}</span>
-          <template v-if="account.limits.length">
-            <div v-for="limit in account.limits" :key="limit.label" class="limit">
-              <span>{{ limit.label }} · {{ Math.round(100 - limit.usedPercent) }}% left</span>
-              <progress max="100" :value="100 - limit.usedPercent" :aria-label="`${account.email} ${limit.label} remaining`" />
-            </div>
+          <template v-if="account.needsSignIn">
+            <span class="needs-sign-in">Sign-in expired. Sign in to this account again to use it.</span>
+            <button type="button" class="sign-in-again" :disabled="disabled || pool.switching" @click="emit('add')">Sign in again</button>
           </template>
-          <span v-else>{{ account.usageStatus === 'relogin_required' ? 'Sign in again to use this account' : 'Usage unavailable' }}</span>
+          <template v-else>
+            <span v-if="account.usageIsStale || account.usageError">Cached usage{{ usageCheckProblem(account) }}</span>
+            <template v-if="account.limits.length">
+              <div v-for="limit in account.limits" :key="limit.label" class="limit">
+                <span>{{ limit.label }} · {{ Math.round(100 - limit.usedPercent) }}% left</span>
+                <progress max="100" :value="100 - limit.usedPercent" :aria-label="`${account.email} ${limit.label} remaining`" />
+              </div>
+            </template>
+            <span v-else>Usage unavailable</span>
+          </template>
         </div>
       </details>
     </template>
@@ -70,6 +76,7 @@ function usageCheckProblem(account: ClaudeSavedAccount): string {
   if (account.usageError === 'http-403') return ' · usage check refused (403): the plan may have lapsed'
   return account.usageError ? ` · usage check failed (${account.usageError})` : ''
 }
+const expiredCount = computed(() => props.pool?.accounts.filter((account) => account.needsSignIn).length ?? 0)
 const thresholds = computed(() => [...new Set([75, 80, 90, 95, 99, props.pool?.threshold ?? 90])].sort((a, b) => a - b))
 </script>
 
@@ -99,6 +106,8 @@ summary { @apply cursor-pointer; }
 .saved-account-header.is-confirming { @apply justify-start; }
 .saved-account-header.is-confirming strong { @apply basis-full; }
 .saved-account > span { @apply block; color: var(--text-muted); }
+.saved-account > span.needs-sign-in, summary .needs-sign-in { color: var(--destructive); }
+.sign-in-again { @apply mt-1; }
 .limit { @apply mt-1; }
 .limit span { color: var(--text-muted); }
 progress { @apply block h-1.5 w-full overflow-hidden rounded-full; }

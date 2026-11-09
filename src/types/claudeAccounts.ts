@@ -6,6 +6,8 @@ export type ClaudeSavedAccount = {
   active: boolean
   disabled: boolean
   usageStatus: string
+  /** The saved sign-in is dead (cswap `relogin_required`); only signing in to the account again revives it. */
+  needsSignIn: boolean
   usageIsStale: boolean
   usageRateLimited: boolean
   /** cswap's latest usage-check failure, such as `http-403`; null after a good read. */

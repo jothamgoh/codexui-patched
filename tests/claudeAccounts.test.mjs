@@ -57,6 +57,9 @@ test('HTTP account metadata excludes credentials, invalid JSON never leaks the o
 test('only provider hard-limit messages trigger account recovery', () => {
   assert.equal(isClaudeHardLimitError("You've hit your session limit · resets 9:20pm"), true)
   assert.equal(isClaudeHardLimitError('Your weekly limit has been reached'), true)
+  assert.equal(isClaudeHardLimitError("You've hit your 5-hour limit · resets 1:20am (Asia/Singapore)"), true)
+  assert.equal(isClaudeHardLimitError("You've hit your weekly Opus limit · resets Nov 23"), true)
+  assert.equal(isClaudeHardLimitError('Your 7-day limit has been reached'), true)
   assert.equal(isClaudeHardLimitError('HTTP 429 while refreshing usage'), false)
   assert.equal(isClaudeHardLimitError('Context window limit reached'), false)
 })

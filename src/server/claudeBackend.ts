@@ -697,8 +697,15 @@ function continuationAfter(
   return null
 }
 
+/** Claude Code names the window it hit, and that name changes: "session", "5-hour", "weekly". */
+const HARD_LIMIT_WINDOW = String.raw`(?:session|usage|weekly|\d+[-\s](?:hour|day))`
+const HARD_LIMIT_PATTERN = new RegExp(
+  String.raw`hit\s+your\s+(?:[\w-]+\s+){0,2}limit|${HARD_LIMIT_WINDOW}\s+limit\s+(?:has\s+been\s+)?reached`,
+  'iu',
+)
+
 export function isClaudeHardLimitError(message: string): boolean {
-  return /(?:you(?:'|’)ve\s+)?hit\s+your\s+(?:session|usage|weekly)\s+limit|(?:session|usage|weekly)\s+limit\s+(?:has\s+been\s+)?reached/iu.test(message)
+  return HARD_LIMIT_PATTERN.test(message)
 }
 
 type InputStream = {

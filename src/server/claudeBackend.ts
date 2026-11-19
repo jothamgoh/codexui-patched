@@ -115,6 +115,10 @@ const CLAUDE_LIMIT_CONTINUATION = 'Continue where you left off. Do not redo work
 /** How long a limit continuation waits for the Claude process CodexUI retired to exit. */
 const LIMIT_CONTINUATION_WAIT_MS = 30_000
 const LIMIT_CONTINUATION_POLL_MS = 1_000
+/** How often chats stopped with every account at its limit check whether usage is back. */
+const LIMIT_WAIT_POLL_MS = 60_000
+/** A chat waits at least this long after a limit before CodexUI tries it again. */
+const LIMIT_WAIT_RETRY_MS = 10 * 60_000
 /** Writes this soon after CodexUI's own activity (titles, hooks) are its own. */
 const OWN_WRITE_SLACK_MS = 10_000
 const HUMAN_PROMPT_SCAN_BYTES = 256 * 1024
@@ -404,6 +408,8 @@ type StoredThread = {
   rewindAt?: string | null
   contextWindow?: number
   goal?: StoredGoal | null
+  /** Stopped at a usage limit with no account to switch to; continued once usage is back. */
+  limitWait?: { sinceMs: number; transcriptMtimeMs: number } | null
 }
 
 type StoreFile = { threads: Record<string, StoredThread> }
@@ -983,6 +989,8 @@ export class ClaudeBackend {
   private claudeSessionScan: Promise<ClaudeSessionRegistryScan> | null = null
   private claudeSessionStatesInitialized = false
   private claudeSessionTimer: ReturnType<typeof setInterval> | null = null
+  private limitWaitTimer: ReturnType<typeof setInterval> | null = null
+  private limitWaitCheck: Promise<void> | null = null
   private nextRequestId = SERVER_REQUEST_ID_BASE
   private login: ClaudeLogin | null = null
 
@@ -1012,6 +1020,8 @@ export class ClaudeBackend {
     void this.refreshClaudeSessionStates()
     this.claudeSessionTimer = setInterval(() => { void this.refreshClaudeSessionStates() }, CLAUDE_SESSION_POLL_MS)
     this.claudeSessionTimer.unref?.()
+    this.limitWaitTimer = setInterval(() => { void this.continueChatsWaitingForUsage() }, LIMIT_WAIT_POLL_MS)
+    this.limitWaitTimer.unref?.()
   }
 
   private sdk(): Promise<SdkModule> {
@@ -2123,6 +2133,7 @@ export class ClaudeBackend {
     const stored = await this.store.update(sessionId, {
       model: requested.model,
       effort: requested.effort,
+      limitWait: null,
       ...(readString(request.cwd) ? { cwd: readString(request.cwd) } : {}),
       ...(existing ? {} : { createdAtMs: Date.now() }),
     })
@@ -2417,12 +2428,16 @@ export class ClaudeBackend {
       ...(exhaustedAccountNumber === null ? [] : [exhaustedAccountNumber]),
     ])]
     const recovery = await this.accounts.recoverFromLimit(exhaustedAccountNumber, attemptedAccountNumbers)
-    if (recovery.kind !== 'ready') return
     // The retired process can stay registered as busy while it shuts down. Wait
     // for it rather than give up; the active-elsewhere guard is never bypassed,
     // so a chat genuinely running in a terminal still refuses the continuation.
     const deadline = Date.now() + this.limitContinuationWaitMs
     await this.waitForRetiredProcess(turn.sessionId, deadline)
+    if (recovery.kind !== 'ready') {
+      // Every account is used up: continue once usage comes back instead of stopping for good.
+      if (!this.disposed) await this.waitForUsage(turn.sessionId, turn.cwd)
+      return
+    }
     for (;;) {
       try {
         await this.startTurn({
@@ -2437,10 +2452,67 @@ export class ClaudeBackend {
           continue
         }
         console.warn(`[claude-backend] Could not continue rate-limited Claude session ${turn.sessionId}: ${error instanceof Error ? error.message : String(error)}`)
-        this.setLimitContinuationNeeded(turn.sessionId, true)
+        // Try again later; the wait ends by itself if another app really is using the chat.
+        await this.waitForUsage(turn.sessionId, turn.cwd)
         return
       }
     }
+  }
+
+  private async transcriptMtimeMs(sessionId: string, cwd: string): Promise<number> {
+    const path = await this.findTranscriptPath(sessionId, cwd)
+    return (path ? await stat(path).catch(() => null) : null)?.mtimeMs ?? 0
+  }
+
+  private async waitForUsage(sessionId: string, cwd: string): Promise<void> {
+    if (this.runners.has(sessionId)) return
+    await this.store.update(sessionId, {
+      limitWait: { sinceMs: Date.now(), transcriptMtimeMs: await this.transcriptMtimeMs(sessionId, cwd) },
+    })
+    this.setLimitContinuationNeeded(sessionId, true)
+    console.info(`[claude-backend] Claude session ${sessionId} stopped at a usage limit; CodexUI continues it once usage is back.`)
+  }
+
+  /** Continue chats that stopped with every account at its limit, once the active account has usage again. */
+  private continueChatsWaitingForUsage(): Promise<void> {
+    this.limitWaitCheck ??= (async () => {
+      const threads = (await this.store.read()).threads
+      const waiting: Array<[string, StoredThread, NonNullable<StoredThread['limitWait']>]> = []
+      for (const [sessionId, thread] of Object.entries(threads)) {
+        if (!thread.limitWait) continue
+        if (thread.archived) {
+          await this.store.update(sessionId, { limitWait: null })
+          continue
+        }
+        // A restart forgets the banner; the stored wait brings it back.
+        this.setLimitContinuationNeeded(sessionId, true)
+        if (Date.now() - thread.limitWait.sinceMs >= LIMIT_WAIT_RETRY_MS) waiting.push([sessionId, thread, thread.limitWait])
+      }
+      if (waiting.length === 0 || this.disposed || !await this.accounts.activeAccountHasUsage()) return
+      for (const [sessionId, thread, wait] of waiting) {
+        if (this.disposed) return
+        if (await this.transcriptMtimeMs(sessionId, thread.cwd) > wait.transcriptMtimeMs + OWN_WRITE_SLACK_MS) {
+          // Continued in another app meanwhile. Leave the Continue button rather than interrupt it.
+          await this.store.update(sessionId, { limitWait: null })
+          continue
+        }
+        try {
+          await this.startTurn({
+            threadId: toThreadId(sessionId),
+            input: [{ type: 'text', text: CLAUDE_LIMIT_CONTINUATION }],
+          }, { limitRecoveryAccountNumbers: [] })
+        } catch (error) {
+          if (error instanceof ClaudeSessionAlreadyResumedError) continue
+          const elsewhere = error instanceof ClaudeSessionActiveElsewhereError
+          console.warn(`[claude-backend] Could not continue Claude session ${sessionId} after its usage limit: ${error instanceof Error ? error.message : String(error)}`)
+          // Retry later unless another app has the chat; the Continue button stays either way.
+          await this.store.update(sessionId, { limitWait: elsewhere ? null : { ...wait, sinceMs: Date.now() } })
+        }
+      }
+    })().catch((error: unknown) => {
+      console.warn('[claude-backend] Could not check chats waiting for Claude usage:', error instanceof Error ? error.message : error)
+    }).finally(() => { this.limitWaitCheck = null })
+    return this.limitWaitCheck
   }
 
   /**
@@ -2967,6 +3039,8 @@ export class ClaudeBackend {
     this.accounts.dispose()
     if (this.claudeSessionTimer) clearInterval(this.claudeSessionTimer)
     this.claudeSessionTimer = null
+    if (this.limitWaitTimer) clearInterval(this.limitWaitTimer)
+    this.limitWaitTimer = null
     this.cancelLogin()
     for (const sessionId of [...this.runners.keys()]) this.closeRunner(sessionId)
   }

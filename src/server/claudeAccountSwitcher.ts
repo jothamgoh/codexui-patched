@@ -433,6 +433,29 @@ export class ClaudeAccountSwitcher {
     return this.cached?.active ?? null
   }
 
+  /**
+   * Whether the active account can take a reply again: a fresh reading shows
+   * every window under its limit, or past its reset time when cswap has not
+   * read it since. Recovery switches to another account itself when one frees
+   * up first, so only the active account matters here.
+   */
+  async activeAccountHasUsage(): Promise<boolean> {
+    return this.exclusive(async () => {
+      await this.initialize()
+      if (this.disposed || !this.options.executable) return false
+      await this.refresh()
+      const active = this.cached?.accounts.find((account) => account.active)
+      return Boolean(
+        active
+        && !active.needsSignIn
+        && active.usageStatus === 'ok'
+        && !active.usageIsStale
+        && active.limits.length > 0
+        && active.limits.every((limit) => limit.usedPercent < 100 || (limit.resetsAt !== null && Date.parse(limit.resetsAt) <= this.now())),
+      )
+    }).catch(() => false)
+  }
+
   /** Called inside the turn-start lock, before a new Claude process can be created. */
   async beforeTurn(): Promise<void> {
     if (this.disposed) throw new Error('Claude account manager is stopping.')

@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict'
-import { chmod, mkdir, mkdtemp, readFile, rm, stat, writeFile } from 'node:fs/promises'
+import { chmod, mkdir, mkdtemp, readFile, rm, stat, utimes, writeFile } from 'node:fs/promises'
 import { join } from 'node:path'
 import { pathToFileURL } from 'node:url'
 import test from 'node:test'
@@ -768,6 +768,97 @@ test('a limit continuation is dropped when the user resumes the chat during the 
   assert.deepEqual(f.sent, [], 'recovery does not send a second continue into the resumed chat')
   assert.deepEqual(f.notices, [])
   await f.done()
+})
+
+test('the active account has usage again only once a fresh reading or its reset time says so', async () => {
+  const f = await fixture()
+  const soon = new Date(Date.now() + 60 * 60_000).toISOString()
+  const spent = (extra = {}) => rows(1, 100).map((row) => row.number === 1 ? { ...row, usage: { fiveHour: { pct: 100, resetsAt: soon }, sevenDay: { pct: 30 } }, ...extra } : row)
+  f.setRows(spent())
+  assert.equal(await f.manager.activeAccountHasUsage(), false, 'still at the limit')
+  f.setRows(spent({ usageStatus: 'unavailable', usage: null, lastGoodUsage: { fiveHour: { pct: 20 } } }))
+  f.advance(CLAUDE_CSWAP_CHECK_MS)
+  assert.equal(await f.manager.activeAccountHasUsage(), false, 'an old reading from before the limit is no evidence')
+  f.setRows(spent())
+  f.advance(2 * 60 * 60_000)
+  assert.equal(await f.manager.activeAccountHasUsage(), true, 'a window past its reset time is free even before cswap reads it again')
+  f.setRows(rows(1, 3))
+  f.advance(CLAUDE_CSWAP_CHECK_MS)
+  assert.equal(await f.manager.activeAccountHasUsage(), true)
+  f.manager.dispose()
+})
+
+test('a chat stopped with every account at its limit continues by itself once usage is back', { timeout: 15_000 }, async () => {
+  const session = 'every-account-used-up'
+  const f = await limitContinuationFixture(session, () => null)
+  f.backend.accounts.recoverFromLimit = async () => ({ kind: 'blocked', reason: 'no-account' })
+  let hasUsage = false
+  f.backend.accounts.activeAccountHasUsage = async () => hasUsage
+  f.hitLimit()
+  await until(() => f.notices.length > 0)
+  assert.deepEqual(f.notices, [{ threadId: `claude-${session}`, needed: true }], 'the chat shows Continue while it waits')
+  await until(() => Boolean(f.backend.store.cache.threads[session].limitWait))
+
+  const waitedLong = async () => {
+    const { limitWait } = await f.backend.store.get(session)
+    await f.backend.store.update(session, { limitWait: { ...limitWait, sinceMs: Date.now() - 11 * 60_000 } })
+  }
+  await f.backend.continueChatsWaitingForUsage()
+  await waitedLong()
+  await f.backend.continueChatsWaitingForUsage()
+  assert.deepEqual(f.sent, [], 'nothing is sent while every account is still at its limit')
+
+  hasUsage = true
+  await f.backend.continueChatsWaitingForUsage()
+  assert.equal(f.sent.length, 1)
+  assert.match(continuationText(f.sent[0]), /Continue where you left off/u)
+  assert.deepEqual(f.notices.at(-1), { threadId: `claude-${session}`, needed: false })
+  assert.equal((await f.backend.store.get(session)).limitWait, null)
+  await f.backend.continueChatsWaitingForUsage()
+  assert.equal(f.sent.length, 1, 'continued exactly once')
+  await f.done()
+})
+
+test('a chat waiting for usage still continues after a restart, but not after another app continued it', { timeout: 15_000 }, async () => {
+  const f = await fixture()
+  const configDir = join(f.scratch, 'claude')
+  const storePath = join(f.scratch, 'threads.json')
+  const cwd = '/work/project'
+  const projectDir = join(configDir, 'projects', cwd.replace(/[^a-zA-Z0-9]/gu, '-'))
+  await mkdir(projectDir, { recursive: true })
+  const hourAgo = Date.now() - 60 * 60_000
+  const waits = {}
+  for (const session of ['waiting-across-restart', 'continued-in-terminal']) {
+    const transcript = join(projectDir, `${session}.jsonl`)
+    await writeFile(transcript, '')
+    await utimes(transcript, hourAgo / 1000, hourAgo / 1000)
+    waits[session] = { sinceMs: hourAgo, transcriptMtimeMs: (await stat(transcript)).mtimeMs }
+  }
+  // The terminal session wrote to its transcript after CodexUI parked it.
+  const later = (hourAgo + 30 * 60_000) / 1000
+  await utimes(join(projectDir, 'continued-in-terminal.jsonl'), later, later)
+  await writeFile(storePath, JSON.stringify({ threads: Object.fromEntries(Object.entries(waits).map(([session, limitWait]) => [
+    session, { cwd, model: 'claude-sonnet', effort: 'low', createdAtMs: 1, limitWait },
+  ])) }))
+
+  const backend = new ClaudeBackend(storePath, { accountSwitcherPath: '/fixture/cswap', claudeConfigDir: configDir })
+  backend.runAccountCommand = f.run
+  backend.readRuntime = async () => ({ connected: true, account: {}, models: [] })
+  await backend.claudeSessionScan
+  backend.refreshClaudeSessionStates = async () => ({ uncertain: false, states: (backend.claudeSessionStates = new Map()) })
+  backend.accounts.activeAccountHasUsage = async () => true
+  const sent = []
+  backend.createRunner = async (threadId, sessionId, stored, runnerCwd, settingsKey) => {
+    const runner = { sessionId, threadId, cwd: runnerCwd, settingsKey, query: { close: () => {} }, closed: false, totalUsage: {}, contextWindow: 200000, input: { push: () => { sent.push(sessionId); return true }, release: () => {} }, activeTurn: null, pushedCommands: new Map(), backgroundTasks: [], idleTimer: null }
+    backend.runners.set(sessionId, runner)
+    return runner
+  }
+  await backend.continueChatsWaitingForUsage()
+  assert.deepEqual(sent, ['waiting-across-restart'])
+  assert.equal((await backend.store.get('continued-in-terminal')).limitWait, null, 'the wait ends without interrupting the other app')
+  for (const runner of backend.runners.values()) runner.closed = true
+  backend.runners.clear(); backend.dispose(); f.manager.dispose()
+  await backend.store.writeChain
 })
 
 test('with nobody logged in to the desktop, Claude status and accounts say so instead of "signed out"', async () => {

@@ -1,7 +1,7 @@
 <template>
   <div class="limit-continuation" role="status">
     <div class="limit-continuation-inner">
-      <span class="limit-continuation-text">Claude switched accounts but could not resume this chat automatically.</span>
+      <span class="limit-continuation-text">Claude stopped at a usage limit. This chat continues by itself once usage is back, or press Continue.</span>
       <button class="limit-continuation-button" type="button" :disabled="sending" @click="onContinue">Continue</button>
     </div>
   </div>

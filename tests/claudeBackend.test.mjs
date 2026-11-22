@@ -35,7 +35,7 @@ const { BackendRouter } = await loadModule('../src/server/backendRouter.ts')
 const transcript = await loadModule('../src/server/claudeTranscript.ts')
 const { startClaudeProcessHost, spawnThroughHost } = await loadModule('../src/server/claudeProcessHost.ts')
 const { scanClaudeSessionRegistry } = await loadModule('../src/server/claudeSessionRegistry.ts')
-const { withTurnMetadata, parseTurnFile, turnEndedRequest, isRelayResponse } = await loadModule('../src/server/cuaRelay.ts')
+const { withTurnMetadata, parseTurnFile, turnEndedRequest, isRelayResponse, serverCommand, CODEX_ACCESS_WRAPPER } = await loadModule('../src/server/cuaRelay.ts')
 const cuaRelayBundle = join(bundleDir, `${'../src/server/cuaRelay.ts'.replace(/[^a-z0-9]/giu, '_')}.mjs`)
 const { buildReviewChanges } = await loadModule('../src/utils/reviewDiff.ts')
 const { createClaudeAutomationTool } = await loadModule('../src/server/claudeAutomationTool.ts')
@@ -984,6 +984,29 @@ test('the cua relay process forwards stdio and reads the current turn on each ca
     const exited = new Promise((resolve) => relay.on('exit', resolve))
     relay.stdin.end()
     assert.equal(await exited, 0, 'closing Claude\'s side ends the relay and its server')
+  } finally {
+    await rm(directory, { recursive: true, force: true })
+  }
+})
+
+test('the cua relay starts cua_repl past Codex\'s browser access wrapper, with no executor id', async () => {
+  const wrapped = ['-c', CODEX_ACCESS_WRAPPER, 'cua-repl', '/cua/bin/node_repl']
+  assert.deepEqual(serverCommand('/bin/sh', wrapped, () => true), {
+    command: '/cua/bin/node',
+    args: ['/cua/lib/node_modules/@oai/cua-repl/bin/cua-repl.mjs'],
+    env: { CUA_REPL_NODE_REPL_PATH: '/cua/bin/node_repl' },
+  }, 'Codex\'s node must start node_repl, or native apps cannot open the Computer Use pipe')
+  assert.deepEqual(serverCommand('/bin/sh', wrapped, () => false), { command: '/cua/bin/node_repl', args: [], env: {} }, 'without the launcher the wrapped program runs directly')
+  const other = ['-c', 'echo changed; exec "$@"', 'cua-repl', '/cua/bin/node_repl']
+  assert.deepEqual(serverCommand('/bin/sh', other, () => true), { command: '/bin/sh', args: other, env: {} }, 'a changed wrapper runs as configured')
+  const directory = await mkdtemp(join(tmpdir(), 'codexui-cua-access-'))
+  try {
+    const probe = join(directory, 'probe.mjs')
+    await writeFile(probe, "process.stdout.write(JSON.stringify({ executor: process.env.BROWSER_USE_ACCESS_EXECUTOR_ID ?? null }) + '\\n')\n")
+    const relay = spawn(process.execPath, [cuaRelayBundle, 'session-1', '', '--', '/bin/sh', '-c', CODEX_ACCESS_WRAPPER, 'cua-repl', process.execPath, probe], { stdio: ['pipe', 'pipe', 'inherit'], env: { ...process.env, BROWSER_USE_ACCESS_EXECUTOR_ID: 'codex-app' } })
+    const line = (await createInterface({ input: relay.stdout })[Symbol.asyncIterator]().next()).value
+    relay.stdin.end()
+    assert.deepEqual(JSON.parse(line), { executor: null }, 'cua_repl must not see an executor id, or every browser call needs Codex\'s access host')
   } finally {
     await rm(directory, { recursive: true, force: true })
   }

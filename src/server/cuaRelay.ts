@@ -3,7 +3,8 @@
 // except that each tool call gains the Codex turn metadata the Chrome browser
 // surface requires. Claude Code cannot attach that metadata itself.
 import { spawn } from 'node:child_process'
-import { readFileSync, realpathSync, unwatchFile, watchFile } from 'node:fs'
+import { existsSync, readFileSync, realpathSync, unwatchFile, watchFile } from 'node:fs'
+import { basename, dirname, join } from 'node:path'
 import { createInterface } from 'node:readline'
 import { fileURLToPath } from 'node:url'
 
@@ -43,6 +44,42 @@ export function withTurnMetadata(line: string, sessionId: string, turnId: string
     ...message,
     params: { ...params, ...timed, _meta: { ...meta, 'x-codex-turn-metadata': { session_id: sessionId, turn_id: turnId } } },
   })
+}
+
+/**
+ * The wrapper Codex's computer-use plugin starts cua_repl through. It exports
+ * the browser access executor id, empty when unset, and any executor id makes
+ * cua_repl check each browser call with an access host. Codex gives that
+ * host's pipe and key only to the sessions it starts, so under CodexUI every
+ * check fails with "The browser access host is unavailable".
+ */
+export const CODEX_ACCESS_WRAPPER = 'export BROWSER_USE_ACCESS_EXECUTOR_ID="${BROWSER_USE_ACCESS_EXECUTOR_ID-}"; exec "$@"'
+const ACCESS_EXECUTOR_ENV = 'BROWSER_USE_ACCESS_EXECUTOR_ID'
+
+export type ServerCommand = { command: string; args: string[]; env: Record<string, string> }
+
+/**
+ * The program to start for the configured server command. Codex's access
+ * wrapper around `node_repl` is replaced by Codex's own launcher for it,
+ * `cua-repl.mjs` run by Codex's bundled node, which is how CodexUI started
+ * cua_repl before the wrapper existed:
+ * - with no executor id, cua_repl skips the browser access check;
+ * - `node_repl` opens the Computer Use pipe only when Codex's node starts it,
+ *   so started by this relay directly, every native app call fails with
+ *   "Sky Computer Use native pipe startup failed".
+ * Without that launcher the wrapped program runs directly, and any other
+ * command, including a changed wrapper, runs as configured.
+ */
+export function serverCommand(command: string, args: string[], fileExists: (path: string) => boolean = existsSync): ServerCommand {
+  if (command !== '/bin/sh' || args[0] !== '-c' || args[1] !== CODEX_ACCESS_WRAPPER || !args[3]) return { command, args, env: {} }
+  const [program, ...programArgs] = args.slice(3)
+  const bin = dirname(program)
+  const node = join(bin, 'node')
+  const launcher = join(bin, '..', 'lib', 'node_modules', '@oai', 'cua-repl', 'bin', 'cua-repl.mjs')
+  if (basename(program) === 'node_repl' && programArgs.length === 0 && fileExists(node) && fileExists(launcher)) {
+    return { command: node, args: [launcher], env: { CUA_REPL_NODE_REPL_PATH: program } }
+  }
+  return { command: program, args: programArgs, env: {} }
 }
 
 /** Request ids the relay itself sends; their responses are not Claude's to see. */
@@ -100,7 +137,10 @@ function main(): void {
     process.exit(2)
   }
 
-  const child = spawn(command, args, { stdio: ['pipe', 'pipe', 'inherit'] })
+  const server = serverCommand(command, args)
+  const env = { ...process.env, ...server.env }
+  delete env[ACCESS_EXECUTOR_ENV]
+  const child = spawn(server.command, server.args, { stdio: ['pipe', 'pipe', 'inherit'], env })
   createInterface({ input: child.stdout, crlfDelay: Infinity }).on('line', (line) => {
     if (!isRelayResponse(line)) process.stdout.write(`${line}\n`)
   })

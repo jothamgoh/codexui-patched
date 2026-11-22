@@ -957,6 +957,8 @@ test('the cua relay adds Codex turn metadata to tool calls only', () => {
   assert.deepEqual(call.params, { name: 'js', arguments: { code: '1', timeout_ms: 120000 }, _meta: { progressToken: 7, 'x-codex-turn-metadata': meta } })
   const chosen = JSON.parse(withTurnMetadata(JSON.stringify({ jsonrpc: '2.0', id: 5, method: 'tools/call', params: { name: 'js', arguments: { code: '1', timeout_ms: 5000 } } }), 'session-1', 'turn-1'))
   assert.equal(chosen.params.arguments.timeout_ms, 5000, 'a timeout Claude chose is kept')
+  const summary = JSON.parse(withTurnMetadata(JSON.stringify({ jsonrpc: '2.0', id: 6, method: 'tools/call', params: { name: 'js', arguments: { completion_summary: 'Opened the page' } } }), 'session-1', 'turn-1'))
+  assert.deepEqual(summary.params.arguments, { completion_summary: 'Opened the page' }, 'a completion summary accepts no timeout_ms')
   const reset = JSON.parse(withTurnMetadata(JSON.stringify({ jsonrpc: '2.0', id: 6, method: 'tools/call', params: { name: 'js_reset', arguments: {} } }), 'session-1', 'turn-1'))
   assert.deepEqual(reset.params.arguments, {}, 'only js calls get the longer default')
   const list = JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'tools/list' })

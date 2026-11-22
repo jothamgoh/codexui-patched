@@ -24,7 +24,8 @@ export const CUA_JS_DEFAULT_TIMEOUT_MS = 120_000
 
 /**
  * Add `x-codex-turn-metadata` to a `tools/call` request line, and a longer
- * default timeout to `js` calls; leave every other line as it is.
+ * default timeout to `js` calls that run code; leave every other line as it is.
+ * A `js` call that only reports a `completion_summary` accepts no other field.
  */
 export function withTurnMetadata(line: string, sessionId: string, turnId: string): string {
   let message: JsonRecord | null
@@ -37,7 +38,7 @@ export function withTurnMetadata(line: string, sessionId: string, turnId: string
   const params = asRecord(message.params) ?? {}
   const meta = asRecord(params._meta) ?? {}
   const args = asRecord(params.arguments)
-  const timed = params.name === 'js' && args && typeof args.timeout_ms !== 'number'
+  const timed = params.name === 'js' && typeof args?.code === 'string' && typeof args.timeout_ms !== 'number'
     ? { arguments: { ...args, timeout_ms: CUA_JS_DEFAULT_TIMEOUT_MS } }
     : {}
   return JSON.stringify({
